@@ -52,6 +52,10 @@ class SinTestNode(Node):
         self.cmd_timer = self.create_timer(
             1 / self.send_rate, self.on_timer
         )
+
+        self.init_pub = self.create_publisher(
+            CmdSetMotorPosition, "arm/cmd_pos", 10
+        )
         self.initialize()
 
     def get_target(self, elapsed_time: float):
@@ -79,6 +83,19 @@ class SinTestNode(Node):
 
         self.cmd_pub.publish(msg)
 
+    def pub_init(self):
+        msg = CmdSetMotorPosition()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.cmds = []
+        for motor_name, pos in zip(self.control_motor_list, self.start_pos):
+            cmd = SetMotorPosition()
+            cmd.name = motor_name
+            cmd.pos = pos
+            cmd.cur = 8.0
+            cmd.spd = 0.2
+            msg.cmds.append(cmd)
+        self.init_pub.publish(msg)
+
     def on_timer(self):
         elapsed_time = time.monotonic() - self.start_time
         if not self.is_init:
@@ -87,15 +104,14 @@ class SinTestNode(Node):
                 self.is_init = True
                 self.get_logger().info("初始化完成")
                 self.start_time = time.monotonic()
+            else:
+                self.pub_init()
         else:
             self.pub_cmd(elapsed_time)
 
     def initialize(self):
 
         client = self.create_client(Trigger, self.root_name + "/reset")
-        pub = self.create_publisher(
-            CmdSetMotorPosition, "arm/cmd_pos", 10
-        )
 
         ###
 
@@ -114,27 +130,9 @@ class SinTestNode(Node):
             raise RuntimeError("reset service timeout")
         self.destroy_client(client)
 
-        ###
-
-        msg = CmdSetMotorPosition()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.cmds = []
-        for motor_name, pos in zip(self.control_motor_list, self.start_pos):
-            cmd = SetMotorPosition()
-            cmd.name = motor_name
-            cmd.pos = pos
-            cmd.cur = 8.0
-            cmd.spd = 0.2
-            msg.cmds.append(cmd)
-        pub.publish(msg)
-
-        for _ in range(5):
-            rclpy.spin_once(self)
-        self.destroy_publisher(pub)
-
 def sin_test(
     period: float = 5,
-    amplitude: float = 0.1,
+    amplitude: float = 0.15,
 
     wait_timeout: float = 10,
     send_rate: float = 10,
@@ -168,7 +166,8 @@ def main():
 
     app_args = remove_ros_args(sys.argv)
     rclpy.init(args = sys.argv)
-    tyro.cli(sin_test, args = app_args)
+    print(f"app_args: {app_args}")
+    tyro.cli(sin_test, args = app_args[1:])
 
 if __name__ == "__main__":
     main()

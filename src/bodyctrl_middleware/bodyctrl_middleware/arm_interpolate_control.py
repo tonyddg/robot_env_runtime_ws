@@ -312,6 +312,7 @@ class ArmInterpolateControl(Node):
             speed_raw = target_movenment / arm_cmd.total_time
             if elapsed_rate >= 1:
                 speed_raw = 0
+            speed_raw = float(speed_raw)
 
             if self.config.control_mode == "pos":
                 motor_cmd = SetMotorPosition()
@@ -322,7 +323,7 @@ class ArmInterpolateControl(Node):
                 motor_cmd.kp = self.config.control_motor_kp_list[i]
                 motor_cmd.kd = self.config.control_motor_kd_list[i]
                 motor_cmd.spd = speed_raw
-                motor_cmd.tor = 0
+                motor_cmd.tor = 0.0
 
             motor_cmd.name = motor_name
             motor_cmd.pos = start_pos + target_movenment * elapsed_rate
@@ -355,8 +356,8 @@ class ArmInterpolateControl(Node):
         for motor_name in self.config.control_motor_list:
             motor_cmd = SetMotorDistance()
             motor_cmd.name = motor_name
-            motor_cmd.distance = 0
-            motor_cmd.spd = 0
+            motor_cmd.distance = 0.0
+            motor_cmd.spd = 0.0
             motor_cmd.cur = self.config.motor_max_cur
 
             msg.cmds.append(motor_cmd)

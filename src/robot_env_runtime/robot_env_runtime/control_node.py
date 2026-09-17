@@ -27,7 +27,7 @@ runtime 只读 ControlStatus，本模块提供写这一侧的官方实现，自�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from robot_env_interface.msg import ControlStatus
 
@@ -253,6 +253,7 @@ class ControlStateMachine:
         command_id: int,
         control_epoch: int,
         message: str | None = None,
+        command_validator: Optional[Callable[[], bool]] = None
     ) -> bool:
         """
         校验并接受一条命令：状态 + epoch + command_id 单调.
@@ -279,6 +280,11 @@ class ControlStateMachine:
                 "（重复或乱序命令）"
             )
             return False
+        if command_validator is not None:
+            is_valid = command_validator()
+            if not is_valid:
+                self._log_warn(f"命令内容没有通过检验")
+                return False
         self._active_command_id = int(command_id)
         self._counters["accepted"] += 1
         return self._transition(ControlState.ACTIVE, message=message)
