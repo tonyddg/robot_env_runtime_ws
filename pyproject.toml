@@ -1,0 +1,32 @@
+[project]
+name = "ros2ws"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+
+# 先填依赖再在宿主机跑 uv lock 生成 uv.lock 
+dependencies = [
+    "empy==3.3.4",
+    "h5py>=3.16.0",
+    "lark==1.1.1",
+    "pin>=4.1.0",
+    "pydantic>=2.13.4",
+    # "pyyaml>=6.0.3",
+    # "requests>=2.34.2",
+    "robot-refactor[meshcat]",
+    "sapien>=3.0.3",
+    "tyro>=1.0.15",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+robot-refactor = { git = "https://github.com/tonyddg/robot_refactor.git" }
+
+# colcon build 时使用 uv 提供的而不是安装在系统中的
+[dependency-groups]
+dev = [
+    "colcon-common-extensions",
+    "flake8",
+    "pydocstyle"
+]
