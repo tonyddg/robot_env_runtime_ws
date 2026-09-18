@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "arm_interpolate_control = bodyctrl_middleware.arm_interpolate_control:main",
+            "arm_interpolate_control = bodyctrl_middleware.control_node.arm_interpolate_control:main",
             "interpolate_test_node = bodyctrl_middleware.test_node.interpolate_test_node:main"
         ],
     },

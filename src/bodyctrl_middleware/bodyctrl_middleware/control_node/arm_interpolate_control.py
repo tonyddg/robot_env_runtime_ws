@@ -9,7 +9,6 @@ import rclpy
 from rclpy.node import Node
 
 from robot_env_runtime.control_node import ControlStateMachine, ControlStatusPublisher
-from robot_env_interface.msg import ControlStatus
 
 from bodyctrl_msgs.msg import (
     CmdMotorCtrl, MotorCtrl,
@@ -88,6 +87,9 @@ class ArmInterpolateControl(Node):
         )
         min_total_time: float = RosField(
             0.05, description = "最小单步移动时间"
+        )
+        is_spd0_in_last: bool = RosField(
+            False, description = "是否在最后一步发布 0 速度"
         )
 
         advance_rate: float = RosField(
@@ -310,7 +312,7 @@ class ArmInterpolateControl(Node):
         for i, (motor_name, target_movenment, start_pos) in enumerate(zip(self.config.control_motor_list, arm_cmd.movement_array, arm_cmd.start_pos_array)):
 
             speed_raw = target_movenment / arm_cmd.total_time
-            if elapsed_rate >= 1:
+            if elapsed_rate >= 1 and self.config.is_spd0_in_last:
                 speed_raw = 0
             speed_raw = float(speed_raw)
 
