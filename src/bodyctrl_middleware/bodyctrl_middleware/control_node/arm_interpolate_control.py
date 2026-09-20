@@ -20,22 +20,12 @@ from std_srvs.srv import Trigger
 
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
 from bodyctrl_middleware_interface.msg import CmdSetMotorInterpolate, SetMotorInterpolate
+from bodyctrl_middleware.utility.constants import JOINT_GROUPS, SDK_LIMITS
 
-SDK_LIMITS: dict[int, tuple[float, float] | None] = {
-    11: (-2.967060, 2.967060),
-    12: (-0.261799, 2.617994),
-    13: (-2.967060, 2.967060),
-    14: (-2.617994, 0.261799),
-    15: (-2.967060, 2.967060),
-    16: (-0.785398, 1.047198),
-    17: (-1.658063, 1.308997),
-    21: (-2.967060, 2.967060),
-    22: (-2.617994, 0.261799),
-    23: (-2.967060, 2.967060),
-    24: (-2.617994, 0.261799),
-    25: (-2.967060, 2.967060),
-    26: (-0.785398, 1.047198),
-    27: (-1.308997, 1.658063),
+SDK_ARM_LIMITS: dict[int, tuple[float, float] | None] = {
+    motor_id: SDK_LIMITS[motor_id] 
+    for motor_id, motor_group in JOINT_GROUPS.items() 
+    if motor_group == "arm" 
 }
 
 class ArmInterpolateControl(Node):
@@ -45,7 +35,7 @@ class ArmInterpolateControl(Node):
 
     class Config(BaseModel):
         control_rate: float = RosField(
-            200, read_only = True,
+            200, ge = 1.0, read_only = True,
             description = "插值频率",
         )
         control_mode: Literal["pos", "pd"] = RosField(
@@ -58,7 +48,7 @@ class ArmInterpolateControl(Node):
         )
 
         motor_max_cur: float = RosField(
-            8.0, read_only = True,
+            8.0, ge = 0.0, read_only = True,
             description = "最大电机电流, 用于位置控制模式与急停",
         )
         control_motor_kp_list: list[float] = RosField(
@@ -75,21 +65,24 @@ class ArmInterpolateControl(Node):
             description = "控制话题与服务的根路径",
         )
         status_pub_rate: float = RosField(
-            50, read_only = True,
+            50, ge = 1.0, read_only = True,
             description = "控制节点状态发布频率",
         )
 
         arm_status_receive_timeout: float = RosField(
-            0.2, description = "接收关节状态时允许的最大超时"
+            0.2, ge = 0.0, description = "接收关节状态时允许的最大超时"
         )
         motor_step_tolerance: float = RosField(
-            0.1, description = "单步最大移动距离, 包括当前关节状态与插值起始关节状态最大允许误差"
+            0.1, ge = 0.0, description = "单步最大移动距离, 包括当前关节状态与插值起始关节状态最大允许误差"
         )
         min_total_time: float = RosField(
-            0.05, description = "最小单步移动时间"
+            0.05, ge = 0.0, description = "最小单步移动时间"
         )
         is_spd0_in_last: bool = RosField(
             False, description = "是否在最后一步发布 0 速度"
+        )
+        allow_exceed_cmd: bool = RosField(
+            False, description = "允许超出限制的目标位置, 将裁剪到限制内"
         )
 
         advance_rate: float = RosField(
@@ -107,6 +100,9 @@ class ArmInterpolateControl(Node):
                 
                 if len(self.control_motor_kd_list) != num_motors:
                     raise ValueError("kd 参数列表与被控电机数不匹配")
+                
+            if len(self.control_motor_list) != len(set(self.control_motor_list)):
+                raise ValueError("被控电机列表存在重复 id")
 
             return self
 
@@ -165,7 +161,7 @@ class ArmInterpolateControl(Node):
         arm_lower_bound = []
         arm_upper_bound = []
         for motor_idx in self.config.control_motor_list:
-            motor_limit = SDK_LIMITS.get(motor_idx, None)
+            motor_limit = SDK_ARM_LIMITS.get(motor_idx, None)
             if motor_limit is None:
                 error_str = f"电机名 {motor_idx} 不存在"
                 self.get_logger().error(error_str)
@@ -274,7 +270,10 @@ class ArmInterpolateControl(Node):
                 target_pos_array < self.arm_lower_bound
             ).any():
             self.get_logger().warn(f"目标位置超出关节运动范围")
-            return False
+            if self.config.allow_exceed_cmd:
+                target_pos_array = np.clip(target_pos_array, self.arm_lower_bound, self.arm_upper_bound)
+            else:
+                return False
             
         if (np.abs(
                 command.start_pos_array - arm_state_pos
