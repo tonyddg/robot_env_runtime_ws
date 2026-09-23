@@ -34,6 +34,21 @@ class RosControllerAdapter(ABC):
     def encode(self, action: NDArray, states: StateView, ctx: CommandContext) -> Any:
         """把 ``action + StateView + context`` 编码成机器人自己的消息（纯函数）."""
 
+    def on_sent(self, record: CommandRecord) -> None:
+        """
+        命令真正发布成功后的提交钩子（默认空操作）.
+
+        由 ``RosPublisherController`` 在 ``publish()`` 成功之后调用：这是"只提交
+        真正发送出去的命令"的唯一提交点，例如把相对动作的期望基准推进到本条命令的
+        目标位置。必须是快速、非阻塞、无 ROS I/O 的纯提交动作。
+
+        ``encode()`` 可能在同一条命令被丢弃前被多次调用（preflight 失败后重试等），
+        所以任何"必须只发生一次"的提交都应该放在这里，而不是 ``encode()`` 里。
+
+        抛异常表示 Adapter 的后处理失败：此时命令已经发出，runtime 会把这次 dispatch
+        记为失败并 latch fault + stop（保守方向），因此不要在这里做可失败的重活。
+        """
+
     def stop(self, states: StateView, ctx: CommandContext) -> Any | None:
         """返回一条停止 / 保持消息（由 controller publish）；None 表示无需发布."""
         return None

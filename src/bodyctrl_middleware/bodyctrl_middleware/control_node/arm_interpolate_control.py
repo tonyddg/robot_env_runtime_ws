@@ -8,7 +8,7 @@ from pydantic import BaseModel, model_validator
 import rclpy
 from rclpy.node import Node
 
-from robot_env_runtime.control_node import ControlStateMachine, ControlStatusPublisher
+from robot_env_runtime.control_node import ControlStateMachine, ControlStatusPublisher, ControlState
 
 from bodyctrl_msgs.msg import (
     CmdMotorCtrl, MotorCtrl,
@@ -20,7 +20,7 @@ from std_srvs.srv import Trigger
 
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
 from bodyctrl_middleware_interface.msg import CmdSetMotorInterpolate, SetMotorInterpolate
-from bodyctrl_middleware.utility.constants import JOINT_GROUPS, SDK_LIMITS
+from bodyctrl_middleware.utility.constants import JOINT_GROUPS, SDK_LIMITS, get_qpos_bound
 
 SDK_ARM_LIMITS: dict[int, tuple[float, float] | None] = {
     motor_id: SDK_LIMITS[motor_id] 
@@ -158,18 +158,7 @@ class ArmInterpolateControl(Node):
         self._csm = ControlStateMachine(self._status_publisher)
 
         # 关节判断参数
-        arm_lower_bound = []
-        arm_upper_bound = []
-        for motor_idx in self.config.control_motor_list:
-            motor_limit = SDK_ARM_LIMITS.get(motor_idx, None)
-            if motor_limit is None:
-                error_str = f"电机名 {motor_idx} 不存在"
-                self.get_logger().error(error_str)
-                raise ValueError(error_str)
-            arm_lower_bound.append(motor_limit[0])
-            arm_upper_bound.append(motor_limit[1])
-        self.arm_lower_bound = np.array(arm_lower_bound)
-        self.arm_upper_bound = np.array(arm_upper_bound)
+        (self.arm_lower_bound, self.arm_upper_bound) = get_qpos_bound(self.config.control_motor_list)
 
         # 当前关节状态
         self._arm_state_last_receive_time: float = 0
@@ -192,7 +181,7 @@ class ArmInterpolateControl(Node):
                 CmdMotorCtrl, "arm/cmd_ctrl", 10
             )
         self._arm_cmd_interpolate = self.create_timer(
-            1 / self.config.control_rate, self._on_interpolate_cmd
+            1 / self.config.control_rate, self._on_cmd_timer
         )
 
         # 停止与重置
@@ -290,13 +279,11 @@ class ArmInterpolateControl(Node):
             self.get_logger().error(f"无法获取当前电机状态")
             return
 
-        if not self._csm.accept_command(
+        if self._csm.accept_command(
             msg.header.command_id, msg.header.control_epoch,
             command_validator = lambda : self.valid_command(cmd, arm_state_pos)
         ):
-            return
-
-        self._arm_cur_cmd = cmd
+            self._arm_cur_cmd = cmd
 
     def _pub_motor_cmd(self, arm_cmd: "ArmInterpolateControl.Command", elapsed_rate: float):
         if self.config.control_mode == "pos":
@@ -332,18 +319,22 @@ class ArmInterpolateControl(Node):
             msg.cmds.append(motor_cmd)
         self._motor_cmd_pub.publish(msg)
 
-    def _on_interpolate_cmd(self):
-        if self._arm_cur_cmd is None:
-            return
+    def _on_cmd_timer(self):
 
-        elapsed_time = time.monotonic() - self._arm_cur_cmd.start_time
-        elapsed_rate = elapsed_time / max(self._arm_cur_cmd.total_time, self.config.min_total_time)
-        elapsed_rate = min(1, max(0, elapsed_rate))
+        # 仅在 READY 与 ACTIVE 状态下发布命令
+        if self._csm.state in (ControlState.READY, ControlState.ACTIVE):
 
-        self._pub_motor_cmd(self._arm_cur_cmd, elapsed_rate)
-        if elapsed_rate >= 1:
-            self._arm_cur_cmd = None
-            self._csm.finish_command()
+            if self._arm_cur_cmd is None:
+                return
+
+            elapsed_time = time.monotonic() - self._arm_cur_cmd.start_time
+            elapsed_rate = elapsed_time / max(self._arm_cur_cmd.total_time, self.config.min_total_time)
+            elapsed_rate = min(1, max(0, elapsed_rate))
+
+            self._pub_motor_cmd(self._arm_cur_cmd, elapsed_rate)
+            if elapsed_rate >= 1:
+                self._arm_cur_cmd = None
+                self._csm.finish_command()
 
     def _pub_motor_stop(self):
         '''
@@ -374,8 +365,6 @@ class ArmInterpolateControl(Node):
         self._pub_motor_stop()
         self._arm_cur_cmd = None
 
-        self.get_logger().info(f"在 epoch {self._csm.control_epoch} 因异常而停止运动")
-
         return
 
     def _on_stop(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
@@ -384,20 +373,18 @@ class ArmInterpolateControl(Node):
         self._pub_motor_stop()
         self._arm_cur_cmd = None
         self._csm.handle_stop_service(response)
-        self.get_logger().info(f"在 epoch {self._csm.control_epoch} 停止运动")
 
         return response
 
     def _on_reset(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         del request
 
-        self._csm.handle_reset_service(response)
-        self.get_logger().info(f"在 epoch {self._csm.control_epoch} 停止运动")
+        if self._csm.handle_reset_service(response):
 
-        self._pub_motor_stop()
+            self._pub_motor_stop()
 
-        self._arm_cur_cmd = None
-        self._csm.finish_reset()
+            self._arm_cur_cmd = None
+            self._csm.finish_reset()
 
         return response
 

@@ -246,6 +246,7 @@ class ControlStateMachine:
         """自检完成：INITIALIZING → READY."""
         if not self._guard("on_initialized", (ControlState.INITIALIZING,)):
             return False
+        self._log_info(f"节点初始化完成, 有信息: {message}")
         return self._transition(ControlState.READY, message=message)
 
     def accept_command(
@@ -283,8 +284,9 @@ class ControlStateMachine:
         if command_validator is not None:
             is_valid = command_validator()
             if not is_valid:
-                self._log_warn(f"命令内容没有通过检验")
+                self._log_warn("命令内容没有通过检验")
                 return False
+
         self._active_command_id = int(command_id)
         self._counters["accepted"] += 1
         return self._transition(ControlState.ACTIVE, message=message)
@@ -308,6 +310,8 @@ class ControlStateMachine:
         拒绝"的机制，也是 runtime ``stop()`` 判定屏障已建立的依据。
         """
         self._message = "" if message is None else message
+
+        self._log_info(f"节点在 Epoch {self.control_epoch} 建立软件屏障, 进入 STOP 状态")
         return self._transition(
             ControlState.STOPPED,
             bump_epoch=True,
@@ -317,6 +321,7 @@ class ControlStateMachine:
 
     def begin_reset(self, message: str | None = None) -> bool:
         """开始 reset：任意状态 → RESETTING，epoch + 1，命令 id 清零."""
+        self._log_info(f"节点在 Epoch {self.control_epoch} 开始重置, 进入 RESETTING 状态, 有信息: {message}")
         return self._transition(
             ControlState.RESETTING,
             bump_epoch=True,
@@ -328,6 +333,8 @@ class ControlStateMachine:
         """Reset 运动完成：RESETTING → READY（epoch 不再变化）."""
         if not self._guard("finish_reset", (ControlState.RESETTING,)):
             return False
+
+        self._log_info(f"节点初始化为 Epoch {self.control_epoch}, 进入 READY 状态, 有信息: {message}")
         return self._transition(ControlState.READY, message=message)
 
     def fail(self, message: str | None = None) -> bool:
@@ -342,6 +349,8 @@ class ControlStateMachine:
             self._publisher.publish_now()
             return False
         self._counters["faults"] += 1
+
+        self._log_warn(f"节点在 Epoch {self.control_epoch} 出现异常, 进入 FAULTED 状态, 有信息: {message}")
         return self._transition(
             ControlState.FAULTED,
             bump_epoch=True,
@@ -351,23 +360,27 @@ class ControlStateMachine:
 
     # -- service 便捷封装 --------------------------------------------------
 
-    def handle_stop_service(self, response: Any) -> bool:
+    def handle_stop_service(
+        self,
+        response: Any,
+        message: str | None = "stop barrier established",
+    ) -> bool:
         """
         在 stop service 回调里使用：先建立屏障，再填 ``Trigger`` 响应.
 
         ``response`` 只需具备 ``success`` / ``message`` 两个属性。
         """
-        ok = self.stop_barrier("stop barrier established")
+        ok = self.stop_barrier(message)
         self._fill_response(response, ok)
         return ok
 
-    def handle_reset_service(self, response: Any) -> bool:
+    def handle_reset_service(self, response: Any, message: str | None = "resetting") -> bool:
         """
         在 reset service 回调里使用：进入 RESETTING 并立即回应.
 
         reset 运动本身由节点自己的控制循环完成，完成后调用 :meth:`finish_reset`。
         """
-        ok = self.begin_reset("resetting")
+        ok = self.begin_reset(message)
         self._fill_response(response, ok)
         return ok
 
@@ -423,3 +436,8 @@ class ControlStateMachine:
         """写 warn 日志（logger 可选）."""
         if self._logger is not None:
             self._logger.warn(message)
+
+    def _log_info(self, message: str) -> None:
+        """写 info 日志（logger 可选）."""
+        if self._logger is not None:
+            self._logger.info(message)

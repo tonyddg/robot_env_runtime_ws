@@ -1385,6 +1385,14 @@ def _make_descriptor(
     return descriptor
 
 
+def _get_model_path_value(model: BaseModel, path: tuple[str, ...]) -> Any:
+    """Read a value from a nested BaseModel instance."""
+    value: Any = model
+    for key in path:
+        value = getattr(value, key)
+    return value
+
+
 def _set_path(root: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     cursor = root
     for key in path[:-1]:
@@ -1529,15 +1537,42 @@ class RosParamBridge(Generic[ModelT]):
 
     def declaration_tuples(
         self,
+        initial: ModelT | None = None,
     ) -> list[tuple[str, Any, ParameterDescriptor]]:
-        """Return tuples directly consumable by node.declare_parameters()."""
+        """
+        Return tuples consumable by node.declare_parameters().
+
+        If ``initial`` is supplied, values from that BaseModel instance are used
+        as runtime defaults. ROS parameter overrides from YAML/CLI still have
+        higher priority because they are handled by rclpy during declaration.
+        """
+        if initial is not None:
+            if not isinstance(initial, self.model_type):
+                raise TypeError(
+                    f"initial must be {self.model_type.__name__}"
+                )
+
+            # Validate the supplied initial configuration.
+            self.model_type.model_validate(initial.model_dump())
+
         declarations: list[tuple[str, Any, ParameterDescriptor]] = []
 
         for spec in self._specs:
-            if spec.default is PydanticUndefined or spec.default is None:
+            if initial is not None:
+                value = _get_model_path_value(
+                    initial,
+                    spec.path,
+                )
+            else:
+                value = spec.default
+
+            if value is PydanticUndefined or value is None:
                 value_or_type: Any = spec.ros_type
             else:
-                value_or_type = _to_ros_value(spec.default, spec.ros_type)
+                value_or_type = _to_ros_value(
+                    value,
+                    spec.ros_type,
+                )
 
             declarations.append(
                 (spec.ros_name, value_or_type, spec.descriptor)
@@ -1545,17 +1580,19 @@ class RosParamBridge(Generic[ModelT]):
 
         return declarations
 
-    def declare(self) -> ModelT:
+    def declare(
+        self,
+        initial: ModelT | None = None,
+    ) -> ModelT:
         """
         Declare all managed ROS parameters and return the effective Pydantic model.
 
-        ROS YAML/CLI overrides are applied by rclpy unless ignore_override=True.
-        Required fields without an override remain statically typed but uninitialized;
-        in that case model() raises UninitializedParametersError.
+        ``initial`` is used as the declaration default. ROS YAML/CLI overrides
+        still take precedence.
         """
         self.node.declare_parameters(
             "",
-            self.declaration_tuples(),
+            self.declaration_tuples(initial),
             ignore_override=self.ignore_override,
         )
         return self.model()
@@ -1660,9 +1697,18 @@ class RosParamBridge(Generic[ModelT]):
         self._installed_callback = callback
         return callback
 
-    def bind(self) -> ModelT:
-        """Convenience: declare parameters, construct the initial model, then install validation."""
-        model = self.declare()
+    def bind(
+        self,
+        initial: ModelT | None = None,
+    ) -> ModelT:
+        """
+        Convenience helper.
+
+        Equivalent to:
+            declare(initial)
+            install_callback()
+        """
+        model = self.declare(initial)
         self.install_callback()
         return model
 

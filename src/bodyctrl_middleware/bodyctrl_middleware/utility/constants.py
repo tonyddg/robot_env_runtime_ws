@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 LEFT_ARM_MOTOR_IDS: tuple[int, ...] = (11, 12, 13, 14, 15, 16, 17)
 RIGHT_ARM_MOTOR_IDS: tuple[int, ...] = (21, 22, 23, 24, 25, 26, 27)
 ARM_MOTOR_IDS: tuple[int, ...] = LEFT_ARM_MOTOR_IDS + RIGHT_ARM_MOTOR_IDS
@@ -84,6 +86,21 @@ SDK_LIMITS: dict[int, tuple[float, float] | None] = {
     51: (-0.226893, 1.396263),
     52: (-0.453786, 2.792527),
 }
+
+def get_qpos_bound(motor_name_list: list[int]):
+    # 关节判断参数
+    arm_lower_bound = []
+    arm_upper_bound = []
+    for motor_idx in motor_name_list:
+        motor_limit = SDK_LIMITS.get(motor_idx, None)
+        if motor_limit is None:
+            error_str = f"电机名 {motor_idx} 不存在"
+            raise ValueError(error_str)
+        arm_lower_bound.append(motor_limit[0])
+        arm_upper_bound.append(motor_limit[1])
+    return (
+        np.array(arm_lower_bound), np.array(arm_upper_bound)
+    )
 
 HAND_FINGER_NAMES: tuple[str, ...] = ("1", "2", "3", "4", "5", "6")
 

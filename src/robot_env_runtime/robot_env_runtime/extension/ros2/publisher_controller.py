@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from robot_env_runtime.core.clock import Clock
 from robot_env_runtime.core.errors import (
     ConfigError,
+    ControllerError,
     ControllerPrepareError,
     ControllerStopError,
     PublishError,
@@ -224,6 +225,7 @@ class RosPublisherController(Controller):
             metadata=metadata,
         )
         self._last_record = record
+        self._notify_sent(record)
         return record
 
     def validate(
@@ -303,6 +305,22 @@ class RosPublisherController(Controller):
                 pass
 
     # -- 内部 --------------------------------------------------------------
+
+    def _notify_sent(self, record: CommandRecord) -> None:
+        """
+        通知 Adapter：这条命令已经真正 publish 成功.
+
+        命令已经发出，所以钩子失败不会被吞掉：runtime 必须知道"已发布但后处理失败"，
+        从而 latch fault 并执行 stop barrier（保守方向）。
+        """
+        try:
+            self._adapter.on_sent(record)
+        except Exception as exc:
+            raise ControllerError(
+                f"controller {self._name!r} adapter.on_sent() failed after the command "
+                f"was published on {self._topic!r}: {exc}",
+                details={"controller": self._name, "topic": self._topic, "published": True},
+            ) from exc
 
     def _publish_direct(self, message: Any) -> None:
         """由 controller 自己发布一条 stop / reset 消息."""

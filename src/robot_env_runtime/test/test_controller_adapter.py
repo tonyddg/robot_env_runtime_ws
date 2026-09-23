@@ -7,7 +7,14 @@ from dataclasses import dataclass, field
 import numpy as np
 import pytest
 
-from robot_env_runtime.core.errors import ConfigError, ControllerPrepareError
+from robot_env_runtime.core.errors import (
+    ConfigError,
+    ControllerError,
+    ControllerPrepareError,
+    PartialDispatchError,
+    PublishError,
+)
+from robot_env_runtime.core.dispatcher import ActionRoute, ActionRouter, Dispatcher
 from robot_env_runtime.core.snapshot import StateSnapshot
 from robot_env_runtime.core.state_store import StateStore
 from robot_env_runtime.core.state_view import StateInput, StateView
@@ -39,6 +46,7 @@ class _Adapter(RosControllerAdapter):
         reset_payload: _Payload | None = None,
         validate_result: ControllerCheck | None = None,
         validate_error: Exception | None = None,
+        on_sent_error: Exception | None = None,
     ) -> None:
         self._input_dim = input_dim
         self._state_inputs = dict(state_inputs or {})
@@ -46,7 +54,9 @@ class _Adapter(RosControllerAdapter):
         self._reset_payload = reset_payload
         self._validate_result = validate_result
         self._validate_error = validate_error
+        self._on_sent_error = on_sent_error
         self.encode_calls = 0
+        self.sent_records: list[CommandRecord] = []
         self.opened = 0
         self.closed = 0
 
@@ -72,6 +82,12 @@ class _Adapter(RosControllerAdapter):
     def stop(self, states: StateView, ctx: CommandContext) -> _Payload | None:
         """返回停止消息."""
         return self._stop_payload
+
+    def on_sent(self, record: CommandRecord) -> None:
+        """记录真正发送成功的命令（可按脚本失败）."""
+        if self._on_sent_error is not None:
+            raise self._on_sent_error
+        self.sent_records.append(record)
 
     def reset(self, states: StateView, ctx: CommandContext) -> _Payload | None:
         """返回 reset 钩子消息."""
@@ -254,6 +270,94 @@ def test_stop_publishes_adapter_message_and_reset_hook_publishes() -> None:
     controller.close()
     assert node.publisher("/example/command") is None
     assert adapter.closed == 1
+
+
+def test_on_sent_hook_runs_only_after_a_successful_publish() -> None:
+    """On_sent 只在 publish 成功之后调用一次，prepare 不触发."""
+    clock = FakeClock()
+    node = FakeRosNode()
+    adapter = _Adapter()
+    controller = _make_controller(node=node, clock=clock, adapter=adapter)
+    controller.open()
+    snapshot = StateSnapshot(samples={}, captured_at=0.0)
+    prepared = controller.prepare(np.asarray([0.1, 0.2]), snapshot, 0, 0.1)
+    assert adapter.sent_records == []
+    assert node.published("/example/command") == []
+    record = controller.send(prepared)
+    assert adapter.sent_records == [record]
+    assert controller.last_command is record
+    assert len(node.published("/example/command")) == 1
+
+
+def test_on_sent_hook_is_skipped_when_publish_fails() -> None:
+    """Publish 失败时不能通知 adapter（命令并没有真正发出）."""
+    clock = FakeClock()
+    node = FakeRosNode()
+    adapter = _Adapter()
+    controller = _make_controller(node=node, clock=clock, adapter=adapter)
+    controller.open()
+    snapshot = StateSnapshot(samples={}, captured_at=0.0)
+    prepared = controller.prepare(np.asarray([0.0, 0.0]), snapshot, 0, 0.1)
+    publisher = node.publisher("/example/command")
+    assert publisher is not None
+    publisher.publish_error = RuntimeError("dds down")
+    with pytest.raises(PublishError):
+        controller.send(prepared)
+    assert adapter.sent_records == []
+
+
+def test_failing_on_sent_hook_is_reported_as_published() -> None:
+    """On_sent 抛错时必须如实上报"已发布但后处理失败"（runtime 据此 latch + stop）."""
+    clock = FakeClock()
+    node = FakeRosNode()
+    adapter = _Adapter(on_sent_error=RuntimeError("bookkeeping bug"))
+    controller = _make_controller(node=node, clock=clock, adapter=adapter)
+    controller.open()
+    snapshot = StateSnapshot(samples={}, captured_at=0.0)
+    prepared = controller.prepare(np.asarray([0.0, 0.0]), snapshot, 0, 0.1)
+    with pytest.raises(ControllerError) as excinfo:
+        controller.send(prepared)
+    assert "on_sent" in str(excinfo.value)
+    assert excinfo.value.details["published"] is True
+    assert len(node.published("/example/command")) == 1
+
+
+def test_batch_dispatch_notifies_each_successful_controller_once() -> None:
+    """批量派发：成功的 controller 各提交一次；部分失败时失败者不提交."""
+    clock = FakeClock()
+    node = FakeRosNode()
+    left_adapter, right_adapter = _Adapter(input_dim=1), _Adapter(input_dim=1)
+    left = RosPublisherController(
+        "left", node=node, clock=clock, topic="/left", msg_type=_Payload,
+        adapter=left_adapter, protocol=LegacyProtocol(), control_period=0.1,
+    )
+    right = RosPublisherController(
+        "right", node=node, clock=clock, topic="/right", msg_type=_Payload,
+        adapter=right_adapter, protocol=LegacyProtocol(), control_period=0.1,
+    )
+    left.open()
+    right.open()
+    controllers = {"left": left, "right": right}
+    router = ActionRouter(
+        [ActionRoute("left", "left", (0,), (1.0,)), ActionRoute("right", "right", (1,), (1.0,))],
+        controllers,
+    )
+    dispatcher = Dispatcher(controllers, router)
+    snapshot = StateSnapshot(samples={}, captured_at=0.0)
+    actions = {"left": np.asarray([0.1]), "right": np.asarray([0.2])}
+    dispatcher.dispatch(actions, snapshot, 0, 0.1)
+    assert len(left_adapter.sent_records) == 1
+    assert len(right_adapter.sent_records) == 1
+
+    left_adapter.sent_records.clear()
+    right_adapter.sent_records.clear()
+    publisher = node.publisher("/right")
+    assert publisher is not None
+    publisher.publish_error = RuntimeError("dds down")
+    with pytest.raises(PartialDispatchError):
+        dispatcher.dispatch(actions, snapshot, 1, 0.1)
+    assert len(left_adapter.sent_records) == 1
+    assert right_adapter.sent_records == []
 
 
 def test_default_adapter_hooks_are_optional() -> None:

@@ -316,10 +316,18 @@ class TianyiArmAdapter(RosControllerAdapter):
 
     def validate(self, states, previous_command, ctx):
         return ControllerCheck.ok()           # 可选：周期边界快速校验
+
+    def on_sent(self, record):                # 可选：命令真正发出后的提交钩子
+        self._expected = target_of(record)     # 只在 send 成功后才推进内部基准
 ```
 
 `encode()` 必须是纯函数：不 publish、不调用 service、不改 runtime committed
 state、不操作 StateSource。真正的 publish 永远由 `RosPublisherController` 负责。
+
+如果 Adapter 需要"只在命令真正发出后才发生一次"的内部提交（例如相对动作的期望
+基准），把它放在 `on_sent(record)` 里而不是 `encode()` 里：`encode()` 可能因为
+preflight 失败 / 重试而被多次调用，而 `on_sent()` 只在 `send()` publish 成功之后
+调用一次，`record` 就是 runtime 自己保存的那条 `CommandRecord`。
 
 派发严格分三段：
 

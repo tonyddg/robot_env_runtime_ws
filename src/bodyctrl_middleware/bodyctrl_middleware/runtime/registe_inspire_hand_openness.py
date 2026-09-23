@@ -79,7 +79,7 @@ INSPIRE_HAND_OBSERVATION_PREFIX = "hand_openness_"
 DEFAULT_OPEN_QPOS = DEFAULT_HAND_OPEN_POSE
 DEFAULT_CLOSE_QPOS = DEFAULT_HAND_CLOSED_POSE
 
-def register_inspire_hand_openness(
+def registe_inspire_hand_openness(
     robot_plugin: RobotPlugin,
 
     side: Literal["left", "right"],

@@ -8,6 +8,7 @@ from bodyctrl_middleware.utility.constants import GROUP_DEFS, LEFT_ARM_MOTOR_IDS
 
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter, stamp_to_seconds
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
+from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
 
@@ -56,9 +57,9 @@ class TianyiJointQposAdapter(RosStateAdapter):
         return stamp_to_seconds(getattr(getattr(msg, "header", None), "stamp", None))
 
 TIANYI_ARM_STATE_TOPIC = GROUP_DEFS["arm"].status_topic
-TIANYI_ARM_QPOS_PREFIX = "arm_qpos_"
+TIANYI_ARM_QPOS_PREFIX = "tianyi_arm_qpos_"
 
-def register_tianyi_arm_qpos(
+def registe_tianyi_arm_qpos(
     robot_plugin: RobotPlugin,
 
     name_suffix: str = "left",
@@ -68,15 +69,15 @@ def register_tianyi_arm_qpos(
     '''
     注册天轶机器人手臂关节状态
 
-    注册后的状态与观测名为 arm_state_<suffix>
+    注册后的状态与观测名为 tianyi_arm_qpos_<suffix>
     '''
 
     tianyi_arm_qpos_state = TIANYI_ARM_QPOS_PREFIX + name_suffix
     tianyi_arm_qpos_obs = TIANYI_ARM_QPOS_PREFIX + name_suffix
     adapter = TianyiJointQposAdapter(motor_id_to_idx = motor_id_to_idx)
 
-    def tianyi_arm_qpos_state_factory(ctx: Any) -> RosTopicStateSource:
-        """订阅夹爪状态."""
+    def tianyi_arm_qpos_state_factory(ctx: ComponentContext) -> RosTopicStateSource:
+        """订阅手臂关节状态."""
         return RosTopicStateSource(
             tianyi_arm_qpos_state,
             node = ctx.node,
@@ -87,8 +88,8 @@ def register_tianyi_arm_qpos(
             logger = ctx.logger,
         )
 
-    def tianyi_arm_qpos_obs_factory(ctx: Any, states: Mapping[str, Any]) -> TransformObservation:
-        """6 维夹爪位置观测（float32）."""
+    def tianyi_arm_qpos_obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
+        """手臂关节位置观测（float32）."""
         return TransformObservation(
             tianyi_arm_qpos_obs,
             source = tianyi_arm_qpos_state,
@@ -110,4 +111,7 @@ def register_tianyi_arm_qpos(
         tianyi_arm_qpos_obs_factory,
         depends_on = (tianyi_arm_qpos_state, )
     )
-    return robot_plugin
+    return robot_plugin, dict(
+        state = tianyi_arm_qpos_state, 
+        obs = tianyi_arm_qpos_obs
+    )
