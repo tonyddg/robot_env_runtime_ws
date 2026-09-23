@@ -24,8 +24,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "arm_interpolate_control = bodyctrl_middleware.control_node.arm_interpolate_control:main",
-            "interpolate_test_node = bodyctrl_middleware.test_node.interpolate_test_node:main"
+            "tianyi_arm_interpolate_control = bodyctrl_middleware.tianyi.control_node.arm_interpolate_control:main",
+            "tianyi_body_manual_reset = bodyctrl_middleware.tianyi.control_node.body_manual_reset:main",
+            "tianyi_interpolate_test_node = bodyctrl_middleware.tianyi.test_node.interpolate_test_node:main",
         ],
     },
 )

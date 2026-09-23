@@ -20,7 +20,7 @@ from std_srvs.srv import Trigger
 
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
 from bodyctrl_middleware_interface.msg import CmdSetMotorInterpolate, SetMotorInterpolate
-from bodyctrl_middleware.utility.constants import JOINT_GROUPS, SDK_LIMITS, get_qpos_bound
+from bodyctrl_middleware.tianyi.constants import JOINT_GROUPS, SDK_LIMITS, get_qpos_bound
 
 SDK_ARM_LIMITS: dict[int, tuple[float, float] | None] = {
     motor_id: SDK_LIMITS[motor_id] 

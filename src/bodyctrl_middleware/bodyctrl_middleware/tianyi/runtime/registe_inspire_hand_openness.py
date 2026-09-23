@@ -4,7 +4,7 @@ from numpy.typing import NDArray
 
 # 手指状态
 from sensor_msgs.msg import JointState
-from bodyctrl_middleware.utility.constants import HAND_FINGER_NAMES, DEFAULT_HAND_CLOSED_POSE, DEFAULT_HAND_OPEN_POSE
+from bodyctrl_middleware.tianyi.constants import HAND_FINGER_NAMES, DEFAULT_HAND_CLOSED_POSE, DEFAULT_HAND_OPEN_POSE
 
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter, stamp_to_seconds
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource

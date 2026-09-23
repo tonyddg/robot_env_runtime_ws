@@ -4,7 +4,7 @@ from numpy.typing import NDArray
 
 # 控制器指令
 from bodyctrl_middleware_interface.msg import CmdSetMotorInterpolate, SetMotorInterpolate
-from bodyctrl_middleware.utility.constants import get_qpos_bound
+from bodyctrl_middleware.tianyi.constants import get_qpos_bound
 
 from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource

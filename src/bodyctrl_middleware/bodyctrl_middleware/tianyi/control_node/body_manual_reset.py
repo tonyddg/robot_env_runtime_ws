@@ -14,7 +14,7 @@ from bodyctrl_msgs.msg import (
     MotorStatusMsg, MotorStatus,
 )
 from std_srvs.srv import Trigger
-from bodyctrl_middleware.utility.constants import (
+from bodyctrl_middleware.tianyi.constants import (
     JOINT_GROUPS, SDK_LIMITS, GROUP_DEFS,
 )
 

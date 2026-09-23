@@ -11,7 +11,7 @@ from robot_env_runtime.control_node import ControlStateMachine, ControlStatusPub
 
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
-from bodyctrl_middleware.utility.constants import (
+from bodyctrl_middleware.tianyi.constants import (
     HAND_FINGER_NAMES, DEFAULT_HAND_OPEN_POSE
 )
 

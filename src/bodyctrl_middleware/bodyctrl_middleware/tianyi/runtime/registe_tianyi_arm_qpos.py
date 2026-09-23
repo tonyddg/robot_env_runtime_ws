@@ -4,7 +4,7 @@ from numpy.typing import NDArray
 
 # 天轶手臂状态
 from bodyctrl_msgs.msg import MotorStatusMsg, MotorStatus
-from bodyctrl_middleware.utility.constants import GROUP_DEFS, LEFT_ARM_MOTOR_IDS, JOINT_GROUPS
+from bodyctrl_middleware.tianyi.constants import GROUP_DEFS, LEFT_ARM_MOTOR_IDS, JOINT_GROUPS
 
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter, stamp_to_seconds
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
