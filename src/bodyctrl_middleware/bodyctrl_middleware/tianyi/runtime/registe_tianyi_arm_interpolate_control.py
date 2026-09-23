@@ -248,6 +248,7 @@ def registe_tianyi_arm_interpolate_control(
             status_max_age_sec = config.status_max_age_sec,
             stop_timeout = ctx.settings.service_timeout,
             logger = ctx.logger,
+            auto_reset = True
         )
         return RosPublisherController(
             controller_name,

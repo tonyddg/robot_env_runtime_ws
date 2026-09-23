@@ -70,6 +70,16 @@ class Controller(ABC):
     def reset(self, snapshot: StateSnapshot | None = None) -> None:
         """Reset 生命周期钩子（默认空操作）."""
 
+    def check_reset_ready(self, snapshot: StateSnapshot) -> ControllerCheck:
+        """
+        Reset 结束后检查该 controller 是否已经重新就绪（默认 OK）.
+
+        managed controller 的语义是：reset 的第一步 stop barrier 会让 Control Node 进入
+        STOPPED，必须由 reset service 把它重新武装回 READY。默认实现返回 OK；
+        ``RosPublisherController`` 会委托给控制协议检查 ControlStatus。
+        """
+        return ControllerCheck.ok()
+
     @abstractmethod
     def close(self) -> None:
         """释放底层资源（幂等）."""

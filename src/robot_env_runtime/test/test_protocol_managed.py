@@ -79,19 +79,27 @@ class _LegacyAdapter(RosControllerAdapter):
         return {"action": 0.0}
 
 
-def _managed_env(clock: FakeClock, *, with_reset: bool = True):
+def _managed_env(
+    clock: FakeClock,
+    *,
+    with_reset: bool = True,
+    auto_reset: bool = False,
+    service_caller=None,
+):
     """构造 managed 手臂 + 假 Control Node 的完整 runtime."""
     arm = FakeStateSource("arm", clock=clock, value=np.zeros(ARM_DIM))
     status = FakeStateSource("arm_control", clock=clock)
     node = FakeManagedControlNode(clock, status_source=status)
+    caller = node.service_caller() if service_caller is None else service_caller
     protocol = ManagedControlProtocol(
         status_source="arm_control",
         clock=clock,
         stop_service=node.stop_service,
         reset_service=node.reset_service,
-        service_caller=node.service_caller(),
+        service_caller=caller,
         state_provider=lambda name: {"arm": arm, "arm_control": status}[name].read(),
         status_max_age_sec=1.0,
+        auto_reset=auto_reset,
     )
     controller = RosPublisherController(
         "arm",
@@ -119,7 +127,7 @@ def _managed_env(clock: FakeClock, *, with_reset: bool = True):
         sources={"arm": arm, "arm_control": status},
         settings=make_settings(),
         reset_strategy=reset,
-        service_caller=node.service_caller(),
+        service_caller=caller,
     )
     return env, controller, node, arm, status
 
@@ -239,6 +247,55 @@ def test_reset_obtains_new_epoch_after_stop() -> None:
     assert controller.last_command.ctx.control_epoch == epoch_after_reset
     _deliver(controller, node)
     assert node.active_command_id == 1
+
+
+def test_reset_requires_managed_controller_to_be_rearmed() -> None:
+    """profile.reset 没覆盖 managed controller 时，reset 立刻报可执行的错误（而不是等到 step）."""
+    clock = FakeClock()
+    env, controller, node, _, _ = _managed_env(clock, with_reset=False)
+    with pytest.raises(ControllerPreflightError) as excinfo:
+        env.reset()
+    message = str(excinfo.value)
+    assert "not ready after reset" in message
+    assert "profile.reset" in message
+    assert node.state is ControlState.STOPPED      # stop barrier 之后没人把它叫回 READY
+    assert env.ok() is False
+    env.close()
+
+
+def test_auto_reset_rearms_managed_controller_without_profile_reset() -> None:
+    """ManagedControlProtocol(auto_reset=True)：不需要 profile.reset 也会被重新武装."""
+    clock = FakeClock()
+    env, controller, node, _, _ = _managed_env(clock, with_reset=False, auto_reset=True)
+    env.reset()
+    assert node.state is ControlState.READY
+    assert node.control_epoch == 3          # stop barrier(2) → auto reset(3)
+    assert env.ok() is True
+    # 之后照常可以下发命令（preflight 不再因 STOPPED 失败）
+    future = FakeInferenceFuture(done=True, action=ACTION)
+    env.wait_for_step(future)
+    _, info = env.step(future.get_action())
+    assert info["controllers"]["commands"]["arm"]["command_id"] == 1
+    assert info["controllers"]["commands"]["arm"]["control_epoch"] == 3
+    env.close()
+
+
+def test_auto_reset_failure_latches_fault() -> None:
+    """auto_reset=True 但 reset service 返回失败：reset 阶段就 latch fault."""
+    clock = FakeClock()
+    caller = FakeServiceCaller(default=FakeManagedControlNode(
+        clock, status_source=FakeStateSource("arm_control", clock=clock)
+    ).handle_service)
+    caller.add_response("/fake/reset", success=False, message="controller busy")
+    env, _, node, _, _ = _managed_env(
+        clock, with_reset=False, auto_reset=True, service_caller=caller
+    )
+    with pytest.raises(ManagedControlError) as excinfo:
+        env.reset()
+    assert "controller busy" in str(excinfo.value)
+    assert env.ok() is False
+    assert env.fault is not None and env.fault.kind == "managed_control"
+    env.close()
 
 
 def test_stop_times_out_when_control_node_never_reports_stopped() -> None:

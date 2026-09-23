@@ -177,6 +177,10 @@ class ManagedControlProtocol(ControlProtocol):
     - ``control_epoch``：唯一 authority 是 Control Node，runtime 只读取。
     - ``stop()``：调用 stop service（Trigger），并等待 ControlStatus 进入
       STOPPED 且建立新 epoch（旧 epoch 命令随后必然被 Control Node 拒绝）。
+    - ``reset()``：仅当 ``auto_reset=True`` 时主动调用本控制器的 reset service，
+      并等待 ControlStatus 回到 READY（新 epoch）。默认 False —— reset 编排由
+      ``profile.reset`` 里的 ResetStrategy 显式决定；开启后就不需要在 profile 里
+      再为这个 controller 单独注册 reset。
     """
 
     def __init__(
@@ -190,11 +194,17 @@ class ManagedControlProtocol(ControlProtocol):
         state_provider: Callable[[str], StateSample[Any] | None] | None = None,
         status_max_age_sec: float | None = None,
         stop_timeout: float = 2.0,
+        reset_timeout: float | None = None,
+        auto_reset: bool = False,
         poll_period: float = 0.02,
         accepting_states: Sequence[ControlState] | None = None,
         logger: Any = None,
     ) -> None:
         """保存协议配置（插件负责注入 service caller 与 state provider）."""
+        if auto_reset and reset_service is None:
+            raise ConfigError(
+                "ManagedControlProtocol(auto_reset=True) requires reset_service"
+            )
         self._status_source = status_source
         self._clock = clock
         self._stop_service = stop_service
@@ -203,6 +213,10 @@ class ManagedControlProtocol(ControlProtocol):
         self._state_provider = state_provider
         self._status_max_age_sec = status_max_age_sec
         self._stop_timeout = float(stop_timeout)
+        self._reset_timeout = (
+            float(stop_timeout) if reset_timeout is None else float(reset_timeout)
+        )
+        self._auto_reset = bool(auto_reset)
         self._poll_period = float(poll_period)
         self._accepting = tuple(accepting_states or ACCEPTING_STATES)
         self._logger = logger
@@ -337,6 +351,44 @@ class ManagedControlProtocol(ControlProtocol):
             and (epoch_before is None or status.control_epoch != epoch_before),
             self._stop_timeout,
             "STOPPED with a new control_epoch",
+        )
+
+    def reset(self, controller_name: str, states: StateView, ctx: CommandContext) -> None:
+        """
+        可选：主动调用本 controller 的 reset service 并等待回到 READY.
+
+        仅当 ``auto_reset=True`` 时生效。这是"pre-reset stop barrier 停掉所有
+        controller"的对称操作：开启后 runtime 会自动把它们重新武装，不需要在
+        ``profile.reset`` 里再为每个 managed controller 单独注册一个 reset。
+        """
+        if not self._auto_reset:
+            return
+        if self._reset_service is None:  # pragma: no cover - 构造期已校验
+            raise ManagedControlError(
+                f"controller {controller_name!r}: auto_reset=True but reset_service "
+                "is not configured"
+            )
+        if self._service_caller is None:
+            raise ManagedControlError(
+                f"controller {controller_name!r}: no service caller configured"
+            )
+        before = self._live_status()
+        epoch_before = None if before is None else before.control_epoch
+        response = self._service_caller.call_trigger(
+            self._reset_service, self._reset_timeout
+        )
+        if not bool(getattr(response, "success", False)):
+            message = str(getattr(response, "message", ""))
+            raise ManagedControlError(
+                f"managed reset service {self._reset_service!r} failed: {message}"
+            )
+        if self._state_provider is None:
+            return
+        self._wait_status(
+            lambda status: status.accepting_commands
+            and (epoch_before is None or status.control_epoch != epoch_before),
+            self._reset_timeout,
+            "READY with a new control_epoch after reset",
         )
 
     # -- 内部 --------------------------------------------------------------

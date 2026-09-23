@@ -292,6 +292,12 @@ class RosPublisherController(Controller):
         if message is not None:
             self._publish_direct(message)
 
+    def check_reset_ready(self, snapshot: StateSnapshot) -> ControllerCheck:
+        """Reset 后该 controller 是否已重新就绪（managed 协议检查 ControlStatus）."""
+        states = StateView(snapshot, self._state_inputs)
+        ctx = CommandContext(cycle_index=-1, control_period=self._control_period)
+        return self._protocol.preflight(self._name, states, ctx)
+
     def close(self) -> None:
         """销毁 publisher 并关闭 protocol / adapter（幂等）."""
         self._adapter.close()

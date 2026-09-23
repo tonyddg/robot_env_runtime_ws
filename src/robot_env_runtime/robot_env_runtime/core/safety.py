@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from robot_env_runtime.core.errors import (
+    ControllerError,
     ControllerPreflightError,
     ControllerPrepareError,
     ControllerStopError,
     ControllerValidationError,
+    ManagedControlError,
     ManagedControlFaultedError,
     ManagedControlRejectedError,
     ObservationTimeoutError,
@@ -20,6 +22,8 @@ from robot_env_runtime.core.errors import (
     ResetTimeoutError,
     RobotRuntimeError,
     RosExecutorFailureError,
+    ServiceCallError,
+    ServiceTimeoutError,
     StepOverrunError,
 )
 from robot_env_runtime.core.types import RuntimeFault
@@ -29,12 +33,14 @@ FAULT_CYCLE_OVERRUN = "cycle_overrun"
 FAULT_REQUIRED_STATE = "required_state"
 FAULT_OBSERVATION_TIMEOUT = "observation_timeout"
 FAULT_CONTROLLER_VALIDATION = "controller_validation"
+FAULT_CONTROLLER = "controller"
 FAULT_CONTROLLER_PREPARE = "controller_prepare"
 FAULT_CONTROLLER_PREFLIGHT = "controller_preflight"
 FAULT_CONTROLLER_STOP = "controller_stop"
 FAULT_PARTIAL_DISPATCH = "partial_dispatch"
 FAULT_MANAGED_CONTROL = "managed_control"
 FAULT_RESET = "reset"
+FAULT_SERVICE = "service_call"
 FAULT_EXECUTOR = "ros_executor"
 FAULT_RUNTIME = "runtime"
 
@@ -53,6 +59,10 @@ _KIND_BY_EXCEPTION: tuple[tuple[type[BaseException], str], ...] = (
     (ManagedControlFaultedError, FAULT_MANAGED_CONTROL),
     (ResetTimeoutError, FAULT_RESET),
     (ResetError, FAULT_RESET),
+    (ServiceTimeoutError, FAULT_SERVICE),
+    (ServiceCallError, FAULT_SERVICE),
+    (ControllerError, FAULT_CONTROLLER),
+    (ManagedControlError, FAULT_MANAGED_CONTROL),
     (RosExecutorFailureError, FAULT_EXECUTOR),
 )
 

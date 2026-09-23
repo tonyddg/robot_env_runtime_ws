@@ -599,6 +599,31 @@ reset: [body_manual_reset, arm_home]     # 按列表顺序执行
 * 需要每步更细的控制（自定义 step 参数、条件、日志）时，仍然推荐在插件里显式写
   `SequentialResetStrategy`。
 
+### 让 managed controller 自动重新武装（`auto_reset`）
+
+`RobotEnv.reset()` 的第一步 stop barrier 会停掉所有 controller：managed 控制节点会进入
+STOPPED，必须有人把它叫回 READY。两种做法：
+
+1. **显式**（默认）：在 `profile.reset` 里包含它的 reset service（可以是列表，见上一节）；
+2. **自动**：给协议打开 `auto_reset`，runtime 会在 reset 阶段调用控制器自己的 reset
+   service 并等待 READY + 新 epoch：
+
+```python
+ManagedControlProtocol(
+    status_source="arm_control",
+    reset_service="arm_interpolate_control/reset",
+    auto_reset=True,        # ← 打开后不需要再在 profile.reset 里为它注册 reset
+    stop_timeout=2.0,
+    reset_timeout=5.0,      # 可选；默认与 stop_timeout 相同
+)
+```
+
+* 顺序：显式的 `profile.reset` 策略（比如 body 摆到遥操作姿态）先执行，然后每个 controller
+  的 reset 钩子（含 `auto_reset`）再把控制节点重新武装；需要严格顺序时用显式列表；
+* 既没打开 `auto_reset`、`profile.reset` 也没覆盖它时，reset 结束会立刻报
+  `controller 'arm' is not ready after reset: Control Node state STOPPED does not accept
+  commands; ...`（而不是拖到第一次 step 的 preflight）。
+
 v1 **不实现** `RosActionResetStrategy` / `CallableResetStrategy`（需要时按
 `ResetStrategy` 再写一个实现即可，组合策略可以混用）。
 

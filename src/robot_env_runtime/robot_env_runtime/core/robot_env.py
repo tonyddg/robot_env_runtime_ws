@@ -24,6 +24,7 @@ from robot_env_runtime.core.dispatcher import ActionRouter, Dispatcher, Dispatch
 from robot_env_runtime.core.errors import (
     ActionRoutingError,
     ControllerError,
+    ControllerPreflightError,
     InvalidTransitionError,
     ObservationError,
     RequiredStateMissingError,
@@ -221,6 +222,7 @@ class RobotEnv:
                     ) from exc
             self._wait_for_states()
             self._wait_for_observations()
+            self._check_controllers_ready_after_reset()
         except Exception as exc:
             self._fail(exc)
             raise
@@ -518,6 +520,27 @@ class RobotEnv:
         self._clock.wait_until(
             min(deadline, now + self._settings.observation_poll_period)
         )
+
+    def _check_controllers_ready_after_reset(self) -> None:
+        """
+        Reset 完成后确认每个 controller 都重新就绪.
+
+        reset 的第一步是 stop barrier：它会停掉所有 controller（managed 控制节点进入
+        STOPPED）。如果 profile.reset 没有覆盖某个 managed controller 的 reset service，
+        它会一直停在 STOPPED，直到第一次 step 的 preflight 才报错。这里提前检查并给出
+        可执行的错误信息。
+        """
+        snapshot = self._state_store.capture()
+        for name, controller in self._controllers.items():
+            check = controller.check_reset_ready(snapshot)
+            if check.is_error:
+                raise ControllerPreflightError(
+                    f"controller {name!r} is not ready after reset: {check.message}; "
+                    "managed controllers are stopped by the pre-reset stop barrier and "
+                    "must be re-armed either by a reset service included in profile.reset "
+                    "or by ManagedControlProtocol(auto_reset=True)",
+                    details={"controller": name, "message": check.message},
+                )
 
     # -- 内部：校验与 info -------------------------------------------------
 
