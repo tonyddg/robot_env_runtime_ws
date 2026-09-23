@@ -20,8 +20,8 @@ def main(argv = None):
     )
     policy = TelePolicy(
         [TeleConfig(
-            "bimanual_qpos", None, [True] * 14, [], 0.3
-        )]
+            "tele_bimanual_qpos", None, [True, ] * 14, [], 0.3
+        )],
     )
 
     try:

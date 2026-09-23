@@ -31,18 +31,11 @@ class PolicySync(Policy):
 
     def __init__(self) -> None:
         super().__init__()
-        self.action_cache = None
-
-    def reset(self, obs: dict):
-        self.action_cache = None
 
     @abstractmethod
     def infer_sync(self, obs: dict) -> np.ndarray:
         raise NotImplementedError()
 
     def infer_async(self, obs: dict) -> SyncFuture:
-        self.action_cache = self.infer_sync(obs)
-        return SyncFuture(self.action_cache)
-
-    def infer_done(self) -> bool:
-        return self.action_cache is not None
+        action_cache = self.infer_sync(obs)
+        return SyncFuture(action_cache)

@@ -88,10 +88,10 @@ def registe_tele_arm_obs(
         return TransformObservation(
             tele_arm_qpos_obs_name,
             source = tele_state_name,
-            # 遥操臂手部为 [0, 1] 且 1 为闭合
-            transform = lambda view: 1 - np.array(
+            
+            transform = lambda view: np.array(
                 view.value(tele_state_name), dtype = np.float32
-            )[state_to_qpos_obs] * 2,
+            )[state_to_qpos_obs],
             spec = ObservationSpec(
                 dtype = "float32", shape = (len(state_to_qpos_obs),), semantic = f"tele arm qpos with motor {motor_id_to_idx}"
             ),
@@ -116,9 +116,10 @@ def registe_tele_arm_obs(
             return TransformObservation(
                 tele_hand_openness_obs,
                 source = tele_state_name,
-                transform = lambda view: np.array(
+                # 遥操臂手部为 [0, 1] 且 1 为闭合
+                transform = lambda view: 1 - np.array(
                     view.value(tele_state_name), dtype = np.float32
-                )[idx],
+                )[idx] * 2,
                 spec = ObservationSpec(
                     dtype = "float32", shape = (), semantic = f"tele {side} side openness"
                 ),
