@@ -510,13 +510,14 @@ class ArmControl(Node):
 
 ---
 
-## 12. RosServiceResetStrategy（v1 唯一的 reset 实现）
+## 12. RosServiceResetStrategy（service reset + 可选 adapter + 顺序组合）
 
 ```python
 RosServiceResetStrategy(
     name="home",
-    service="/example/arm/reset",       # std_srvs/Trigger
+    service="/example/arm/reset",       # std_srvs/Trigger（默认）
     clock=ctx.clock,
+    adapter=None,                       # None → TriggerResetAdapter（等价旧行为）
     status_source="arm_control",        # None 表示以 service response 作为完成
     timeout=ctx.settings.reset_timeout,
     require_resetting_state=False,      # True：必须观察到 RESETTING
@@ -528,7 +529,78 @@ RosServiceResetStrategy(
 * 异步语义：`request accepted → RESETTING → ... → READY`，通过 StateSource 等待完成。
 * `RESETTING → FAULTED` 直接抛 `ResetError`；超时抛 `ResetTimeoutError`。
 
-v1 **不实现** `RosActionResetStrategy` / `CallableResetStrategy`。
+### 自定义 reset service（adapter）
+
+不是 Trigger、或者需要"依据当前 state 组织 request"的服务，用一个
+`ResetServiceAdapter` 描述即可（response 保持 `success` / `message` 就沿用默认解释）：
+
+```python
+class HomePoseResetAdapter(ResetServiceAdapter):
+    @property
+    def srv_type(self):
+        return ArmHomeReset                         # 机器人自定义 .srv
+
+    @property
+    def state_inputs(self):
+        return {"arm": StateInput("tianyi_arm_qpos_left", required=True)}
+
+    def build_request(self, states, ctx):
+        request = ArmHomeReset.Request()
+        request.joint_positions = list(states.value("arm"))   # 依据当前 state
+        return request
+
+strategy = RosServiceResetStrategy(
+    name="home", service="/arm/reset", clock=ctx.clock,
+    adapter=HomePoseResetAdapter(), status_source="arm_control",
+)
+```
+
+* adapter 只做纯转换：不创建订阅 / 客户端、不 publish；
+* `state_inputs` 里的来源会被并入 `state_dependencies`，注册 reset 时的
+  `depends_on` 必须覆盖它们（builder 会在装配期校验）；
+* reset 期间读的是 StateSource 的**最新样本**（reset 不在 cycle 内，没有 boundary
+  snapshot），required 状态缺失会转成 `ResetError`。
+
+### 叠加多个 reset（顺序组合）
+
+```python
+robot.reset(
+    "full_home",
+    lambda ctx, states: SequentialResetStrategy(
+        "full_home",
+        steps=[body_reset(ctx), hand_reset(ctx), arm_reset(ctx)],
+        logger=ctx.logger,
+    ),
+    depends_on=("body_manual_reset_state", "inspire_hand_state", "arm_control"),
+)
+```
+
+* 每个 step 都是完整的 `ResetStrategy`，自己负责"发服务 + 等完成"，所以
+  "先 body 复位到 READY，再复位手 / 臂"天然按序成立；
+* 任一 step 失败立即冒泡（fail-fast）→ runtime latch fault + best-effort stop；
+* `state_dependencies` 是各 step 的并集（保序去重），Profile 仍然只写
+  `reset: full_home`（组合发生在插件里，不需要改 Profile / runtime）。
+
+### 用 Profile 直接列多个 reset（配置层糖）
+
+如果组合只是"按顺序跑几个已注册的 reset"，不需要写插件，直接在 Profile 里列出来：
+
+```yaml
+robot: tianyi
+reset: [body_manual_reset, arm_home]     # 按列表顺序执行
+```
+
+* compiler 会把列表归一化成有序 step，`CompiledProfile.reset_steps = ("body_manual_reset",
+  "arm_home")`，组合名是 `body_manual_reset+arm_home`（只用于日志 / `env.description`，
+  插件**不需要**注册这个名字）；
+* RuntimeBuilder 自动把它们组合成 `SequentialResetStrategy`：顺序执行、fail-fast、
+  依赖闭包取并集；
+* 单个元素（`reset: home` 或 `reset: [home]`）与之前完全一致；
+* 需要每步更细的控制（自定义 step 参数、条件、日志）时，仍然推荐在插件里显式写
+  `SequentialResetStrategy`。
+
+v1 **不实现** `RosActionResetStrategy` / `CallableResetStrategy`（需要时按
+`ResetStrategy` 再写一个实现即可，组合策略可以混用）。
 
 ---
 

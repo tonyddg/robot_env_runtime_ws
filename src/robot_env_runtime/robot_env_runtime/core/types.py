@@ -15,9 +15,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from robot_env_runtime.core.clock import Clock
-from robot_env_runtime.core.errors import ConfigError
-from robot_env_runtime.core.snapshot import StateSample
-from robot_env_runtime.core.state_view import StateView
+from robot_env_runtime.core.errors import ConfigError, ServiceCallError
+from robot_env_runtime.core.snapshot import StateSample, StateSnapshot
+from robot_env_runtime.core.state_view import StateInput, StateView
 
 
 class CycleState(Enum):
@@ -201,10 +201,48 @@ class ResetContext:
     state_provider: Callable[[str], StateSample[Any] | None]
     call_trigger: Callable[[str, float], Any]
     timeout: float
+    service_caller: Callable[[str, Any, Any, float], Any] | None = None
 
     def wait(self, seconds: float) -> None:
         """通过 clock 等待 ``seconds`` 秒（测试中即 FakeClock 推进）."""
         self.clock.wait_until(self.clock.now() + seconds)
+
+    def call_service(
+        self,
+        service_name: str,
+        srv_type: Any,
+        request: Any,
+        timeout_sec: float,
+    ) -> Any:
+        """
+        调用任意类型的 ROS service（有界等待由 runtime 提供）.
+
+        ``srv_type`` 是服务类型（``std_srvs/srv/Trigger`` 或机器人自定义 srv），
+        ``request`` 是已经构造好的请求。Trigger 的便捷入口仍是 ``call_trigger``。
+        """
+        if self.service_caller is None:
+            raise ServiceCallError(
+                "generic reset service calls need a service caller; "
+                "RobotEnv provides one when it is configured with a service caller",
+                details={"service": service_name},
+            )
+        return self.service_caller(service_name, srv_type, request, timeout_sec)
+
+    def state_view(self, inputs: Mapping[str, StateInput]) -> StateView:
+        """
+        用"最新状态"构造 reset 策略可见的 StateView.
+
+        reset 不在 cycle 内、也没有 boundary snapshot，所以这里读的是 StateSource 的
+        最新样本（构造 request 这类用途足够；cycle 内的新鲜度语义仍由 wait_for_step
+        与 observation 负责）。
+        """
+        captured_at = self.clock.now()
+        samples: dict[str, StateSample[Any]] = {}
+        for state_input in inputs.values():
+            sample = self.state_provider(state_input.source)
+            if sample is not None:
+                samples[state_input.source] = sample
+        return StateView(StateSnapshot(samples=samples, captured_at=captured_at), inputs)
 
 
 class InferenceFuture(Protocol):
@@ -244,6 +282,16 @@ class ExecutorHost(Protocol):
 class ServiceCaller(Protocol):
     """调用 ROS service 的最小协议."""
 
+    def call_service(
+        self,
+        service_name: str,
+        srv_type: Any,
+        request: Any,
+        timeout_sec: float,
+    ) -> Any:
+        """调用任意类型的 ROS service 并返回响应."""
+        ...
+
     def call_trigger(self, service_name: str, timeout_sec: float) -> Any:
-        """调用一个 ``std_srvs/Trigger`` 服务并返回响应."""
+        """调用一个 ``std_srvs/Trigger`` 服务（``call_service`` 的便捷封装）."""
         ...

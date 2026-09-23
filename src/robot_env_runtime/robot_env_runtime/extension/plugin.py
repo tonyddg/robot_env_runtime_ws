@@ -214,9 +214,23 @@ class PluginRegistry:
 
 
 def _as_tuple(values: Iterable[str]) -> tuple[str, ...]:
-    """把可迭代依赖名归一化成 tuple 并去重."""
+    """
+    把依赖名归一化成 tuple（保序去重）.
+
+    显式拒绝 ``str``：``depends_on=(name)`` 会退化成字符串并在这里被逐字符拆开，
+    是很难排查的坑，所以直接给出明确报错。
+    """
+    if isinstance(values, str):
+        raise ConfigError(
+            f"depends_on must be an iterable of state names, got the string {values!r}; "
+            f"did you mean ({values!r},)?"
+        )
     result: list[str] = []
     for value in values:
+        if not isinstance(value, str) or not value:
+            raise ConfigError(
+                f"depends_on entries must be non-empty state names, got {value!r}"
+            )
         if value not in result:
             result.append(value)
     return tuple(result)

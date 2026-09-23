@@ -417,6 +417,7 @@ class RobotEnv:
             state_provider=self._state_store.latest,
             call_trigger=self._call_trigger,
             timeout=self._settings.reset_timeout,
+            service_caller=self._call_service,
         )
 
     def _call_trigger(self, service_name: str, timeout_sec: float) -> Any:
@@ -427,6 +428,27 @@ class RobotEnv:
             )
         timeout = min(float(timeout_sec), self._settings.service_timeout)
         return self._service_caller.call_trigger(service_name, timeout)
+
+    def _call_service(
+        self,
+        service_name: str,
+        srv_type: Any,
+        request: Any,
+        timeout_sec: float,
+    ) -> Any:
+        """调用任意类型的 ROS service（超时取 service_timeout 与传入值的最小者）."""
+        if self._service_caller is None:
+            raise RobotRuntimeError(
+                "no service caller configured; cannot call ROS services"
+            )
+        call_service = getattr(self._service_caller, "call_service", None)
+        if call_service is None:
+            raise RobotRuntimeError(
+                f"configured service caller {type(self._service_caller).__name__!r} "
+                "does not support custom service types (only Trigger)"
+            )
+        timeout = min(float(timeout_sec), self._settings.service_timeout)
+        return call_service(service_name, srv_type, request, timeout)
 
     def _wait_for_states(self) -> None:
         """等待全部 StateSource 收到至少一条样本."""

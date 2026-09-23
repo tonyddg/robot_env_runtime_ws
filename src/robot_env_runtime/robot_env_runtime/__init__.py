@@ -78,7 +78,7 @@ from robot_env_runtime.extension.observation import (
     TransformObservation,
 )
 from robot_env_runtime.extension.plugin import PluginRegistry, RobotPlugin
-from robot_env_runtime.extension.reset import ResetStrategy
+from robot_env_runtime.extension.reset import ResetStrategy, SequentialResetStrategy
 from robot_env_runtime.extension.ros2 import (
     ACCEPTING_STATES,
     AsyncRosTopicStateSource,
@@ -94,6 +94,8 @@ from robot_env_runtime.extension.ros2 import (
     RosServiceResetStrategy,
     RosStateAdapter,
     RosTopicStateSource,
+    ResetServiceAdapter,
+    TriggerResetAdapter,
     stamp_to_seconds,
 )
 from robot_env_runtime.extension.specs import (
@@ -106,7 +108,7 @@ from robot_env_runtime.extension.state import StateSource
 from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.ros2.executor import RosExecutorHost
 from robot_env_runtime.ros2.qos import make_qos
-from robot_env_runtime.ros2.services import RosTriggerCaller
+from robot_env_runtime.ros2.services import RosServiceCaller, RosTriggerCaller
 
 __version__ = "0.1.0"
 
@@ -163,6 +165,8 @@ __all__ = [
     "ResetDefinition",
     "ResetError",
     "ResetStrategy",
+    "ResetServiceAdapter",
+    "SequentialResetStrategy",
     "ResetTimeoutError",
     "RobotPlugin",
     "RobotRuntimeError",
@@ -175,6 +179,8 @@ __all__ = [
     "RosStateAdapter",
     "RosTopicStateSource",
     "RosTriggerCaller",
+    "RosServiceCaller",
+    "TriggerResetAdapter",
     "RouteConfig",
     "RuntimeBuilder",
     "RuntimeClosedError",

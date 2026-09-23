@@ -60,7 +60,9 @@ class Profile(BaseModel):
     robot: str
     observations: list[str]
     actions: dict[str, RouteConfig]
-    reset: str | None = None
+    # 单个 reset 名，或"按序执行多个 reset"的列表（列表是 Profile 级糖：
+    # runtime/compiler 会把它组合成一个顺序 reset 策略）。
+    reset: str | list[str] | None = None
     runtime: RuntimeSettingsModel
 
     model_config = ConfigDict(extra="forbid")

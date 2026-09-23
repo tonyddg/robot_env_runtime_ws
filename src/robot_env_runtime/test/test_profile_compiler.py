@@ -108,6 +108,10 @@ def _plugin(*, built: list[str] | None = None) -> RobotPlugin:
         record.append("reset:home")
         return _FakeReset("home", dependencies=("arm",))
 
+    def reset_two_factory(ctx, states):
+        record.append("reset:home2")
+        return _FakeReset("home2", dependencies=("camera",))
+
     robot.state("arm", arm_state_factory)
     robot.state("camera", camera_state_factory)
     robot.state("unused", unused_state_factory)
@@ -116,6 +120,7 @@ def _plugin(*, built: list[str] | None = None) -> RobotPlugin:
     robot.observation("arm_qpos", arm_qpos_factory, depends_on=("arm",))
     robot.observation("front_rgb", front_rgb_factory, depends_on=("camera",))
     robot.reset("home", reset_factory, depends_on=("arm",))
+    robot.reset("home2", reset_two_factory, depends_on=("camera",))
     return robot
 
 
@@ -151,6 +156,56 @@ def test_builder_instantiates_only_closure_components() -> None:
     assert "state:unused" not in built
     assert set(compiled.states) == {"arm"}
     env.close()
+
+
+def test_single_reset_keeps_its_name() -> None:
+    """单个 reset（字符串）行为与之前一致：reset_steps 只有一个元素."""
+    compiled = _compiler(_plugin()).compile(_profile())
+    assert compiled.reset == "home"
+    assert compiled.reset_steps == ("home",)
+
+
+def test_profile_reset_list_compiles_into_a_sequence() -> None:
+    """Profile 里写 reset 列表：生成组合名 + 按序 step + 依赖并集进入闭包."""
+    compiled = _compiler(_plugin()).compile(_profile(reset=["home", "home2"]))
+    assert compiled.reset == "home+home2"
+    assert compiled.reset_steps == ("home", "home2")
+    assert set(compiled.states) == {"arm", "camera"}
+    assert compiled.describe()["reset_steps"] == ["home", "home2"]
+
+
+@pytest.mark.parametrize(
+    "reset, message",
+    [
+        (["home", "missing_reset"], "unknown reset"),
+        (["home", "home"], "duplicate reset"),
+        ([], "non-empty list"),
+        ([""], "must be reset names"),
+    ],
+)
+def test_profile_reset_list_validation(reset, message) -> None:
+    """Reset 列表的非法配置在编译期报错."""
+    with pytest.raises(ConfigError) as excinfo:
+        _compiler(_plugin()).compile(_profile(reset=reset))
+    assert message in str(excinfo.value)
+
+
+def test_builder_runs_profile_reset_list_in_order() -> None:
+    """Profile reset 列表 → RuntimeBuilder 组合成顺序策略，按列表顺序执行."""
+    built: list[str] = []
+    plugin = _plugin(built=built)
+    compiled = _compiler(plugin).compile(_profile(reset=["home", "home2"]))
+    env = RuntimeBuilder(clock=FakeClock(), executor=FakeExecutorHost()).build(compiled, plugin)
+    try:
+        env.reset()
+        assert [entry for entry in built if entry.startswith("reset:")] == [
+            "reset:home",
+            "reset:home2",
+        ]
+        assert "reset=home+home2" in env.description
+        assert env.ok() is True
+    finally:
+        env.close()
 
 
 def test_observations_and_routes_extend_the_closure() -> None:

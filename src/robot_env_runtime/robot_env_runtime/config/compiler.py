@@ -13,7 +13,7 @@ ProfileCompiler：校验 Profile + RobotPlugin，并计算依赖闭包.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -36,6 +36,7 @@ class CompiledProfile:
     reset: str | None
     routes: tuple[ActionRoute, ...]
     settings: RuntimeSettings
+    reset_steps: tuple[str, ...] = ()
 
     def describe(self) -> dict[str, object]:
         """返回依赖闭包摘要（供日志 / 测试断言使用）."""
@@ -45,6 +46,7 @@ class CompiledProfile:
             "controllers": list(self.controllers),
             "states": list(self.states),
             "reset": self.reset,
+            "reset_steps": list(self.reset_steps),
             "routes": [route.name for route in self.routes],
         }
 
@@ -61,17 +63,18 @@ class ProfileCompiler:
         plugin = self._registry.get(profile.robot)
         observations = self._compile_observations(plugin, profile)
         routes = self._compile_routes(plugin, profile.actions)
-        reset = self._compile_reset(plugin, profile.reset)
-        states = self._compile_states(plugin, observations, routes, reset)
+        reset_steps = self._compile_reset(plugin, profile.reset)
+        states = self._compile_states(plugin, observations, routes, reset_steps)
         return CompiledProfile(
             robot=plugin.name,
             profile=profile,
             observations=observations,
             controllers=tuple(route.controller for route in routes),
             states=states,
-            reset=reset,
+            reset=_composite_reset_name(reset_steps),
             routes=routes,
             settings=profile.runtime.to_core(),
+            reset_steps=reset_steps,
         )
 
     # -- observation -------------------------------------------------------
@@ -151,16 +154,40 @@ class ProfileCompiler:
     # -- reset -------------------------------------------------------------
 
     @staticmethod
-    def _compile_reset(plugin: RobotPlugin, reset: str | None) -> str | None:
-        """校验 reset 选择."""
+    def _compile_reset(
+        plugin: RobotPlugin,
+        reset: str | list[str] | None,
+    ) -> tuple[str, ...]:
+        """
+        校验 reset 选择并归一化成有序的 step 列表.
+
+        - ``str``：单个 reset；
+        - ``list[str]``：按序执行的多个 reset（Profile 级糖，RuntimeBuilder 会把它们
+          组合成一个顺序 reset 策略）；
+        - ``None``：不做 reset。
+        """
         if reset is None:
-            return None
-        if reset not in plugin.resets:
+            return ()
+        names = [reset] if isinstance(reset, str) else list(reset)
+        if not names:
             raise ConfigError(
-                f"unknown reset {reset!r}; plugin {plugin.name!r} has "
-                f"{sorted(plugin.resets)}"
+                "profile.reset must be a reset name or a non-empty list of names"
             )
-        return reset
+        selected: list[str] = []
+        for name in names:
+            if not isinstance(name, str) or not name:
+                raise ConfigError(
+                    f"profile.reset entries must be reset names, got {name!r}"
+                )
+            if name not in plugin.resets:
+                raise ConfigError(
+                    f"unknown reset {name!r}; plugin {plugin.name!r} has "
+                    f"{sorted(plugin.resets)}"
+                )
+            if name in selected:
+                raise ConfigError(f"duplicate reset {name!r} in profile.reset")
+            selected.append(name)
+        return tuple(selected)
 
     # -- dependency closure ------------------------------------------------
 
@@ -169,7 +196,7 @@ class ProfileCompiler:
         plugin: RobotPlugin,
         observations: Iterable[str],
         routes: Iterable[ActionRoute],
-        reset: str | None,
+        reset_steps: Sequence[str],
     ) -> tuple[str, ...]:
         """计算 state 依赖闭包（拓扑序，依赖在前）."""
         ordered: list[str] = []
@@ -208,10 +235,24 @@ class ProfileCompiler:
             definition = plugin.controllers[route.controller]
             for dependency in definition.state_dependencies:
                 visit(dependency, f"controller {route.controller!r}")
-        if reset is not None:
-            for dependency in plugin.resets[reset].state_dependencies:
-                visit(dependency, f"reset {reset!r}")
+        for reset_name in reset_steps:
+            for dependency in plugin.resets[reset_name].state_dependencies:
+                visit(dependency, f"reset {reset_name!r}")
         return tuple(ordered)
+
+
+def _composite_reset_name(steps: tuple[str, ...]) -> str | None:
+    """
+    组合 reset 的名字.
+
+    单个 reset 用原名；多个 reset 生成 ``"a+b"`` 形式的组合名（仅用于日志 / 描述，
+    不要求插件注册同名 reset）。
+    """
+    if not steps:
+        return None
+    if len(steps) == 1:
+        return steps[0]
+    return "+".join(steps)
 
 
 def _expand_scale(name: str, scale: float | list[float], size: int) -> tuple[float, ...]:

@@ -14,6 +14,7 @@ from robot_env_runtime.core.observations import ObservationManager
 from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.core.state_store import StateStore
 from robot_env_runtime.extension.plugin import PluginRegistry, RobotPlugin
+from robot_env_runtime.extension.reset import SequentialResetStrategy
 from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.ros2.executor import RosExecutorHost
 from robot_env_runtime.ros2.services import RosTriggerCaller
@@ -180,16 +181,62 @@ class RuntimeBuilder:
         logger: Any,
         sources: Mapping[str, Any],
     ) -> Any:
-        """实例化 reset 策略（未选择时为 None）."""
-        if compiled.reset is None:
+        """
+        实例化 reset 策略（未选择时为 None）.
+
+        Profile 里写单个 reset 名时行为与之前完全一致；写成列表时按顺序组合成一个
+        :class:`SequentialResetStrategy`（Profile 级糖，插件不需要注册组合名）。
+        """
+        steps = compiled.reset_steps
+        if not steps:
             return None
-        definition = plugin.resets[compiled.reset]
-        context = self._context(compiled.reset, node, clock, logger, compiled)
-        strategy = definition.factory(context, sources)
-        if strategy is None or getattr(strategy, "name", None) != compiled.reset:
+        strategies = [
+            self._build_single_reset(compiled, plugin, name, node, clock, logger, sources)
+            for name in steps
+        ]
+        if len(strategies) == 1:
+            return strategies[0]
+        declared: set[str] = set()
+        actual: set[str] = set()
+        for name, strategy in zip(steps, strategies):
+            declared.update(plugin.resets[name].state_dependencies)
+            actual.update(strategy.state_dependencies)
+        if declared != actual:
             raise ConfigError(
-                f"reset factory for {compiled.reset!r} returned "
+                f"reset sequence {compiled.reset!r} state dependencies mismatch: plugin "
+                f"declared {sorted(declared)} but strategies require {sorted(actual)}"
+            )
+        return SequentialResetStrategy(
+            compiled.reset or "+".join(steps),
+            strategies,
+            logger=logger,
+        )
+
+    def _build_single_reset(
+        self,
+        compiled: CompiledProfile,
+        plugin: RobotPlugin,
+        name: str,
+        node: Any,
+        clock: Clock,
+        logger: Any,
+        sources: Mapping[str, Any],
+    ) -> Any:
+        """实例化单个 reset 策略，并校验名字与状态依赖声明."""
+        definition = plugin.resets[name]
+        context = self._context(name, node, clock, logger, compiled)
+        strategy = definition.factory(context, sources)
+        if strategy is None or getattr(strategy, "name", None) != name:
+            raise ConfigError(
+                f"reset factory for {name!r} returned "
                 f"{None if strategy is None else getattr(strategy, 'name', '?')!r}"
+            )
+        declared = set(definition.state_dependencies)
+        actual = set(strategy.state_dependencies)
+        if declared != actual:
+            raise ConfigError(
+                f"reset {name!r} state dependencies mismatch: plugin declared "
+                f"{sorted(declared)} but strategy requires {sorted(actual)}"
             )
         return strategy
 

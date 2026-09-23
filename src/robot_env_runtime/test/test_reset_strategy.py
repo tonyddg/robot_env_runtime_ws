@@ -27,6 +27,7 @@ def _context(
         ),
         call_trigger=(caller or FakeServiceCaller()).call_trigger,
         timeout=timeout,
+        service_caller=(caller or FakeServiceCaller()).call_service,
     )
 
 
