@@ -396,7 +396,12 @@ class ArmInterpolateControl(Node):
         self.destroy_timer(self._arm_cmd_interpolate)
 
         self._arm_cur_cmd = None
-        self._pub_motor_stop()
+        try:
+            self._pub_motor_stop()
+        except Exception as exc:
+            # Ctrl-C / 进程关闭时 rclpy context 可能已经失效，此时无法再 publish；
+            # 只告警，避免关闭路径抛异常让节点以非 0 退出。
+            self.get_logger().warn(f"发布停止指令失败（关闭阶段）: {exc}")
 
         self.destroy_publisher(self._motor_cmd_pub)
         self.destroy_publisher(self._motor_stop_pub)

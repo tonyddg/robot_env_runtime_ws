@@ -17,7 +17,7 @@ Policy 侧契约（runtime 不拥有 policy、不做 inference、不消费 actio
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from robot_env_runtime.core.clock import Clock, MonotonicClock
 from robot_env_runtime.core.dispatcher import ActionRouter, Dispatcher, DispatchResult
@@ -206,6 +206,7 @@ class RobotEnv:
             self._log_info("reset: pre-reset stop barrier")
             self._best_effort_stop()
             if self._reset_strategy is not None:
+                self._wait_for_reset_states()
                 self._log_info(f"reset: running strategy {self._reset_strategy.name!r}")
                 self._reset_strategy.run(self._make_reset_context())
             for name, controller in self._controllers.items():
@@ -450,9 +451,36 @@ class RobotEnv:
         timeout = min(float(timeout_sec), self._settings.service_timeout)
         return call_service(service_name, srv_type, request, timeout)
 
-    def _wait_for_states(self) -> None:
-        """等待全部 StateSource 收到至少一条样本."""
-        names = self._state_store.names
+    def _wait_for_reset_states(self) -> None:
+        """
+        等待 reset 策略声明的状态就绪（在运行 reset 策略之前）.
+
+        ResetStrategy 在 cycle 之外读 StateSource（例如用当前关节状态构造 service
+        request），所以必须先等它声明的 ``state_dependencies``：否则冷启动或话题刚起来
+        时会直接拿到 ``required state ... is missing``，表现为"reset 一启动就 fault"。
+        只等待该策略声明的状态，不会因为无关的 source（比如还没起来的相机）而卡住。
+        """
+        if self._reset_strategy is None:
+            return
+        names = tuple(self._reset_strategy.state_dependencies)
+        if not names:
+            return
+        self._log_info(f"reset: waiting for strategy states {list(names)}")
+        self._wait_for_states(names)
+
+    def _wait_for_states(self, names: Sequence[str] | None = None) -> None:
+        """等待全部（或指定）StateSource 收到至少一条样本."""
+        if names is None:
+            names = self._state_store.names
+        else:
+            names = tuple(names)
+            unknown = [name for name in names if name not in self._state_store.names]
+            if unknown:
+                raise RequiredStateMissingError(
+                    f"state {unknown} is not part of this runtime's dependency closure; "
+                    "declare it in the plugin's depends_on",
+                    details={"unknown": unknown},
+                )
         deadline = self._clock.now() + self._settings.state_ready_timeout
         while True:
             missing = self._state_store.missing(names)
