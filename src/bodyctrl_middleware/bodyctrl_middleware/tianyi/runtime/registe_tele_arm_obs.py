@@ -2,8 +2,8 @@ from typing import Any, Literal, Mapping, Optional, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-# 遥操臂状态
-from std_msgs.msg import Float64MultiArray
+# 遥操臂状态（遥控设备发布的是 std_msgs/Float32MultiArray）
+from std_msgs.msg import Float32MultiArray
 
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter, stamp_to_seconds
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
@@ -22,13 +22,13 @@ class TeleArmStateAdapter(RosStateAdapter):
     ):
         pass
 
-    def decode(self, msg: Float64MultiArray) -> NDArray[np.floating]:
+    def decode(self, msg: Float32MultiArray) -> NDArray[np.floating]:
         """简单解码遥操臂原始输出"""
         if len(msg.data) != TELE_RESULT_LENGTH:
             raise ValueError(f"遥操臂输出数据长度 {len(msg.data)} 与期望 {TELE_RESULT_LENGTH} 不符")
         return np.array(msg.data, dtype = np.float64)
     
-    def source_stamp(self, msg: Float64MultiArray) -> float | None:
+    def source_stamp(self, msg: Float32MultiArray) -> float | None:
         return None
 
 def registe_tele_arm_obs(
@@ -63,7 +63,7 @@ def registe_tele_arm_obs(
                 node = ctx.node,
                 clock = ctx.clock,
                 topic = tele_arm_state_topic,
-                msg_type = Float64MultiArray,
+                msg_type = Float32MultiArray,
                 adapter = TeleArmStateAdapter(),
                 logger = ctx.logger,
             )

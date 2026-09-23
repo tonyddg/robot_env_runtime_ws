@@ -110,7 +110,7 @@ DEFAULT_HAND_CLOSED_POSE: tuple[float, ...] = (0.300, 0.300, 0.300, 0.300, 0.800
 DEFAULT_HAND_OPEN_POSE: tuple[float, ...] = (0.900, 0.900, 0.900, 0.900, 0.900, 0.500)
 
 # 遥操臂状态话题
-TELE_ARM_STATE_TOPIC = "tele/raw_state"
+TELE_ARM_STATE_TOPIC = "/tele/raw_status"
 # 遥操臂结果长度
 TELE_RESULT_LENGTH = 16
 # 遥操臂结果中与手部开合对应的索引
