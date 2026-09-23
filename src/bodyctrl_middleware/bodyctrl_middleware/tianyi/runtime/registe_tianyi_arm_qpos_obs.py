@@ -4,7 +4,7 @@ from numpy.typing import NDArray
 
 # 天轶手臂状态
 from bodyctrl_msgs.msg import MotorStatusMsg, MotorStatus
-from bodyctrl_middleware.tianyi.constants import GROUP_DEFS, LEFT_ARM_MOTOR_IDS, JOINT_GROUPS
+from bodyctrl_middleware.tianyi.constants import GROUP_DEFS, LEFT_ARM_MOTOR_IDS, RIGHT_ARM_MOTOR_IDS, JOINT_GROUPS
 
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter, stamp_to_seconds
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
@@ -12,7 +12,7 @@ from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
 
-class TianyiJointQposAdapter(RosStateAdapter):
+class TianyiArmQposAdapter(RosStateAdapter):
     """``/arm/status`` → 天轶机器人关节位置数组."""
     def __init__(
         self,
@@ -59,27 +59,26 @@ class TianyiJointQposAdapter(RosStateAdapter):
 TIANYI_ARM_STATE_TOPIC = GROUP_DEFS["arm"].status_topic
 TIANYI_ARM_QPOS_PREFIX = "tianyi_arm_qpos_"
 
-def registe_tianyi_arm_qpos(
+def registe_tianyi_arm_qpos_obs(
     robot_plugin: RobotPlugin,
 
-    name_suffix: str = "left",
-    motor_id_to_idx: tuple[int, ...] = LEFT_ARM_MOTOR_IDS,
-    warn_after: float = 0.2
+    motor_id_to_idx: tuple[int, ...] = LEFT_ARM_MOTOR_IDS + RIGHT_ARM_MOTOR_IDS,
+
+    tianyi_arm_qpos_state_name: str = "tianyi_arm_qpos_bimanual_state",
+    tianyi_arm_qpos_obs_name: str = "tianyi_arm_qpos_bimanual_obs",
+    warn_after: float = 0.2,
 ):
     '''
     注册天轶机器人手臂关节状态
 
     注册后的状态与观测名为 tianyi_arm_qpos_<suffix>
     '''
-
-    tianyi_arm_qpos_state = TIANYI_ARM_QPOS_PREFIX + name_suffix
-    tianyi_arm_qpos_obs = TIANYI_ARM_QPOS_PREFIX + name_suffix
-    adapter = TianyiJointQposAdapter(motor_id_to_idx = motor_id_to_idx)
+    adapter = TianyiArmQposAdapter(motor_id_to_idx = motor_id_to_idx)
 
     def tianyi_arm_qpos_state_factory(ctx: ComponentContext) -> RosTopicStateSource:
         """订阅手臂关节状态."""
         return RosTopicStateSource(
-            tianyi_arm_qpos_state,
+            tianyi_arm_qpos_state_name,
             node = ctx.node,
             clock = ctx.clock,
             topic = TIANYI_ARM_STATE_TOPIC,
@@ -91,27 +90,24 @@ def registe_tianyi_arm_qpos(
     def tianyi_arm_qpos_obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
         """手臂关节位置观测（float32）."""
         return TransformObservation(
-            tianyi_arm_qpos_obs,
-            source = tianyi_arm_qpos_state,
+            tianyi_arm_qpos_obs_name,
+            source = tianyi_arm_qpos_state_name,
             transform = lambda view: np.array(
-                view.value(tianyi_arm_qpos_state), dtype = np.float32
+                view.value(tianyi_arm_qpos_state_name), dtype = np.float32
             ),
             spec = ObservationSpec(
-                dtype = "float32", shape = (adapter.num_motors,), semantic = "inspire hand openness"
+                dtype = "float32", shape = (adapter.num_motors,), semantic = f"arm qpos with motor {motor_id_to_idx}"
             ),
             warn_after = warn_after,
         )
 
     robot_plugin.state(
-        tianyi_arm_qpos_state,
+        tianyi_arm_qpos_state_name,
         tianyi_arm_qpos_state_factory
     )
     robot_plugin.observation(
-        tianyi_arm_qpos_obs,
+        tianyi_arm_qpos_obs_name,
         tianyi_arm_qpos_obs_factory,
-        depends_on = (tianyi_arm_qpos_state, )
+        depends_on = (tianyi_arm_qpos_state_name, )
     )
-    return robot_plugin, dict(
-        state = tianyi_arm_qpos_state, 
-        obs = tianyi_arm_qpos_obs
-    )
+    return robot_plugin

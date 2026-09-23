@@ -1,0 +1,4 @@
+SetMotorResetTarget[] cmds
+---
+bool success
+string message

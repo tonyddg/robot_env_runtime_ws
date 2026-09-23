@@ -1,4 +1,4 @@
-from typing import Any, Literal, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional, Union
 import numpy as np
 from numpy.typing import NDArray
 
@@ -32,7 +32,7 @@ class TianyiArmInterpolateAdapterConfig:
     state_motor_list: list[int] = field(default_factory = lambda:[11, 12, 13, 14, 15, 16, 17])
 
     # 最大允许动作幅度
-    max_action_dis: np.ndarray = field(default_factory = lambda:np.array([0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]))
+    max_action_dis: Union[np.ndarray, float] = 0.3
     # 相对动作的起点为上一动作结束的期望的位置还是当前位置
     rel_qpos_source: Literal["expect", "current"] = "expect"
 
@@ -61,8 +61,9 @@ class TianyiArmInterpolateControlDeltaControllerAdapter(RosControllerAdapter):
             raise ValueError("给定的 node_motor_list 存在重复 id")
         if len(config.state_motor_list) != len(set(config.state_motor_list)):
             raise ValueError("给定的 state_motor_list 存在重复 id")
-        if config.max_action_dis.size != len(config.cmd_motor_list):
-            raise ValueError("给定的 max_action_dis 与 node_motor_list 长度不一致")
+        if isinstance(config.max_action_dis, np.ndarray): 
+            if config.max_action_dis.size != len(config.cmd_motor_list):
+                raise ValueError("给定的 max_action_dis 与 node_motor_list 长度不一致")
 
         if config.cmd_motor_list == config.state_motor_list:
             self.state_to_cmd = None
@@ -203,12 +204,14 @@ class TianyiArmInterpolateControlDeltaControllerAdapter(RosControllerAdapter):
 
 def registe_tianyi_arm_interpolate_control(
     robot_plugin: RobotPlugin,
+    config: Optional[TianyiArmInterpolateAdapterConfig] = None,
+
     controller_name: str = "arm",
+    # 关节状态 state source
+    tianyi_arm_qpos_state_name: str = "tianyi_arm_qpos_left",
     # 注意与 arm_interpolate_control 节点参数保持一致
     arm_interpolate_control_root_name: str = "arm_interpolate_control",
-    # 关节状态 state source
-    tianyi_arm_qpos_state: str = "tianyi_arm_qpos_left",
-    config: Optional[TianyiArmInterpolateAdapterConfig] = None
+    arm_interpolate_control_state_name: str = "arm_interpolate_control_state"
 ):
     if config is None:
         config = TianyiArmInterpolateAdapterConfig()
@@ -218,7 +221,7 @@ def registe_tianyi_arm_interpolate_control(
     stop_service_name = arm_interpolate_control_root_name + "/stop"
     reset_service_name = arm_interpolate_control_root_name + "/reset"
 
-    state_name = arm_interpolate_control_root_name + "_state"
+    state_name = arm_interpolate_control_state_name
 
     def state_factory(ctx: ComponentContext) -> RosTopicStateSource:
         """订阅 ControlStatus（managed 控制协议的 authority）."""
@@ -253,7 +256,7 @@ def registe_tianyi_arm_interpolate_control(
             topic = command_topic_name,
             msg_type = CmdSetMotorInterpolate,
             adapter = TianyiArmInterpolateControlDeltaControllerAdapter(
-                tianyi_arm_qpos_state = tianyi_arm_qpos_state,
+                tianyi_arm_qpos_state = tianyi_arm_qpos_state_name,
                 config = config,
             ),
             protocol = protocol,
@@ -270,9 +273,6 @@ def registe_tianyi_arm_interpolate_control(
         controller_factory,
         input_dim = len(config.cmd_motor_list),
         # 包含外部 state 与 control state
-        depends_on = (tianyi_arm_qpos_state, state_name)
+        depends_on = (tianyi_arm_qpos_state_name, state_name)
     )
-    return robot_plugin, dict(
-        state = state_name,
-        controller = controller_name
-    )
+    return robot_plugin

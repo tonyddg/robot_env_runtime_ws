@@ -1,5 +1,5 @@
 import time
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal, Optional, Sequence
 
 import numpy as np
 
@@ -14,6 +14,9 @@ from bodyctrl_msgs.msg import (
     MotorStatusMsg, MotorStatus,
 )
 from std_srvs.srv import Trigger
+from bodyctrl_middleware_interface.srv import BodyManualReset
+from bodyctrl_middleware_interface.msg import SetMotorResetTarget
+
 from bodyctrl_middleware.tianyi.constants import (
     JOINT_GROUPS, SDK_LIMITS, GROUP_DEFS,
 )
@@ -206,7 +209,7 @@ class PartStateMonitor:
 
 from dataclasses import dataclass
 
-class BodyManualReset(Node):
+class BodyManualResetNode(Node):
 
     class Config(BaseModel):
 
@@ -240,7 +243,7 @@ class BodyManualReset(Node):
         ###
         
         self.node_params = RosParamBridge(
-            self, BodyManualReset.Config,
+            self, BodyManualResetNode.Config,
             namespace = "node_config",
         )
         self.node_config = self.node_params.bind()
@@ -266,7 +269,7 @@ class BodyManualReset(Node):
         # 状态读取与发布
         self._group = {
             group_name : 
-                BodyManualReset.GroupInfo(
+                BodyManualResetNode.GroupInfo(
                     monitor = PartStateMonitor(
                         self, body_config.get_target(group_name).motor_name_list, group_name, 
                         self.node_config.state_delay_tol, self.on_fail
@@ -283,7 +286,7 @@ class BodyManualReset(Node):
             Trigger, self.stop_service_name, self._on_stop
         )
         self._reset_service = self.create_service(
-            Trigger, self.reset_service_name, self._on_reset
+            BodyManualReset, self.reset_service_name, self._on_reset
         )
         self._reset_timer = self.create_timer(
             1 / self.node_config.cmd_pub_rate, self._on_reset_timer
@@ -356,6 +359,30 @@ class BodyManualReset(Node):
         for group_name in self._enable_group:
             self.update_target(group_name, body_config.get_target(group_name))
 
+    def update_target_by_request(self, cmds: Sequence[SetMotorResetTarget]):
+
+        for cmd in cmds:
+            group_name = JOINT_GROUPS[cmd.name]
+            if group_name not in self._enable_group:
+                self.on_fail(f"请求中关节名 {cmd.name} 所属的组没有启用")
+                return
+            group_info = self._group[group_name]
+            if cmd.name not in group_info.target.motor_name_list:
+                self.on_fail(f"请求中关节名 {cmd.name} 没有在节点中启用")
+                return
+            
+            limit = SDK_LIMITS.get(cmd.name, None)
+            if limit is None:
+                self.on_fail(f"请求中关节名 {cmd.name} 没有查询到限位")
+                return
+            if cmd.pos < limit[0] or cmd.pos > limit[1]:
+                self.on_fail(f"请求中关节名 {cmd.name} 的目标 {cmd.pos} 超过限位 {limit}")
+                return
+
+            group_info.target.target_pos_list[
+                group_info.target.motor_name_list.index(cmd.name)
+            ] = float(cmd.pos)
+
     def _is_ready(self):
         # 检查所有关节都能够接收到最新状态
         for group_name in self._enable_group:
@@ -398,9 +425,7 @@ class BodyManualReset(Node):
 
         return response
 
-    def _on_reset(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
-        del request
-
+    def _on_reset(self, request: BodyManualReset.Request, response: BodyManualReset.Response) -> BodyManualReset.Response:
         if self._csm.handle_reset_service(response):
             if self._csm.state != ControlState.INITIALIZING:
                 self._pub_target_stop()
@@ -408,13 +433,18 @@ class BodyManualReset(Node):
             # 节点参数仅在 reset 时更新
             self.node_config = self.node_params.model()
             body_config = self.body_params.model()
+
+            # 先依据节点参数更新目标
             self.update_all_target(body_config)
+            # 再依据服务请求更新目标
+            if len(request.cmds) > 0:
+                self.update_target_by_request(request.cmds) # type: ignore
 
         return response
 
 def main():
     rclpy.init()
-    node = BodyManualReset()
+    node = BodyManualResetNode()
 
     try:
         rclpy.spin(node)

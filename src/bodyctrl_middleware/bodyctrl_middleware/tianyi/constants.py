@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 
@@ -87,7 +88,7 @@ SDK_LIMITS: dict[int, tuple[float, float] | None] = {
     52: (-0.453786, 2.792527),
 }
 
-def get_qpos_bound(motor_name_list: list[int]):
+def get_qpos_bound(motor_name_list: Sequence[int]):
     # 关节判断参数
     arm_lower_bound = []
     arm_upper_bound = []
@@ -107,3 +108,17 @@ HAND_FINGER_NAMES: tuple[str, ...] = ("1", "2", "3", "4", "5", "6")
 # 实测手型（0..1 比例），来源 /ros2_ws/note.md。
 DEFAULT_HAND_CLOSED_POSE: tuple[float, ...] = (0.300, 0.300, 0.300, 0.300, 0.800, 0.100)
 DEFAULT_HAND_OPEN_POSE: tuple[float, ...] = (0.900, 0.900, 0.900, 0.900, 0.900, 0.500)
+
+# 遥操臂状态话题
+TELE_ARM_STATE_TOPIC = "tele/raw_state"
+# 遥操臂结果长度
+TELE_RESULT_LENGTH = 16
+# 遥操臂结果中与手部开合对应的索引
+TELE_GRIPPER_OPENNESS_MAP = {
+    "left": 7, "right": 15
+}
+# 遥操臂结果中对应的关节 ID (已剔除手部开合)
+TELE_RESULT_TO_MOTOR_MAP = {
+    11: 0, 12: 1, 13: 2, 14: 3, 15: 4, 16: 5, 17: 6,
+    21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+}
