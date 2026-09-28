@@ -13,13 +13,34 @@ AsyncRosTopicStateSource：重解码不占用 ROS executor 回调线程.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
 
 
+@dataclass(frozen=True)
+class _PendingMessage:
+    """latest-wins 槽里的一帧（可选携带"到货时刻"，见 ``stamp_at_arrival``）."""
+
+    msg: Any
+    received_at: float | None
+    wall_at_received: float | None
+
+
 class AsyncRosTopicStateSource(RosTopicStateSource):
-    """在后台 worker 线程里执行 ``adapter.decode()`` 的 StateSource."""
+    """
+    在后台 worker 线程里执行 ``adapter.decode()`` 的 StateSource.
+
+    时间戳语义（影响 observation 的 age = 边界时刻 - ``StateSample.stamp()``）：
+
+    - 默认（``stamp_at_arrival=True``）：``received_at`` 是 **ROS 回调收到消息**的时刻，
+      因此 age 包含"帧在槽里排队等 worker"的那段等待；
+    - ``stamp_at_arrival=False``：``received_at`` 退化为 **worker 开始解码**的时刻
+      （age 会少算排队等待，只在明确不想要这段延迟时才用）；
+    - 两种模式下只要 adapter 提供 ``source_stamp``（如 ``header.stamp``），
+      age 就优先按"传感器采集时刻"计算，这是最贴近真实数据年龄的语义。
+    """
 
     def __init__(
         self,
@@ -34,10 +55,17 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         logger: Any = None,
         wall_clock: Any = None,
         inline: bool = False,
+        stamp_at_arrival: bool = True,
         poll_period: float = 0.05,
         join_timeout: float = 1.0,
     ) -> None:
-        """``inline=True`` 时在回调内解码（确定性测试 / 降级模式）."""
+        """
+        配置解码线程与时间戳语义.
+
+        ``inline=True``：在回调内解码（确定性测试 / 降级模式）；
+        ``stamp_at_arrival=True``（默认）：用回调到货时刻作为 ``received_at``；
+        设为 False 则退化为"worker 开始解码"时刻。
+        """
         super().__init__(
             name,
             node=node,
@@ -50,6 +78,7 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
             wall_clock=wall_clock,
         )
         self._inline = bool(inline)
+        self._stamp_at_arrival = bool(stamp_at_arrival)
         self._poll_period = float(poll_period)
         self._join_timeout = float(join_timeout)
         self._slot_lock = threading.Lock()
@@ -62,6 +91,11 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
     def inline(self) -> bool:
         """是否在回调内同步解码."""
         return self._inline
+
+    @property
+    def stamp_at_arrival(self) -> bool:
+        """是否用 ROS 回调到货时刻作为 ``received_at``（默认 True）."""
+        return self._stamp_at_arrival
 
     @property
     def dropped(self) -> int:
@@ -92,18 +126,31 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
     # -- 内部 --------------------------------------------------------------
 
     def _put_latest(self, msg: Any) -> None:
-        """把消息放入单槽；槽内已有未处理旧帧时直接覆盖并计数."""
+        """
+        把消息放入单槽；槽内已有未处理旧帧时直接覆盖并计数.
+
+        默认（``stamp_at_arrival=True``）会同时记下"到货时刻（含同一时刻的 wall
+        时间）"，这样 worker 稍后解码时也能以真实到货时刻计算 age。
+        """
+        if self._stamp_at_arrival:
+            pending = _PendingMessage(
+                msg=msg,
+                received_at=self._clock.now(),
+                wall_at_received=self._wall_clock_now(),
+            )
+        else:
+            pending = _PendingMessage(msg=msg, received_at=None, wall_at_received=None)
         with self._slot_lock:
             if self._slot is not None:
                 self._dropped += 1
-            self._slot = msg
+            self._slot = pending
 
-    def _take_latest(self) -> Any:
+    def _take_latest(self) -> _PendingMessage | None:
         """取走当前最新消息（无则返回 None）."""
         with self._slot_lock:
-            msg = self._slot
+            pending = self._slot
             self._slot = None
-        return msg
+        return pending
 
     def _ensure_worker(self) -> None:
         """启动 worker 线程（已存活则跳过）."""
@@ -121,11 +168,15 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
     def _worker_loop(self) -> None:
         """取最新帧解码；单帧失败只告警."""
         while not self._stop_event.is_set():
-            msg = self._take_latest()
-            if msg is None:
+            pending = self._take_latest()
+            if pending is None:
                 self._stop_event.wait(self._poll_period)
                 continue
-            self._decode_and_store(msg)
+            self._decode_and_store(
+                pending.msg,
+                received_at=pending.received_at,
+                wall_at_received=pending.wall_at_received,
+            )
 
     def _stop_worker(self) -> None:
         """通知 worker 退出并 join（幂等）."""

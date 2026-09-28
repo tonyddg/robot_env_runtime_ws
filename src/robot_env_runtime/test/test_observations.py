@@ -80,6 +80,40 @@ def test_missing_required_source_raises() -> None:
         manager.build(empty)
 
 
+def test_info_reports_data_stamp_and_basis() -> None:
+    """Info 里 obs 的 stamp = 实际使用的数据时间戳，basis 说明用的是哪个基准."""
+    clock = FakeClock(start=2.0)
+    source = FakeStateSource("arm", clock=clock, value=(1.0, 1.0, 1.0))
+    manager = ObservationManager({"arm_qpos": _observation()}, clock, warn_after=0.2)
+
+    snapshot = StateStore({"arm": source}, clock).capture()
+    _, info = manager.build(snapshot)
+    entry = info["arm_qpos"]
+    assert entry["basis"] == "received_at"          # 没有 source_stamp → 退化为 received_at
+    assert entry["stamp"] == pytest.approx(snapshot.captured_at - entry["age"])
+
+    source.push((1.0, 1.0, 1.0), source_stamp=clock.now() - 0.05)
+    snapshot2 = StateStore({"arm": source}, clock).capture()
+    _, info2 = manager.build(snapshot2)
+    entry2 = info2["arm_qpos"]
+    assert entry2["basis"] == "source_stamp"        # 有 source_stamp → 优先按采集时刻
+    assert entry2["age"] == pytest.approx(0.05)
+    assert entry2["stamp"] == pytest.approx(snapshot2.captured_at - entry2["age"])
+
+    optional = TransformObservation(
+        "arm_qpos",
+        source="arm",
+        transform=lambda view: view.value("arm"),
+        spec=ObservationSpec(dtype="float64"),
+        required=False,
+    )
+    _, info3 = ObservationManager({"arm_qpos": optional}, clock).build(
+        StateStore({}, clock).capture()
+    )
+    assert info3["arm_qpos"]["stamp"] is None
+    assert info3["arm_qpos"]["basis"] is None
+
+
 def test_reset_freshness_gate_uses_warn_threshold() -> None:
     """Reset 门限：全部 observation 都 ready 且未超过 warn 阈值."""
     clock = FakeClock(start=5.0)

@@ -592,6 +592,7 @@ class RobotEnv:
                     "received_at": sample.received_at,
                     "ready_at": sample.ready_at,
                     "source_stamp": sample.source_stamp,
+                    "decode_sec": max(0.0, sample.ready_at - sample.received_at),
                 }
         return {
             "cycle": {

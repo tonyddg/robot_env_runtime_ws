@@ -92,6 +92,7 @@ def test_reset_then_full_cycle_updates_state_machine_and_info() -> None:
     assert set(info["controllers"]) == {"validation", "preflight", "commands"}
     assert "arm" in info["controllers"]["commands"]
     assert info["states"]["arm"]["sequence"] == 1
+    assert info["states"]["arm"]["decode_sec"] == pytest.approx(0.0)
     assert len(controller.sent) == 1
     assert controller.sent[0].action.tolist() == pytest.approx(ACTION)
     assert controller.sent[0].cycle_index == 1

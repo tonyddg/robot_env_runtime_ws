@@ -110,9 +110,25 @@ class RosTopicStateSource(StateSource):
 
     # -- 内部 --------------------------------------------------------------
 
-    def _decode_and_store(self, msg: Any) -> bool:
-        """解码 + 更新缓存；解码失败只告警不更新 sequence."""
-        received_at = self._clock.now()
+    def _decode_and_store(
+        self,
+        msg: Any,
+        *,
+        received_at: float | None = None,
+        wall_at_received: float | None = None,
+    ) -> bool:
+        """
+        解码 + 更新缓存；解码失败只告警不更新 sequence.
+
+        ``received_at`` / ``wall_at_received`` 允许调用方提供"消息真正到达的时刻"
+        （异步源在 ROS 回调里记下入队时刻，worker 再传进来）。两者必须来自同一时刻，
+        否则消息自带时间戳换算到单调域时会混入处理耗时。
+        """
+        if received_at is None:
+            received_at = self._clock.now()
+            wall_at_received = self._wall_clock_now()
+        elif wall_at_received is None:
+            wall_at_received = self._wall_clock_now()
         try:
             value = self._adapter.decode(msg)
         except Exception as exc:
@@ -121,7 +137,7 @@ class RosTopicStateSource(StateSource):
             )
             return False
         ready_at = self._clock.now()
-        source_stamp = self._safe_source_stamp(msg, received_at)
+        source_stamp = self._safe_source_stamp(msg, received_at, wall_at_received)
         with self._lock:
             self._sequence += 1
             self._sample = StateSample(
@@ -133,8 +149,26 @@ class RosTopicStateSource(StateSource):
             )
         return True
 
-    def _safe_source_stamp(self, msg: Any, received_at: float) -> float | None:
-        """把消息自带时间戳换算到单调时间域（失败返回 None）."""
+    def _wall_clock_now(self) -> float | None:
+        """读取系统时钟；失败返回 None（此时不做时间戳换算）."""
+        try:
+            return float(self._wall_clock())
+        except Exception:  # pragma: no cover - 时钟异常
+            return None
+
+    def _safe_source_stamp(
+        self,
+        msg: Any,
+        received_at: float,
+        now_wall: float | None,
+    ) -> float | None:
+        """
+        把消息自带时间戳换算到单调时间域（失败返回 None）.
+
+        ``now_wall`` 必须是与 ``received_at`` **同一时刻**采样的系统时间：两者之差
+        就是 wall 与 monotonic 的偏移。若拿"解码之后"的系统时间配"解码之前"的
+        received_at，偏移里会混入解码耗时，导致 source_stamp 偏早、age 偏大。
+        """
         try:
             source_stamp = self._adapter.source_stamp(msg)
         except Exception as exc:  # pragma: no cover - adapter 缺陷
@@ -144,9 +178,7 @@ class RosTopicStateSource(StateSource):
             return None
         if source_stamp is None:
             return None
-        try:
-            now_wall = float(self._wall_clock())
-        except Exception:  # pragma: no cover
+        if now_wall is None:
             return None
         # wall = monotonic + offset → 消息产生时刻的单调时间 = stamp - offset。
         offset = now_wall - received_at

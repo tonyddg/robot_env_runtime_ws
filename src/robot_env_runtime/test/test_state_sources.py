@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import queue
 
 import numpy as np
 import pytest
@@ -256,6 +257,115 @@ def test_stamp_to_seconds_handles_missing_and_zero() -> None:
     assert stamp_to_seconds(None) is None
     assert stamp_to_seconds(_Stamp(0.0)) is None
     assert stamp_to_seconds(_Stamp(1.5)) == pytest.approx(1.5)
+
+
+def test_source_stamp_conversion_ignores_decode_duration() -> None:
+    """source_stamp 换算必须用"同一时刻"的 wall clock：解码耗时不进 age."""
+    wall_base = 1000.0
+    clock = FakeClock(start=0.3)        # 0.3 到货；消息在 0.2 采集（0.1s 传输延迟）
+    node = FakeRosNode()
+
+    class _SlowStampAdapter(RosStateAdapter):
+        def decode(self, msg):
+            clock.advance(0.4)          # 模拟 400ms 重解码
+            return msg.value
+
+        def source_stamp(self, msg):
+            return wall_base + 0.2      # 消息表示"单调时间 0.2 时采集"
+
+    source = RosTopicStateSource(
+        "cam",
+        node=node,
+        clock=clock,
+        topic="/cam",
+        msg_type=_Msg,
+        adapter=_SlowStampAdapter(),
+        logger=node.get_logger(),
+        wall_clock=lambda: wall_base + clock.now(),
+    )
+    source.open()
+    node.deliver("/cam", _Msg(value=1))
+    sample = source.read()
+    assert sample is not None
+    assert sample.received_at == pytest.approx(0.3)
+    assert sample.ready_at == pytest.approx(0.7)
+    # 修复前 offset 里会混入 0.4s 解码耗时 → source_stamp 变成 -0.2、age 偏大 0.4s
+    assert sample.source_stamp == pytest.approx(0.2)
+    assert sample.age(1.1) == pytest.approx(0.9)
+
+
+def test_async_source_stamps_arrival_by_default() -> None:
+    """默认 stamp_at_arrival=True（age 含排队等待），可以显式关掉."""
+    node = FakeRosNode()
+    default_source = AsyncRosTopicStateSource(
+        "cam", node=node, clock=FakeClock(), topic="/cam", msg_type=_Msg,
+        adapter=_FieldAdapter(), logger=node.get_logger(),
+    )
+    assert default_source.stamp_at_arrival is True
+    opt_out_source = AsyncRosTopicStateSource(
+        "cam2", node=node, clock=FakeClock(), topic="/cam", msg_type=_Msg,
+        adapter=_FieldAdapter(), logger=node.get_logger(), stamp_at_arrival=False,
+    )
+    assert opt_out_source.stamp_at_arrival is False
+
+
+@pytest.mark.parametrize("stamp_at_arrival", [False, True])
+def test_async_source_received_at_semantics(stamp_at_arrival: bool) -> None:
+    """异步源：默认 received_at=worker 开始解码；开启 stamp_at_arrival 则为回调到货时刻."""
+    clock = FakeClock(start=0.0)
+    node = FakeRosNode()
+    gates = {1: threading.Event(), 2: threading.Event()}
+    started: queue.Queue = queue.Queue()
+
+    class _GatedAdapter(RosStateAdapter):
+        def decode(self, msg):
+            started.put(msg.value)
+            gates[msg.value].wait(timeout=5.0)
+            return msg.value
+
+        def source_stamp(self, msg):
+            return None
+
+    source = AsyncRosTopicStateSource(
+        "cam",
+        node=node,
+        clock=clock,
+        topic="/cam",
+        msg_type=_Msg,
+        adapter=_GatedAdapter(),
+        logger=node.get_logger(),
+        stamp_at_arrival=stamp_at_arrival,
+        poll_period=0.005,
+    )
+    source.open()
+    callback_a = clock.now()                      # 0.0：第 1 帧到货
+    source.handle_message(_Msg(1))
+    assert started.get(timeout=5.0) == 1          # worker 开始解码第 1 帧（被 gate 挡住）
+    assert callback_a == pytest.approx(0.0)
+
+    clock.advance(0.2)
+    callback_b = clock.now()                      # 0.2：第 2 帧到货（worker 仍忙）
+    source.handle_message(_Msg(2))
+
+    clock.advance(0.3)
+    gates[1].set()                                # 放行第 1 帧 → worker 立刻取走第 2 帧
+    assert started.get(timeout=5.0) == 2
+    pickup_b = clock.now()                        # 0.5：worker 开始解码第 2 帧
+
+    clock.advance(0.1)
+    gates[2].set()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        sample = source.read()
+        if sample is not None and sample.value == 2:
+            break
+        time.sleep(0.005)
+    sample = source.read()
+    assert sample is not None and sample.value == 2
+    assert sample.ready_at == pytest.approx(0.6)
+    expected_received_at = callback_b if stamp_at_arrival else pickup_b
+    assert sample.received_at == pytest.approx(expected_received_at)
+    source.close()
 
 
 def test_logger_warn_throttling_uses_clock() -> None:

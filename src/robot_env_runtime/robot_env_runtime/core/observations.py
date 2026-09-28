@@ -77,6 +77,8 @@ class ObservationManager:
                 info[name] = {
                     "present": False,
                     "age": None,
+                    "stamp": None,
+                    "basis": None,
                     "sequence": None,
                     "warn_after": warn_after,
                     "error_after": error_after,
@@ -106,6 +108,8 @@ class ObservationManager:
             info[name] = {
                 "present": True,
                 "age": age,
+                "stamp": sample.stamp(),
+                "basis": "source_stamp" if sample.source_stamp is not None else "received_at",
                 "sequence": sample.sequence,
                 "warn_after": warn_after,
                 "error_after": error_after,

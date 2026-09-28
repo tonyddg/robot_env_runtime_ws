@@ -119,7 +119,8 @@ StateSnapshot(samples={name: StateSample}, captured_at)                  # froze
 ```
 
 * `source_stamp`：ROS 消息 / 传感器自己的采集时间（换算到单调时间域）。
-* `received_at`：runtime 收到 raw message 的时间。
+* `received_at`：runtime "收到 raw message"的时间。同步源是 ROS 回调时刻；异步源
+  默认是 **ROS 回调到货**时刻（`stamp_at_arrival=False` 时退化为 worker 开始解码）。
 * `ready_at`：decode / 处理完成、可被消费的时间。
 * `sequence`：该 source 内单调递增的版本号。
 
@@ -143,9 +144,258 @@ age 优先使用 `source_stamp`，拿不到时退化为 `received_at`；不会�
 否则 heavy decode 会把旧图像伪装成新数据。正常 `step()` 不会为了等 camera 而阻塞
 控制周期；只有 `reset()` 会阻塞等待 required observation 第一次 ready / fresh。
 
+这条时间线（含 `decode_sec`）会原样出现在 `step()` 返回的 `info` 里：完整字段说明、
+时间戳推导与稳定性约定见 **§5**。
+
 ---
 
-## 5. 安装、构建与运行
+## 5. `step()` 返回的 info 结构
+
+`step(action)` 返回 `(obs, info)`。`info` 是**纯 Python / NumPy 诊断数据**（不含 ROS 消息
+对象），可以直接写日志、塞进 episode 或存 h5；它只描述**本次 step**，不累积历史。
+
+所有时间戳都来自注入的 `Clock`（生产 `MonotonicClock`，单调秒），`source_stamp` 也已换算到
+同一时间域，因此字段之间可以直接相减 / 比较。
+
+### 5.1 顶层结构
+
+```text
+info
+├── cycle          dict                     本次 cycle 的时序与调度状态
+├── states         dict[source,      dict]  boundary snapshot 里每个状态样本的时间线
+├── observations   dict[observation, dict]  每个 observation 的年龄 / 新鲜度 / 静态描述
+├── controllers
+│   ├── validation dict[controller, dict]   上一个 cycle 边界对"上一条已发送命令"的检查
+│   ├── preflight  dict[controller, dict]   本次 dispatch 之前的准入检查
+│   └── commands   dict[controller, dict]   本次真正发送出去的命令
+├── warnings       list[str]                本次 dispatch 的 preflight WARNING 文本
+└── fault          None                     历史字段，恒为 None（见 5.2.8）
+```
+
+一次真实 cycle（managed controller + 一个观测，FakeClock 下的数值）：
+
+```python
+{
+  "cycle": {
+    "index": 1, "control_period": 0.1,
+    "deadline": 0.42,               # 下一个 cycle 边界（= snapshot_captured_at + period）
+    "lateness": -0.10,              # 现在 - deadline（step 之后采样，通常是负值）
+    "snapshot_captured_at": 0.32,   # 本次 cycle 的 boundary snapshot 时刻
+    "cycle_state": "WAIT_REQUIRED",
+  },
+  "states": {
+    "arm":         {"age": 0.030, "sequence": 13, "received_at": 0.310,
+                    "ready_at": 0.320, "source_stamp": 0.290, "decode_sec": 0.010},
+    "arm_control": {"age": 0.000, "sequence": 16, "received_at": 0.320,
+                    "ready_at": 0.320, "source_stamp": None,  "decode_sec": 0.000},
+  },
+  "observations": {
+    "arm_qpos": {"present": True, "age": 0.030, "stamp": 0.290,
+                 "basis": "source_stamp", "sequence": 13,
+                 "warn_after": 0.05, "error_after": 0.2, "stale": False,
+                 "spec": {"dtype": "float32", "shape": [3],
+                          "semantic": "joint_position", "unit": "rad"}},
+  },
+  "controllers": {
+    "validation": {"arm": {"level": "OK", "message": "", "info": {}}},
+    "preflight":  {"arm": {"level": "OK", "message": "",
+                           "info": {"control_state": "READY", "control_epoch": 3,
+                                    "active_command_id": 0}}},
+    "commands":   {"arm": {"cycle_index": 1, "sent_at": 0.320,
+                           "command_id": 1, "control_epoch": 3,
+                           "action": [0.01, 0.02, 0.03],
+                           "metadata": {"topic": "/arm/command",
+                                        "message_type": "ManagedTargetPayload",
+                                        "subscribers": 1}}},
+  },
+  "warnings": [],
+  "fault": None,
+}
+```
+
+### 5.2 逐字段说明
+
+#### 5.2.1 `cycle`
+
+| 键 | 类型 | 含义 |
+| --- | --- | --- |
+| `index` | `int` | cycle 序号。reset 后第一次 `step()` 为 **1**（`wait_for_step()` 每通过一个边界 +1） |
+| `control_period` | `float` | 控制周期（秒），来自 profile 的 `runtime.control_period` |
+| `deadline` | `float \| None` | **下一个** cycle 的绝对 deadline = `snapshot_captured_at + control_period` |
+| `lateness` | `float` | `clock.now() - deadline`。因为是在 `step()` 之后采样，正常是负值；`lateness + control_period` ≈ 从 cycle 边界到构造 info 的耗时（≈ `step()` 开销）。同一个量在 `wait_for_step()` 入口用于判定 `StepOverrunError`（那时 deadline 还没被推进） |
+| `snapshot_captured_at` | `float \| None` | 本 cycle 的 boundary `StateSnapshot` 捕获时刻；本 cycle 的 validate / prepare / preflight / observation 全部消费这个快照 |
+| `cycle_state` | `str` | 构造 info 时的 cycle 状态，正常为 `WAIT_REQUIRED`（`FAULTED` / `STOPPED` / `CLOSED` 不会走到这里） |
+
+#### 5.2.2 `states`（每个被依赖的 StateSource 一项，键 = profile 里的 source 名）
+
+| 键 | 类型 | 含义 |
+| --- | --- | --- |
+| `age` | `float` | `snapshot_captured_at - stamp()`，用于新鲜度判定 |
+| `sequence` | `int` | 该 source 内单调递增的版本号（成功解码/解析的样本数） |
+| `received_at` | `float` | runtime "收到 raw message"的时刻（见下方同步/异步差异） |
+| `ready_at` | `float` | 解码 / 处理完成、可被消费的时刻 |
+| `source_stamp` | `float \| None` | 消息 / 传感器自带采集时间（换算到单调时间域）；adapter 未实现 `source_stamp()` 时为 `None` |
+| `decode_sec` | `float` | `ready_at - received_at`：默认模式=解码耗时；异步源开启 `stamp_at_arrival` 后=排队 + 解码 |
+
+`stamp()` 的优先级是 **`source_stamp` → `received_at`**，**永远不用 `ready_at`**
+（否则重解码会把旧帧伪装成新数据）。`received_at` 的精确含义随源类型不同：
+
+| 源 | `received_at` | `age` 是否包含"排队等 worker" |
+| --- | --- | --- |
+| `RosTopicStateSource`（同步） | ROS 回调收到消息（解码之前） | —（没有 worker 队列） |
+| `AsyncRosTopicStateSource`（默认 `stamp_at_arrival=True`） | ROS 回调**到货**时刻 | ✅ |
+| `AsyncRosTopicStateSource(stamp_at_arrival=False)` | worker **开始解码**的时刻 | ❌ |
+| 任一，且 adapter 提供 `source_stamp` | 同上 | ✅（age 按传感器采集时刻算，最准） |
+
+#### 5.2.3 `observations`（键 = observation 名）
+
+| 键 | 类型 | 含义 |
+| --- | --- | --- |
+| `present` | `bool` | 是否拿到样本（`required=False` 且缺失时为 `False`） |
+| `age` | `float \| None` | `snapshot_captured_at - stamp()`，即"数据年龄"，缺失时 `None` |
+| `stamp` | `float \| None` | 这条 obs 实际使用的数据时间戳（= `snapshot_captured_at - age`）；缺失时 `None` |
+| `basis` | `str \| None` | `"source_stamp"` 或 `"received_at"`：`stamp` 来自哪个基准（见 §5.3） |
+| `sequence` | `int \| None` | 该 obs 来源 state 的版本号（= `states.<source>.sequence`） |
+| `warn_after` / `error_after` | `float \| None` | 生效阈值（observation 定义优先，其次 profile 的 `runtime.observation_*`） |
+| `stale` | `bool` | `age > warn_after`：只写 warning，本 cycle 继续 |
+| `spec` | `dict` | `{dtype, shape, semantic, unit}`，来自插件里声明的 `ObservationSpec` |
+
+`age > error_after` 时**不会**出现在 info 里：直接抛 `ObservationTimeoutError`（latch fault +
+stop）。同理 required 观测缺失会抛 `RequiredStateMissingError`。
+
+#### 5.2.4 `controllers.validation`（键 = controller 名）
+
+对**上一个 cycle 发出去的命令**的检查，在 `wait_for_step()` 的 cycle 边界执行：
+
+| 键 | 类型 | 含义 |
+| --- | --- | --- |
+| `level` | `str` | `OK` / `WARNING` / `ERROR`（ERROR 会 latch fault，不会出现在 info） |
+| `message` | `str` | 人类可读说明（例如 "跟踪误差 0.21 rad"） |
+| `info` | `dict` | adapter / protocol 自定义的标量诊断 |
+
+`info` 内容取决于实现，常见有：`tracking_error`（tracking 校验）、`control_state` /
+`control_epoch` / `active_command_id` / `last_command_id` / `command_accepted`（managed
+protocol），`vx` / `wz` / `feedback`（示例里的 legacy 底盘）。
+
+#### 5.2.5 `controllers.preflight`
+
+本 cycle dispatch**之前**的准入检查（required state 是否存在 / 新鲜、managed 状态是否接受
+命令、publisher / transport 是否就绪）。结构与 `validation` 相同；`ERROR` 时不会出现在 info，
+会抛 `ControllerPreflightError`。
+
+#### 5.2.6 `controllers.commands`（本次真正 `publish()` 成功的命令）
+
+| 键 | 类型 | 含义 |
+| --- | --- | --- |
+| `cycle_index` | `int` | 本命令所属 cycle（与 `cycle.index` 一致） |
+| `sent_at` | `float` | `publish()` 成功之后的时刻（runtime 时钟） |
+| `command_id` | `int \| None` | managed：runtime 从 1 单调分配；legacy：`None` |
+| `control_epoch` | `int \| None` | managed：来自最新 ControlStatus；legacy：`None` |
+| `action` | `list[float]` | 送进该 controller 的 action（已按 profile 的 route scale 缩放） |
+| `metadata` | `dict` | controller / adapter 自定义。`RosPublisherController` 固定放 `topic` / `message_type` / `subscribers`；adapter 可自行追加（例如消息 header 时间），会原样透传 |
+
+命令的 ROS 消息对象（payload）本身**不**放进 info；只有 `action` 与 `metadata`。
+`publish()` 成功 ≠ Control Node 接受，是否被接受看 `validation.info.command_accepted` /
+`active_command_id`。
+
+#### 5.2.7 `warnings`
+
+`list[str]`：本次 dispatch 的 **preflight** WARNING 文本，形如
+`"controller 'base': base linear velocity ... above advisory limit"`。
+（validate 阶段的 WARNING 不在 `warnings` 里，而是记录在
+`controllers.validation.<controller>` 的 `level` / `message`。）
+
+#### 5.2.8 `fault`
+
+当前恒为 `None`（历史字段）。真正的 fault 在 `env.fault`（`RuntimeFault`：
+`kind` / `message` / `details` / `cycle_index` / `latched_at`），或者由 `step()` /
+`wait_for_step()` 直接抛出的异常携带（`exc.details`）；`env.ok()` 会变为 `False`。
+
+### 5.3 `age` 与 `stamp` 的基准（data timestamp）
+
+```python
+age   = snapshot.captured_at - sample.stamp()
+stamp = source_stamp   if adapter 提供了消息自带时间戳
+        received_at    otherwise
+```
+
+`info["observations"][<obs>]` 里对应三个字段：`age`（数据年龄）、`stamp`（这条 obs 实际
+使用的数据时间戳，= `captured_at - age`）、`basis`（`"source_stamp"` 或 `"received_at"`，
+说明用的是哪个时钟基准）。
+
+| 配置 | `basis` / `stamp` 的来源 | `age` 的含义 |
+| --- | --- | --- |
+| adapter 提供 `source_stamp`（`header.stamp` 等） | `"source_stamp"` = **传感器采集时刻** | 采集 → snapshot 的完整延迟（含 DDS 传输、排队、解码），最贴近"数据年龄" |
+| 无 `source_stamp`，同步源 / `inline=True` | `"received_at"` = ROS 回调**到货**时刻 | 到货 → snapshot 的延迟 |
+| 无 `source_stamp`，异步源（默认 `stamp_at_arrival=True`） | `"received_at"` = ROS 回调**到货**时刻 | 到货 → snapshot 的延迟（含排队等待） |
+| 无 `source_stamp`，异步源 `stamp_at_arrival=False` | `"received_at"` = worker **开始解码**时刻 | 少算"排队等 worker"那段，通常不建议 |
+
+三个容易误解的点：
+
+1. **减数是 boundary snapshot 的捕获时刻，不是 obs 被构造的时刻**：obs 是在 `step()` 里
+   （send 之后）用同一个 snapshot 构建的，那段时间**不**计入 `age`；想估算可以用
+   `cycle.lateness + cycle.control_period` 得到"边界 → info"的耗时。
+2. **`age` 不包含 snapshot 之后的时间**：policy 真正消费 obs 时的数据年龄是
+
+   ```python
+   data_age_at_consume = info["observations"][<obs>]["age"] \
+                       + (env.clock.now() - info["cycle"]["snapshot_captured_at"])
+   ```
+
+   （同一个时钟域；生产环境即 `MonotonicClock`。）
+3. **不会出现负 age**：消息时间戳换算后若落在 `received_at` 之后（时钟不同步 / 仿真
+   时间），会被 clamp 到 `received_at`，最坏是 0。
+
+`info["states"][<source>]` 里同时给出 `received_at` / `ready_at` / `source_stamp` /
+`decode_sec`，可以进一步拆解"排队多久、解码多久"。
+
+### 5.4 常用推导
+
+| 想知道 | 用 info 计算 |
+| --- | --- |
+| 某个 obs 的数据时刻 | `observations.<obs>.stamp`（= `cycle.snapshot_captured_at - age`） |
+| cycle 边界 → 命令下发的延迟 | `controllers.commands.<c>.sent_at - cycle.snapshot_captured_at` |
+| 距离下一个边界还有多久 | `cycle.deadline - cycle.snapshot_captured_at`（≈ 一个周期） |
+| 状态解码耗时 | `states.<source>.decode_sec` |
+| 相机排队 + 解码耗时 | `states.<cam>.decode_sec`（源开启 `stamp_at_arrival` 时含排队） |
+| 观测是否已经陈旧（但不致命） | `observations.<obs>.stale` |
+| managed 命令是否被接受 | `controllers.validation.<c>.info.command_accepted` |
+| policy 推理耗时 | **不在 info**：在 policy / future 侧（例如 demo 的 `future.latency`），可自行合并：`info["policy_inference_sec"] = future.latency` |
+| `step()` 自身耗时 | 自己计时（`time.monotonic()` 前后），或近似用 `cycle.lateness + cycle.control_period` |
+
+一个把 info 写进 episode 的例子：
+
+```python
+import time
+
+started = time.monotonic()
+obs, info = env.step(future.get_action())
+info["step_sec"] = time.monotonic() - started
+info["policy_inference_sec"] = future.latency          # policy 侧提供
+
+record = {
+    "cycle": info["cycle"]["index"],
+    "obs_stamps": {
+        name: info["cycle"]["snapshot_captured_at"] - entry["age"]
+        for name, entry in info["observations"].items()
+    },
+    "sent_at": {name: cmd["sent_at"] for name, cmd in info["controllers"]["commands"].items()},
+    "step_sec": info["step_sec"],
+}
+```
+
+### 5.5 稳定性约定
+
+* 顶层分块与 `cycle` / `states` / `observations` / `controllers.*` 的键名是**稳定 API**，
+  新增只会追加字段（向后兼容），不会改名或删除；
+* 各字典的键就是 profile / 插件里的名字，顺序与 profile 一致；
+* `controllers.<阶段>.<controller>.info` 与 `commands.<controller>.metadata` 的内容由
+  adapter / protocol 决定，建议只放标量或小数组（要写 h5 / json 时最好自己再转一次）；
+* info 只覆盖本次 `step()`；需要时序就自己 append 到列表（不要在 runtime 里累积）。
+
+---
+
+## 6. 安装、构建与运行
 
 ```bash
 # 构建（Docker + ROS2 Humble + uv）
@@ -188,7 +438,7 @@ uv run colcon test --packages-select robot_env_interface robot_env_runtime \
 
 ---
 
-## 6. 接入一台新机器人：RobotPlugin / Profile / Compiler / Builder
+## 7. 接入一台新机器人：RobotPlugin / Profile / Compiler / Builder
 
 ```text
 RobotPlugin（这个机器人"有哪些能力"）
@@ -241,7 +491,7 @@ runtime:
 
 ---
 
-## 7. RosStateAdapter 与 StateSource
+## 8. RosStateAdapter 与 StateSource
 
 职责分离：StateSource 管 ROS 生命周期，Adapter 管机器人语义。
 
@@ -290,9 +540,23 @@ ROS callback ──► latest raw slot ──► worker thread ──► StateSa
 camera 30FPS、decoder 15FPS 时旧帧会被直接丢弃，不会累积延迟；JPEG 解码、模型
 预处理等重活永远不在 SingleThreadedExecutor 的回调里执行。
 
+时间戳语义（决定 observation 的 `age`）：
+
+| 配置 | `received_at` | `age` 是否包含"排队等 worker" | 说明 |
+| --- | --- | --- | --- |
+| 默认（`stamp_at_arrival=True`） | ROS 回调到货 | ✅ | 相机消息没有 `header.stamp` 时的正确基准 |
+| `stamp_at_arrival=False` | worker 开始解码 | ❌ | 只在想单独统计解码耗时时使用 |
+| adapter 提供 `source_stamp` | 同上 | ✅ | age 优先按"传感器采集时刻"计算，最贴近真实数据年龄 |
+
+`stamp_at_arrival` 会在回调里额外读一次系统时钟（`time.time()` 级别，开销可忽略），
+并与单调时钟一起构成"换算锚点"；`source_stamp` 的换算始终使用同一时刻的两个时钟，
+不会把解码耗时混进 age（否则重解码会被算成"数据更旧"）。
+
+这些字段在 `info["states"][<source>]` 里可以直接读到，obs 侧的对应字段与推导见 **§5.3 / §5.4**。
+
 ---
 
-## 8. RosControllerAdapter 与 dispatch
+## 9. RosControllerAdapter 与 dispatch
 
 只有 `encode()` 是必选，其余都有默认实现：
 
@@ -346,7 +610,7 @@ ERROR 触发 latch fault + stop + `ControllerValidationError`。
 
 ---
 
-## 9. Legacy Controller：接已有 `/cmd_vel`
+## 10. Legacy Controller：接已有 `/cmd_vel`
 
 ```python
 class BaseVelocityAdapter(RosControllerAdapter):
@@ -373,7 +637,7 @@ Legacy 模式：没有 `ControlStatus`、没有 `control_epoch`、没有 `comman
 
 ---
 
-## 10. Managed Controller：ControlStatus / command_id / control_epoch
+## 11. Managed Controller：ControlStatus / command_id / control_epoch
 
 ```python
 protocol = ManagedControlProtocol(
@@ -433,7 +697,7 @@ reset 之后第一次 `wait_for_step()` 拥有完整的一个控制周期。
 
 ---
 
-## 11. Control Node 契约与节点侧状态机助手
+## 12. Control Node 契约与节点侧状态机助手
 
 ControlStatus 的**写**这一半由 Control Node 负责。runtime 已经提供官方实现，
 自定义节点不需要自己维护 epoch / `active_command_id` / 状态守卫：
@@ -510,7 +774,7 @@ class ArmControl(Node):
 
 ---
 
-## 12. RosServiceResetStrategy（service reset + 可选 adapter + 顺序组合）
+## 13. RosServiceResetStrategy（service reset + 可选 adapter + 顺序组合）
 
 ```python
 RosServiceResetStrategy(
@@ -629,7 +893,7 @@ v1 **不实现** `RosActionResetStrategy` / `CallableResetStrategy`（需要时�
 
 ---
 
-## 13. 接真实 Tianyi（示例 → 真机）
+## 14. 接真实 Tianyi（示例 → 真机）
 
 示例插件 `example_robot` 是自包含的（可在没有真机的 Docker 里跑通），真实 Tianyi
 只需要把"消息类型 + topic + adapter"替换掉，runtime 本身不需要修改：
@@ -650,7 +914,7 @@ Adapter 的解码 / 编码。Tianyi 的 100Hz 插值仍然留在 Tianyi Control 
 
 ---
 
-## 14. 目录结构
+## 15. 目录结构
 
 ```text
 robot_env_runtime/
@@ -677,7 +941,7 @@ robot_env_runtime/
 
 ---
 
-## 15. 测试
+## 16. 测试
 
 `robot_env_runtime/testing` 提供确定性替身：`FakeClock`、`FakeInferenceFuture`、
 `FakeStateSource`、`FakeController`、`FakeExecutorHost`、`FakeRosNode`、
@@ -704,7 +968,7 @@ robot_env_runtime/
 
 ---
 
-## 16. v1 有意不实现
+## 17. v1 有意不实现
 
 `RosActionResetStrategy`、`CallableResetStrategy`、MultiThreadedExecutor、通用
 event bus、数据库 / web dashboard / RPC、通用 DI 框架、复杂 Arm/Gripper 类层次、

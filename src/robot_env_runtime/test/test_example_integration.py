@@ -145,6 +145,11 @@ def test_observations_come_from_the_boundary_snapshot(runtime) -> None:
     # 相机以 30Hz 发布，因此 snapshot 里的图像 age 应远小于 error 阈值。
     assert info["observations"]["front_rgb"]["error_after"] == pytest.approx(0.6)
     assert ages["front_rgb"] < 0.3
+    # 示例相机的 adapter 提供 header.stamp → age 按"采集时刻"计算
+    assert info["observations"]["front_rgb"]["basis"] == "source_stamp"
+    assert info["observations"]["front_rgb"]["stamp"] == pytest.approx(
+        snapshot_time - ages["front_rgb"]
+    )
     assert snapshot_time is not None
 
 
