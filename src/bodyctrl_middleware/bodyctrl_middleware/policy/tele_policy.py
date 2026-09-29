@@ -72,6 +72,9 @@ class TelePolicy(PolicySync):
         self, 
         tele_config_list: list[TeleConfig],
 
+        # 取 None 将自动推断
+        action_dim: Optional[int] = None,
+
         # 遥操结束判定函数, 传入 obs
         is_tele_done_fn: Optional[Callable[[dict], bool]] = None,
 
@@ -92,7 +95,13 @@ class TelePolicy(PolicySync):
             action_use_idx += cfg.action_idx
         if len(action_use_idx) != len(set(action_use_idx)):
             raise ValueError("tele_config_list 中的动作索引映射存在重叠")
-        self.action_dim = int(max(*action_use_idx))
+        if action_dim is None:
+            self.action_dim = int(max(*action_use_idx)) + 1
+        else:
+            if action_dim >= int(max(*action_use_idx)) + 1:
+                self.action_dim = action_dim
+            else:
+                raise ValueError("给定动作维度小于 tele_config_list 中的最大索引")
 
     def reset(self, obs: dict):
         self.last_obs = obs

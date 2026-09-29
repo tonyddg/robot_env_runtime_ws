@@ -106,7 +106,7 @@ def tianyi_base(
         robot,
         reset_name = config.base_reset_name,
         reset_srv_name = config.base_reset_srv_name,
-        cur_stage_state_name = config.base_cur_stage_topic
+        cur_stage_topic = config.base_cur_stage_topic
     )
 
     robot = registe_odom_obs(

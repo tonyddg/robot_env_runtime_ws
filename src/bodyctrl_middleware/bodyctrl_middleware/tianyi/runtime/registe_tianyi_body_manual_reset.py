@@ -39,7 +39,7 @@ def _make_reset_target_req(
     req.cmds = []
     for name, pos in zip(motor_name_list, target_pos_list):
         cmd = SetMotorResetTarget()
-        cmd.name = str(name)
+        cmd.name = int(name)
         cmd.pos = float(pos)
         req.cmds.append(cmd)
 
