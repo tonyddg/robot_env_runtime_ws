@@ -362,7 +362,10 @@ class BodyManualResetNode(Node):
     def update_target_by_request(self, cmds: Sequence[SetMotorResetTarget]):
 
         for cmd in cmds:
-            group_name = JOINT_GROUPS[cmd.name]
+            group_name = JOINT_GROUPS.get(cmd.name, None)
+            if group_name is None:
+                self.on_fail(f"请求中关节名 {cmd.name} 不在关节组表内")
+                return
             if group_name not in self._enable_group:
                 self.on_fail(f"请求中关节名 {cmd.name} 所属的组没有启用")
                 return

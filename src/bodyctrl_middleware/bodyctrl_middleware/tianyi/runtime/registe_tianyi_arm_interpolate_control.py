@@ -62,7 +62,9 @@ class TianyiArmInterpolateControlDeltaControllerAdapter(RosControllerAdapter):
         if len(config.state_motor_list) != len(set(config.state_motor_list)):
             raise ValueError("给定的 state_motor_list 存在重复 id")
         if isinstance(config.max_action_dis, np.ndarray): 
-            if config.max_action_dis.size != len(config.cmd_motor_list):
+            if config.max_action_dis.size == 1:
+                config.max_action_dis = float(config.max_action_dis.item())
+            elif config.max_action_dis.size != len(config.cmd_motor_list):
                 raise ValueError("给定的 max_action_dis 与 node_motor_list 长度不一致")
 
         if config.cmd_motor_list == config.state_motor_list:
@@ -211,10 +213,12 @@ def registe_tianyi_arm_interpolate_control(
     tianyi_arm_qpos_state_name: str = "tianyi_arm_qpos_left",
     # 注意与 arm_interpolate_control 节点参数保持一致
     arm_interpolate_control_root_name: str = "arm_interpolate_control",
-    arm_interpolate_control_state_name: str = "arm_interpolate_control_state"
+    arm_interpolate_control_state_name: Optional[str] = None
 ):
     if config is None:
         config = TianyiArmInterpolateAdapterConfig()
+    if arm_interpolate_control_state_name is None:
+        arm_interpolate_control_state_name = controller_name + "_state"
 
     command_topic_name = arm_interpolate_control_root_name + "/command"
     status_topic_name = arm_interpolate_control_root_name + "/status"

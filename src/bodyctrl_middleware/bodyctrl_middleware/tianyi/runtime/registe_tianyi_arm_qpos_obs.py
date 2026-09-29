@@ -12,8 +12,11 @@ from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
 
-class TianyiArmQposAdapter(RosStateAdapter):
-    """``/arm/status`` → 天轶机器人关节位置数组."""
+class TianyiArmStateAdapter(RosStateAdapter):
+    """
+    State Source 用于快速将消息中的有效信息提取为 Python 数据
+    从 ``/arm/status`` 中提取关节位置、速度与错误信息
+    """
     def __init__(
         self,
         # 需要获取的关节 id 列表, 也即观测结果对应的元素代指的关节 id
@@ -64,8 +67,8 @@ def registe_tianyi_arm_qpos_obs(
 
     motor_id_to_idx: tuple[int, ...] = LEFT_ARM_MOTOR_IDS + RIGHT_ARM_MOTOR_IDS,
 
-    tianyi_arm_qpos_state_name: str = "tianyi_arm_qpos_bimanual_state",
     tianyi_arm_qpos_obs_name: str = "tianyi_arm_qpos_bimanual_obs",
+    tianyi_arm_qpos_state_name: Optional[str] = None,
     warn_after: float = 0.2,
 ):
     '''
@@ -73,7 +76,9 @@ def registe_tianyi_arm_qpos_obs(
 
     注册后的状态与观测名为 tianyi_arm_qpos_<suffix>
     '''
-    adapter = TianyiArmQposAdapter(motor_id_to_idx = motor_id_to_idx)
+    adapter = TianyiArmStateAdapter(motor_id_to_idx = motor_id_to_idx)
+    if tianyi_arm_qpos_state_name is None:
+        tianyi_arm_qpos_state_name = tianyi_arm_qpos_obs_name + "_state"
 
     def tianyi_arm_qpos_state_factory(ctx: ComponentContext) -> RosTopicStateSource:
         """订阅手臂关节状态."""

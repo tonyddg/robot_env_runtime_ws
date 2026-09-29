@@ -103,6 +103,23 @@ def get_qpos_bound(motor_name_list: Sequence[int]):
         np.array(arm_lower_bound), np.array(arm_upper_bound)
     )
 
+def valide_target_pos_list(motor_name_list: tuple[int, ...], target_pos_list: tuple[float, ...]):
+    '''
+    检查 motor name list 与 target pos list
+    '''
+
+    if len(motor_name_list) != len(set(motor_name_list)):
+        raise ValueError("motor_name_list 中存在重复 id")
+    if len(motor_name_list) != len(target_pos_list):
+        raise ValueError("motor_name_list 与 target_pos_list 长度不同")
+
+    for name, pos in zip(motor_name_list, target_pos_list):
+        limit = SDK_LIMITS.get(name, None)
+        if limit is None:
+            raise ValueError(f"关节名 {name} 没有查询到限位")
+        if pos < limit[0] or pos > limit[1]:
+            raise ValueError(f"关节名 {name} 的目标 {pos} 超过限位 {limit}")
+
 HAND_FINGER_NAMES: tuple[str, ...] = ("1", "2", "3", "4", "5", "6")
 
 # 实测手型（0..1 比例），来源 /ros2_ws/note.md。

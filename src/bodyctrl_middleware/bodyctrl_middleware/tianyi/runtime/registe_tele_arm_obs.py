@@ -80,7 +80,7 @@ def registe_tele_arm_obs(
     for name in motor_id_to_idx:
         idx = TELE_RESULT_TO_MOTOR_MAP.get(name, None)
         if idx is None:
-            raise ValueError(f"电机名 {idx} 不在遥操臂映射表中")
+            raise ValueError(f"电机名 {name} 不在遥操臂映射表中")
         state_to_qpos_obs.append(TELE_RESULT_TO_MOTOR_MAP.get(name))
 
     def tele_arm_qpos_obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
@@ -105,31 +105,36 @@ def registe_tele_arm_obs(
 
     ###
 
-    for side in tele_hand_openness_obs_use_side:
-        idx = TELE_GRIPPER_OPENNESS_MAP.get(side, None)
-        if idx is None:
-            raise ValueError(f"指定手部名称 {side} 不在遥操臂手部映射中")
-        tele_hand_openness_obs = tele_hand_openness_obs_name_prefix + side
-        
-        def tele_hand_openness_obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
-            """遥操臂手部开合观测（float32）."""
-            return TransformObservation(
+    if len(tele_hand_openness_obs_use_side) > 0:
+        for side in tele_hand_openness_obs_use_side:
+            idx = TELE_GRIPPER_OPENNESS_MAP.get(side, None)
+            if idx is None:
+                raise ValueError(f"指定手部名称 {side} 不在遥操臂手部映射中")
+            tele_hand_openness_obs = tele_hand_openness_obs_name_prefix + side
+            
+            def tele_hand_openness_obs_factory(
+                    ctx: ComponentContext, states: Mapping[str, Any], 
+                    # 解决循环闭包晚绑定问题, 导致 obs_name 与 idx 绑定到循环中最后的值
+                    obs_name = tele_hand_openness_obs, idx = idx
+                ) -> TransformObservation:
+                """遥操臂手部开合观测（float32）."""
+                return TransformObservation(
+                    obs_name,
+                    source = tele_state_name,
+                    # 遥操臂手部为 [0, 1] 且 1 为闭合
+                    transform = lambda view: 1 - np.array(
+                        view.value(tele_state_name), dtype = np.float32
+                    )[idx] * 2,
+                    spec = ObservationSpec(
+                        dtype = "float32", shape = (), semantic = f"tele {side} side openness"
+                    ),
+                    warn_after = warn_after,
+                )
+            robot_plugin.observation(
                 tele_hand_openness_obs,
-                source = tele_state_name,
-                # 遥操臂手部为 [0, 1] 且 1 为闭合
-                transform = lambda view: 1 - np.array(
-                    view.value(tele_state_name), dtype = np.float32
-                )[idx] * 2,
-                spec = ObservationSpec(
-                    dtype = "float32", shape = (), semantic = f"tele {side} side openness"
-                ),
-                warn_after = warn_after,
+                tele_hand_openness_obs_factory,
+                depends_on = (tele_state_name, )
             )
-        robot_plugin.observation(
-            tele_hand_openness_obs,
-            tele_hand_openness_obs_factory,
-            depends_on = (tele_state_name, )
-        )
 
     ###
 
