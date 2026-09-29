@@ -1412,6 +1412,7 @@ dependencies = [
     { name = "pin" },
     { name = "pydantic" },
     { name = "robot-refactor", extra = ["meshcat"] },
+    { name = "rvl" },
     { name = "sapien" },
     { name = "tyro" },
 ]
@@ -1431,6 +1432,7 @@ requires-dist = [
     { name = "pin", specifier = ">=4.1.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "robot-refactor", extras = ["meshcat"], git = "https://github.com/tonyddg/robot_refactor.git" },
+    { name = "rvl", specifier = ">=1.0.4" },
     { name = "sapien", specifier = ">=3.0.3" },
     { name = "tyro", specifier = ">=1.0.15" },
 ]
@@ -1440,6 +1442,25 @@ dev = [
     { name = "colcon-common-extensions" },
     { name = "flake8" },
     { name = "pydocstyle" },
+]
+
+[[package]]
+name = "rvl"
+version = "1.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/3c/f8c951f2a9fc1be2a750c3f58d1c3eb2d6af4d164b10afa38fe0903d861f/rvl-1.0.4.tar.gz", hash = "sha256:e32ca85d6e509156d70e657ae140126754dfa86ec342ca1fed4727b5a9772e09", size = 5309, upload-time = "2026-03-20T02:11:48.083Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/9d/c748a4d88fc0e575c9e454b998644df901ee3ac69cf5674cb5fc38a355ae/rvl-1.0.4-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f142f4b9b9239538d7dfe96e1b0b358ba74b3c891a49367bbd2ca0e445c6928f", size = 5593, upload-time = "2026-03-20T02:10:34.943Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/1e/2d53d5a08b8ae7f4812681e0e27067809b598cd9fb8bd13ef6a81fdc4c69/rvl-1.0.4-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:2c599f28f480fd38805517ad316d5aa46985122a4bfacdb101f5c395fc846d64", size = 5970, upload-time = "2026-03-20T02:10:35.997Z" },
+    { url = "https://files.pythonhosted.org/packages/24/c6/2b3ed3247692d516734d05edfdf834b5ddfd876fce3bae9cf09675d2d108/rvl-1.0.4-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c9972a0f080604900ecb531462789d29d9db665e14c9bafc1ab21e46963c18f0", size = 17734, upload-time = "2026-03-20T02:10:36.966Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/be/2d7f48b0783a03904f47bfe5e6540982328fefbefce8fd37f66ce24bc557/rvl-1.0.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c5ac5ed4098aad0efebcd8ca0f386ec4d6280e6a892dc706989a984ba21a6816", size = 17786, upload-time = "2026-03-20T02:10:38.008Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/98/3ecc544d59228de1b785ba363f34335520e769e246e6a26e2124d86de33b/rvl-1.0.4-cp310-cp310-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:04457f3e53685c9e4eb0a3bb9a07dbb71ef5a9829838b641e9dee250582f868d", size = 17139, upload-time = "2026-03-20T02:10:38.782Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/49/5cb6d0daeb73d87d8790faa163981f9a72252c520ce4be7c63810d9736e0/rvl-1.0.4-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:43d66471b8cd9ffd3699e7712a0cec34641c00747260870648cdca32803d5724", size = 17654, upload-time = "2026-03-20T02:10:39.614Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/55/8a6a80cb3864fde9878da9253a613657809c61970466e27daa8afdc86e6b/rvl-1.0.4-cp310-cp310-musllinux_1_2_i686.whl", hash = "sha256:a83676e65230f1aa808f85e702ab7298ae4f72dc27ed61b1efdfe3e2b52f3993", size = 17820, upload-time = "2026-03-20T02:10:40.55Z" },
+    { url = "https://files.pythonhosted.org/packages/77/16/e98563cf6ddb291319212ecbbcd4120ea409ad6f5ba5e9b686e7694cdebd/rvl-1.0.4-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:82aa63eebffb9727e6b0163fa37d1bb4447138032d5b349e17ba25bae0c67cd4", size = 17527, upload-time = "2026-03-20T02:10:41.313Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/06/6c75c33e72b6616f57a5e5935b969a02f40603aae366d7c1c866ec09b45b/rvl-1.0.4-cp310-cp310-win32.whl", hash = "sha256:4c0d96a7e2ea82289b131e69af65422f4f98b7054e3c73511d23a8b372bddce5", size = 8413, upload-time = "2026-03-20T02:10:42.07Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/b9/d6f13237235006e903688b848ae3a6a28bd441173c992f9c47ff3927322d/rvl-1.0.4-cp310-cp310-win_amd64.whl", hash = "sha256:4b7f772422ab136bfe8d854e8694e82d55bf3b6bdd5683570c67eb524cde79f3", size = 9001, upload-time = "2026-03-20T02:10:42.818Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/b6/8a9f2585349a8cf12ae63835409d21a213f559138f7cd6b4cdb407eb36ff/rvl-1.0.4-cp310-cp310-win_arm64.whl", hash = "sha256:54c83d95721da73cefa2fbfa5628522118da8ad491bff08b58a825c7367a526c", size = 7700, upload-time = "2026-03-20T02:10:43.806Z" },
 ]
 
 [[package]]

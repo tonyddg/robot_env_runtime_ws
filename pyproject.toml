@@ -13,6 +13,7 @@ dependencies = [
     # "pyyaml>=6.0.3",
     # "requests>=2.34.2",
     "robot-refactor[meshcat]",
+    "rvl>=1.0.4",
     "sapien>=3.0.3",
     "tyro>=1.0.15",
 ]
