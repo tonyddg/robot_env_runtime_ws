@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Optional, Callable, Union, Dict
+from typing import Any, Optional, Callable, Union, Dict
 from dataclasses import dataclass
 
 from bodyctrl_middleware.policy.base import PolicySync
@@ -11,7 +11,6 @@ class TeleConfig:
     obs_name: str
     obs_to_action_map: Optional[list[int]]
     delta_mask: list[bool]
-    action_idx: list[int] # TODO
 
     # 动作向量到真实移动的缩放
     action_scale: Optional[Union[np.ndarray, float]] = None
@@ -41,11 +40,17 @@ class TeleConfig:
 class TelePolicy(PolicySync):
     def __init__(
         self, 
-        tele_config_list: list[TeleConfig]
+        tele_config_list: list[TeleConfig],
+        # ROS2 node.get_logger() 用于当 action 被裁剪时输出警告
+        logger: Optional[Any] = None,
+        # 是否允许裁剪动作, 否则直接抛出错误
+        allow_clip: bool = True
     ):
         self.tele_config_list = tele_config_list
         self.last_obs = None
         self.is_policy_done = False
+        self.logger = logger
+        self.allow_clip = allow_clip
 
     def reset(self, obs: dict):
         self.last_obs = obs
@@ -61,8 +66,20 @@ class TelePolicy(PolicySync):
             action_list.append(cfg.to_action(obs, self.last_obs))
         action = np.concat(action_list)
 
+        if np.logical_or(action < -1.0, action > 1.0).any():
+            message = f"遥操动作 {action} 超出 [-1, 1] 的范围"
+            self.on_warn(message)
+            if self.allow_clip:
+                action = np.clip(action, -1, 1)
+            else:
+                raise RuntimeError(message)
+
         self.last_obs = obs
         return action
 
     def done(self):
         return self.is_policy_done
+
+    def on_warn(self, message: str):
+        if self.logger is not None:
+            self.logger.warn(message)
