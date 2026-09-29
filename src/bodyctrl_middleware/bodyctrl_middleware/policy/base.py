@@ -19,7 +19,7 @@ class SyncFuture:
     def __init__(
         self, result: np.ndarray
     ) -> None:
-        self.result = result
+        self.result = np.array(result, copy = True)
 
     def done(self):
         return True
