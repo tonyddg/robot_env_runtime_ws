@@ -29,6 +29,7 @@ from robot_env_runtime.core.errors import (
     ObservationError,
     RequiredStateMissingError,
     RequiredStateStaleError,
+    ResetParameterError,
     RobotRuntimeError,
     RuntimeClosedError,
     RuntimeFaultedError,
@@ -193,9 +194,16 @@ class RobotEnv:
 
     # -- Policy 侧 API -----------------------------------------------------
 
-    def reset(self) -> dict[str, Any]:
-        """执行 reset 编排并返回初始 observation."""
+    def reset(self, **params: Any) -> dict[str, Any]:
+        """
+        执行 reset 编排并返回初始 observation.
+
+        关键字参数会原样放进 :class:`ResetContext.params`，供 reset 侧的 adapter /
+        policy 读取；只接受该 reset 声明过的参数名（``ResetStrategy.parameter_names``），
+        未声明的参数名会立即抛 :class:`ResetParameterError`（不 latch fault、不 stop）。
+        """
         self._raise_if_closed()
+        self._validate_reset_params(params)
         self._faults.clear()
         self._records = {}
         self._validation_checks = {}
@@ -209,7 +217,7 @@ class RobotEnv:
             if self._reset_strategy is not None:
                 self._wait_for_reset_states()
                 self._log_info(f"reset: running strategy {self._reset_strategy.name!r}")
-                self._reset_strategy.run(self._make_reset_context())
+                self._reset_strategy.run(self._make_reset_context(params))
             for name, controller in self._controllers.items():
                 try:
                     controller.reset(self._state_store.capture())
@@ -412,7 +420,7 @@ class RobotEnv:
 
     # -- 内部：reset 辅助 --------------------------------------------------
 
-    def _make_reset_context(self) -> ResetContext:
+    def _make_reset_context(self, params: Mapping[str, Any] | None = None) -> ResetContext:
         """构造 reset 策略可见的上下文."""
         return ResetContext(
             clock=self._clock,
@@ -421,6 +429,26 @@ class RobotEnv:
             call_trigger=self._call_trigger,
             timeout=self._settings.reset_timeout,
             service_caller=self._call_service,
+            params={} if params is None else dict(params),
+        )
+
+    def _validate_reset_params(self, params: Mapping[str, Any]) -> None:
+        """校验 ``env.reset(**kwargs)`` 的参数名（未声明即报错，且不进入 fault 流程）."""
+        if not params:
+            return
+        strategy = self._reset_strategy
+        accepted = tuple(getattr(strategy, "parameter_names", ()) or ())
+        invalid = [name for name in params if not name or name not in accepted]
+        if not invalid:
+            return
+        if strategy is None:
+            where = "no reset strategy is configured"
+        else:
+            accepted_text = ", ".join(sorted(accepted)) if accepted else "no parameters"
+            where = f"reset {strategy.name!r} accepts {accepted_text}"
+        raise ResetParameterError(
+            f"unknown reset parameter(s) {sorted(invalid)}: {where}",
+            details={"unknown": sorted(invalid), "accepted": list(accepted)},
         )
 
     def _call_trigger(self, service_name: str, timeout_sec: float) -> Any:

@@ -1,9 +1,14 @@
 """
-RosServiceResetStrategy：v1 唯一的 reset 实现（service + 可选 adapter）.
+RosServiceResetStrategy：service reset（service + 可选 adapter + 可选完成判定 policy）.
 
-默认行为等价于 ``std_srvs/Trigger``；通过 :class:`ResetServiceAdapter` 可以换成机器人
-自定义 srv，并用当前 state 组织 request（response 只要保持 ``success`` / ``message``
-鸭子类型即可继续用默认实现）。
+三层职责划分：
+
+- :class:`ResetServiceAdapter`：用什么服务类型、怎么构造 request、怎么解释 response
+  （默认 :class:`TriggerResetAdapter`，即 ``std_srvs/Trigger`` + 空请求）；
+- :class:`ResetCompletionPolicy`：怎么算"复位完成"（``completion=None`` 表示同步语义：
+  service response 成功即完成）；
+- :class:`ManagedControlResetCompletionPolicy`：基于 Managed Control ``ControlStatus``
+  的默认完成判定（READY/ACTIVE + RESETTING + 新 epoch），即原先 strategy 内置的规则。
 """
 
 from __future__ import annotations
@@ -22,7 +27,11 @@ from robot_env_runtime.core.errors import (
 )
 from robot_env_runtime.core.state_view import StateInput, StateView
 from robot_env_runtime.core.types import ResetContext
-from robot_env_runtime.extension.reset import ResetStrategy
+from robot_env_runtime.extension.reset import (
+    ResetCompletion,
+    ResetCompletionPolicy,
+    ResetStrategy,
+)
 from robot_env_runtime.extension.ros2.protocol import ControlState, ControlStatusValue
 
 
@@ -43,6 +52,11 @@ class ResetServiceAdapter(ABC):
     def state_inputs(self) -> Mapping[str, StateInput]:
         """构造 request 需要的声明式状态依赖（键为 Adapter 侧本地名字）."""
         return {}
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        """允许 ``env.reset(**kwargs)`` 传入的参数名（默认 `()` = 不接受参数）."""
+        return ()
 
     def build_request(self, states: StateView, ctx: ResetContext) -> Any:
         """用当前 state 构造请求（默认：空请求，即 Trigger 语义）."""
@@ -68,15 +82,127 @@ class TriggerResetAdapter(ResetServiceAdapter):
         return Trigger
 
 
+class ManagedControlResetCompletionPolicy(ResetCompletionPolicy):
+    """
+    基于 Managed Control ``ControlStatus`` 的默认完成判定.
+
+    规则与旧版 ``RosServiceResetStrategy(status_source=..., require_*)`` 一致：
+
+    - ``FAULTED`` → FAILED（带 ``ControlStatus.message``）；
+    - READY / ACTIVE 且（可选）观察到过 RESETTING 且（可选）``control_epoch`` 已更新
+      → COMPLETED；
+    - 其余（含尚未收到 ControlStatus）→ PENDING。
+    """
+
+    def __init__(
+        self,
+        *,
+        status_source: str,
+        require_resetting_state: bool = False,
+        require_new_epoch: bool = True,
+    ) -> None:
+        """保存 ControlStatus 来源与两个可选严格条件."""
+        if not status_source:
+            raise ConfigError("ManagedControlResetCompletionPolicy needs a status_source")
+        self._status_source = status_source
+        self._require_resetting_state = bool(require_resetting_state)
+        self._require_new_epoch = bool(require_new_epoch)
+        self._epoch_before: int | None = None
+        self._saw_resetting = False
+
+    @property
+    def status_source(self) -> str:
+        """返回 ControlStatus 所在的 StateSource 名."""
+        return self._status_source
+
+    @property
+    def state_inputs(self) -> Mapping[str, StateInput]:
+        """声明对 ControlStatus 的 required 依赖（reset 前必须就绪）."""
+        return {
+            self._status_source: StateInput(
+                source=self._status_source,
+                required=True,
+            )
+        }
+
+    def on_request(self, ctx: ResetContext) -> None:
+        """记录复位前的 ``control_epoch`` 基线，并清空"见过 RESETTING"标记."""
+        status = self._status_from_sample(ctx.state_provider(self._status_source))
+        self._epoch_before = None if status is None else status.control_epoch
+        self._saw_resetting = False
+
+    def evaluate(
+        self,
+        states: StateView,
+        ctx: ResetContext,
+        elapsed: float,
+    ) -> ResetCompletion:
+        """按 ControlStatus 判定 PENDING / COMPLETED / FAILED."""
+        del ctx, elapsed
+        status = self._status_from_sample(states.optional_sample(self._status_source))
+        if status is None:
+            return ResetCompletion.pending(
+                f"no ControlStatus on {self._status_source!r} yet"
+            )
+        if status.state is ControlState.FAULTED:
+            return ResetCompletion.failed(
+                f"Control Node is FAULTED: {status.message}"
+            )
+        if status.state is ControlState.RESETTING:
+            self._saw_resetting = True
+        if not status.accepting_commands:
+            return ResetCompletion.pending(
+                f"state={status.state.name} epoch={status.control_epoch}; "
+                "waiting for READY/ACTIVE"
+            )
+        if self._require_resetting_state and not self._saw_resetting:
+            return ResetCompletion.pending("RESETTING was not observed yet")
+        if (
+            self._require_new_epoch
+            and self._epoch_before is not None
+            and status.control_epoch == self._epoch_before
+        ):
+            return ResetCompletion.pending(
+                f"control_epoch is still {status.control_epoch}; "
+                "waiting for a new epoch"
+            )
+        return ResetCompletion.completed(
+            f"state={status.state.name} epoch={status.control_epoch}"
+        )
+
+    def describe(self, states: StateView, ctx: ResetContext) -> str:
+        """输出当前 ControlStatus 与期望条件（用于超时诊断）."""
+        del ctx
+        status = self._status_from_sample(states.optional_sample(self._status_source))
+        if status is None:
+            return f"{self._status_source}=<no sample>"
+        expectations: list[str] = ["READY/ACTIVE"]
+        if self._require_resetting_state:
+            expectations.append("saw RESETTING")
+        if self._require_new_epoch and self._epoch_before is not None:
+            expectations.append(f"epoch != {self._epoch_before}")
+        return (
+            f"state={status.state.name} epoch={status.control_epoch} "
+            f"(expect {', '.join(expectations)})"
+        )
+
+    def _status_from_sample(self, sample: Any) -> ControlStatusValue | None:
+        """把 StateSample 解成 ControlStatusValue（缺失 / 类型不符返回 None）."""
+        if sample is None:
+            return None
+        value = sample.value
+        return value if isinstance(value, ControlStatusValue) else None
+
+
 class RosServiceResetStrategy(ResetStrategy):
     """
-    调用 reset service，并按需等待 ``RESETTING → READY``.
+    调用 reset service，并可选地用 completion policy 等待复位完成.
 
-    - ``status_source`` 为 None：以 service response 直接作为完成（legacy 同步语义）。
-    - 配置了 ``status_source``：通过 StateSource 等待 ControlStatus 进入 READY，
-      可要求必须经过 RESETTING，以及必须建立新的 control_epoch。
-    - ``adapter``：决定"用什么服务类型 / 怎么构造 request / 怎么解释 response"，
-      默认 :class:`TriggerResetAdapter`（即原先的 Trigger-only 行为）。
+    - ``completion=None``：service response 成功即完成（legacy 同步语义）；
+    - ``completion=ManagedControlResetCompletionPolicy(status_source=...)``：等待
+      ``RESETTING → READY``（可要求新 epoch），即 managed Control Node 的默认行为；
+    - ``completion=<自定义 policy>``：用自己的 state source / 判定函数决定完成或失败。
+    - ``adapter``：服务类型、request 构造与 response 解释（默认 Trigger）。
     """
 
     def __init__(
@@ -86,14 +212,12 @@ class RosServiceResetStrategy(ResetStrategy):
         service: str,
         clock: Clock,
         adapter: ResetServiceAdapter | None = None,
-        status_source: str | None = None,
+        completion: ResetCompletionPolicy | None = None,
         timeout: float | None = None,
         poll_period: float = 0.02,
-        require_resetting_state: bool = False,
-        require_new_epoch: bool = True,
         logger: Any = None,
     ) -> None:
-        """保存 service 名、adapter 与完成判定配置."""
+        """保存 service 名、request adapter 与完成判定 policy."""
         self._name = name
         self._service = service
         self._clock = clock
@@ -103,11 +227,9 @@ class RosServiceResetStrategy(ResetStrategy):
                 f"reset service {service!r} adapter.srv_type must be a ROS service type; "
                 f"got {self._adapter.srv_type!r}"
             )
-        self._status_source = status_source
+        self._completion = completion
         self._timeout = timeout
         self._poll_period = float(poll_period)
-        self._require_resetting_state = bool(require_resetting_state)
-        self._require_new_epoch = bool(require_new_epoch)
         self._logger = logger
 
     @property
@@ -126,21 +248,37 @@ class RosServiceResetStrategy(ResetStrategy):
         return self._adapter
 
     @property
+    def completion(self) -> ResetCompletionPolicy | None:
+        """返回完成判定 policy（None 表示同步语义）."""
+        return self._completion
+
+    @property
     def state_dependencies(self) -> tuple[str, ...]:
-        """需要读取的状态：adapter 构造请求所需 + ControlStatus 完成判定."""
+        """需要读取的状态：adapter 构造请求所需 ∪ completion policy 判定所需."""
         sources = [
             state_input.source for state_input in self._adapter.state_inputs.values()
         ]
-        if self._status_source is not None:
-            sources.append(self._status_source)
+        if self._completion is not None:
+            sources.extend(
+                state_input.source
+                for state_input in self._completion.state_inputs.values()
+            )
         return tuple(dict.fromkeys(sources))
 
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        """允许 ``env.reset(**kwargs)`` 传入的参数名：adapter ∪ completion policy."""
+        names = list(self._adapter.parameter_names)
+        if self._completion is not None:
+            names.extend(self._completion.parameter_names)
+        return tuple(dict.fromkeys(names))
+
     def run(self, ctx: ResetContext) -> None:
-        """执行 reset 并等待完成."""
+        """执行 reset：发服务（可选等待完成判定）."""
         timeout = ctx.timeout if self._timeout is None else self._timeout
-        before = self._live_status(ctx)
-        epoch_before = None if before is None else before.control_epoch
         request = self._build_request(ctx)
+        if self._completion is not None:
+            self._on_request(ctx)
         response = ctx.call_service(
             self._service, self._adapter.srv_type, request, timeout
         )
@@ -150,44 +288,55 @@ class RosServiceResetStrategy(ResetStrategy):
                 f"reset service {self._service!r} failed: {message}",
                 details={"service": self._service, "message": message},
             )
-        if self._status_source is None:
+        if self._completion is None:
             self._log_info(f"reset service {self._service!r} completed synchronously")
             return
-        deadline = ctx.clock.now() + timeout
-        saw_resetting = False
-        status = self._live_status(ctx)
+        accepted_at = ctx.clock.now()
+        deadline = accepted_at + timeout
         while True:
-            if status is not None:
-                if status.state is ControlState.FAULTED:
-                    raise ResetError(
-                        f"Control Node entered FAULTED during reset: {status.message}",
-                        details={"service": self._service},
-                    )
-                if status.state is ControlState.RESETTING:
-                    saw_resetting = True
-                if self._is_complete(status, epoch_before, saw_resetting):
-                    self._log_info(
-                        f"reset completed via {self._service!r} "
-                        f"(state={status.state.name}, epoch={status.control_epoch})"
-                    )
-                    return
+            elapsed = ctx.clock.now() - accepted_at
+            states = ctx.state_view(self._completion.state_inputs)
+            outcome = self._evaluate(states, ctx, elapsed)
+            if outcome.is_completed:
+                suffix = f": {outcome.message}" if outcome.message else ""
+                self._log_info(
+                    f"reset completed via {self._service!r} "
+                    f"after {elapsed:.3f}s{suffix}"
+                )
+                return
+            if outcome.is_failed:
+                raise ResetError(
+                    f"reset via {self._service!r} failed after {elapsed:.3f}s: "
+                    f"{outcome.message}",
+                    details={
+                        "service": self._service,
+                        "elapsed": elapsed,
+                        "message": outcome.message,
+                    },
+                )
             if ctx.clock.now() >= deadline:
-                current = "no ControlStatus" if status is None else status.state.name
+                detail = self._describe(states, ctx)
                 raise ResetTimeoutError(
                     f"reset via {self._service!r} did not complete within {timeout}s "
-                    f"(current state: {current})",
-                    details={"service": self._service, "state": current},
+                    f"(elapsed={elapsed:.3f}s; {detail})",
+                    details={
+                        "service": self._service,
+                        "elapsed": elapsed,
+                        "state": detail,
+                    },
                 )
             remaining = max(0.0, deadline - ctx.clock.now())
             ctx.wait(min(self._poll_period, remaining))
-            status = self._live_status(ctx)
 
     def close(self) -> None:
-        """释放 adapter 资源（默认空操作）."""
-        try:
-            self._adapter.close()
-        except Exception:  # pragma: no cover - 关闭尽力而为
-            pass
+        """释放 adapter 与 policy 资源（默认空操作，尽力而为）."""
+        for holder in (self._adapter, self._completion):
+            if holder is None:
+                continue
+            try:
+                holder.close()
+            except Exception:  # pragma: no cover - 关闭尽力而为
+                pass
 
     # -- 内部 --------------------------------------------------------------
 
@@ -218,34 +367,46 @@ class RosServiceResetStrategy(ResetStrategy):
                 details={"service": self._service},
             ) from exc
 
-    def _is_complete(
-        self,
-        status: ControlStatusValue,
-        epoch_before: int | None,
-        saw_resetting: bool,
-    ) -> bool:
-        """判断 reset 是否完成（READY / ACTIVE 且 epoch 已更新）."""
-        if not status.accepting_commands:
-            return False
-        if self._require_resetting_state and not saw_resetting:
-            return False
-        if (
-            self._require_new_epoch
-            and epoch_before is not None
-            and status.control_epoch == epoch_before
-        ):
-            return False
-        return True
+    def _on_request(self, ctx: ResetContext) -> None:
+        """调用 policy 的基线钩子（异常包成 ResetError）."""
+        assert self._completion is not None
+        try:
+            self._completion.on_request(ctx)
+        except ResetError:
+            raise
+        except Exception as exc:
+            raise ResetError(
+                f"reset service {self._service!r} completion policy on_request() "
+                f"failed: {exc}",
+                details={"service": self._service},
+            ) from exc
 
-    def _live_status(self, ctx: ResetContext) -> ControlStatusValue | None:
-        """读取最新 ControlStatus（未配置 status_source 时返回 None）."""
-        if self._status_source is None:
-            return None
-        sample = ctx.state_provider(self._status_source)
-        if sample is None:
-            return None
-        value = sample.value
-        return value if isinstance(value, ControlStatusValue) else None
+    def _evaluate(
+        self,
+        states: StateView,
+        ctx: ResetContext,
+        elapsed: float,
+    ) -> ResetCompletion:
+        """调用 policy 的判定（异常包成 ResetError）."""
+        assert self._completion is not None
+        try:
+            return self._completion.evaluate(states, ctx, elapsed)
+        except ResetError:
+            raise
+        except Exception as exc:
+            raise ResetError(
+                f"reset service {self._service!r} completion policy evaluate() "
+                f"failed: {exc}",
+                details={"service": self._service, "elapsed": elapsed},
+            ) from exc
+
+    def _describe(self, states: StateView, ctx: ResetContext) -> str:
+        """取 policy 的诊断文本（诊断失败不能反过来炸掉 reset）."""
+        assert self._completion is not None
+        try:
+            return self._completion.describe(states, ctx)
+        except Exception:  # pragma: no cover - 诊断尽力而为
+            return "<completion policy describe() failed>"
 
     def _log_info(self, message: str) -> None:
         """写 info 日志（logger 可选）."""

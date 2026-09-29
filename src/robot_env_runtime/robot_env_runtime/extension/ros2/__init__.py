@@ -14,6 +14,7 @@ from robot_env_runtime.extension.ros2.protocol import (
 )
 from robot_env_runtime.extension.ros2.publisher_controller import RosPublisherController
 from robot_env_runtime.extension.ros2.service_reset import (
+    ManagedControlResetCompletionPolicy,
     ResetServiceAdapter,
     RosServiceResetStrategy,
     TriggerResetAdapter,
@@ -31,6 +32,7 @@ __all__ = [
     "ControlStatusValue",
     "LegacyProtocol",
     "ManagedControlProtocol",
+    "ManagedControlResetCompletionPolicy",
     "RosControllerAdapter",
     "RosPublisherController",
     "RosServiceResetStrategy",

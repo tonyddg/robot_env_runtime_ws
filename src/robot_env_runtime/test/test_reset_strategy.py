@@ -7,7 +7,10 @@ import pytest
 from robot_env_runtime.core.errors import ResetError, ResetTimeoutError
 from robot_env_runtime.core.types import ResetContext
 from robot_env_runtime.extension.ros2.protocol import ControlState, ControlStatusValue
-from robot_env_runtime.extension.ros2.service_reset import RosServiceResetStrategy
+from robot_env_runtime.extension.ros2.service_reset import (
+    ManagedControlResetCompletionPolicy,
+    RosServiceResetStrategy,
+)
 from robot_env_runtime.testing import FakeClock, FakeLogger, FakeServiceCaller, FakeStateSource
 
 
@@ -37,7 +40,7 @@ def _status(state: ControlState, epoch: int) -> ControlStatusValue:
 
 
 def test_sync_service_response_completes_reset() -> None:
-    """Status_source=None 时以 service response 作为完成（legacy 同步语义）."""
+    """Completion=None 时以 service response 作为完成（legacy 同步语义）."""
     clock = FakeClock()
     caller = FakeServiceCaller()
     strategy = RosServiceResetStrategy(
@@ -66,8 +69,10 @@ def test_waits_for_resetting_then_ready_with_new_epoch() -> None:
         name="home",
         service="/reset",
         clock=clock,
-        status_source="arm_control",
-        require_resetting_state=True,
+        completion=ManagedControlResetCompletionPolicy(
+            status_source="arm_control",
+            require_resetting_state=True,
+        ),
     )
     assert strategy.state_dependencies == ("arm_control",)
 
@@ -97,7 +102,7 @@ def test_epoch_must_change_after_reset() -> None:
         name="home",
         service="/reset",
         clock=clock,
-        status_source="arm_control",
+        completion=ManagedControlResetCompletionPolicy(status_source="arm_control"),
         timeout=0.1,
     )
     with pytest.raises(ResetTimeoutError):
@@ -109,7 +114,10 @@ def test_faulted_state_aborts_reset() -> None:
     clock = FakeClock()
     source = FakeStateSource("arm_control", clock=clock, value=_status(ControlState.FAULTED, 5))
     strategy = RosServiceResetStrategy(
-        name="home", service="/reset", clock=clock, status_source="arm_control"
+        name="home",
+        service="/reset",
+        clock=clock,
+        completion=ManagedControlResetCompletionPolicy(status_source="arm_control"),
     )
     with pytest.raises(ResetError):
         strategy.run(_context(clock, state_source=source))
@@ -125,7 +133,7 @@ def test_reset_timeout_raises() -> None:
         name="home",
         service="/reset",
         clock=clock,
-        status_source="arm_control",
+        completion=ManagedControlResetCompletionPolicy(status_source="arm_control"),
         timeout=0.2,
     )
     with pytest.raises(ResetTimeoutError):

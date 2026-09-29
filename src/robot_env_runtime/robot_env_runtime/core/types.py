@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
 
 import numpy as np
@@ -202,6 +203,15 @@ class ResetContext:
     call_trigger: Callable[[str, float], Any]
     timeout: float
     service_caller: Callable[[str, Any, Any, float], Any] | None = None
+    params: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """把 ``params`` 冻结成只读映射（reset 期间不可变）."""
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
+    def param(self, name: str, default: Any = None) -> Any:
+        """读取一次 reset 调用传入的参数（未传时返回 ``default``）."""
+        return self.params.get(name, default)
 
     def wait(self, seconds: float) -> None:
         """通过 clock 等待 ``seconds`` 秒（测试中即 FakeClock 推进）."""

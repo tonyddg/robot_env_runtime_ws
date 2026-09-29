@@ -159,6 +159,10 @@ class ResetTimeoutError(ResetError):
     """reset 未在 timeout 内完成."""
 
 
+class ResetParameterError(RobotRuntimeError):
+    """调用 env.reset(**kwargs) 时传了该 reset 未声明的参数名."""
+
+
 class ServiceCallError(RobotRuntimeError):
     """ROS service 调用失败（不可用或返回空响应）."""
 

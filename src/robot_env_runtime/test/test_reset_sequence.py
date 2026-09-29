@@ -8,7 +8,10 @@ from robot_env_runtime.core.errors import ConfigError, ResetError
 from robot_env_runtime.core.types import CycleState, ResetContext
 from robot_env_runtime.extension.reset import ResetStrategy, SequentialResetStrategy
 from robot_env_runtime.extension.ros2.protocol import ControlState
-from robot_env_runtime.extension.ros2.service_reset import RosServiceResetStrategy
+from robot_env_runtime.extension.ros2.service_reset import (
+    ManagedControlResetCompletionPolicy,
+    RosServiceResetStrategy,
+)
 from robot_env_runtime.testing import FakeClock, FakeLogger
 from harness import FakeManagedControlNode, build_env, simple_env
 from robot_env_runtime.core.dispatcher import ActionRoute
@@ -217,7 +220,10 @@ def test_profile_reset_list_runs_end_to_end() -> None:
         "arm_home",
         lambda ctx, states: _RecordingServiceReset(
             name="arm_home", service="/arm/reset", clock=ctx.clock,
-            status_source="arm_control", order_log=order,
+            completion=ManagedControlResetCompletionPolicy(
+                status_source="arm_control"
+            ),
+            order_log=order,
         ),
         depends_on=("arm_control",),
     )
@@ -225,7 +231,10 @@ def test_profile_reset_list_runs_end_to_end() -> None:
         "body_home",
         lambda ctx, states: _RecordingServiceReset(
             name="body_home", service="/body/reset", clock=ctx.clock,
-            status_source="body_control", order_log=order,
+            completion=ManagedControlResetCompletionPolicy(
+                status_source="body_control"
+            ),
+            order_log=order,
         ),
         depends_on=("body_control",),
     )
@@ -290,11 +299,17 @@ def test_sequence_of_two_managed_resets_runs_end_to_end() -> None:
         [
             _RecordingServiceReset(
                 name="arm_home", service="/arm/reset", clock=clock,
-                status_source="arm_control", order_log=order,
+                completion=ManagedControlResetCompletionPolicy(
+                    status_source="arm_control"
+                ),
+                order_log=order,
             ),
             _RecordingServiceReset(
                 name="body_home", service="/body/reset", clock=clock,
-                status_source="body_control", order_log=order,
+                completion=ManagedControlResetCompletionPolicy(
+                    status_source="body_control"
+                ),
+                order_log=order,
             ),
         ],
     )

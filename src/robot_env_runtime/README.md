@@ -782,16 +782,20 @@ RosServiceResetStrategy(
     service="/example/arm/reset",       # std_srvs/Trigger（默认）
     clock=ctx.clock,
     adapter=None,                       # None → TriggerResetAdapter（等价旧行为）
-    status_source="arm_control",        # None 表示以 service response 作为完成
+    completion=ManagedControlResetCompletionPolicy(   # None → service response 即完成
+        status_source="arm_control",
+        require_resetting_state=False,  # True：必须观察到 RESETTING
+        require_new_epoch=True,         # True：reset 后 epoch 必须更新
+    ),
     timeout=ctx.settings.reset_timeout,
-    require_resetting_state=False,      # True：必须观察到 RESETTING
-    require_new_epoch=True,             # True：reset 后 epoch 必须更新
 )
 ```
 
-* 同步语义的 legacy service：`status_source=None`，service response 即完成。
-* 异步语义：`request accepted → RESETTING → ... → READY`，通过 StateSource 等待完成。
-* `RESETTING → FAULTED` 直接抛 `ResetError`；超时抛 `ResetTimeoutError`。
+* `completion=None`（默认）：legacy 同步语义，service response 成功即完成；
+* `completion=ManagedControlResetCompletionPolicy(...)`：managed 默认规则
+  `request accepted → RESETTING → ... → READY`（可要求必须换 epoch）；
+* `FAULTED` → 立即 `ResetError`；等待超时 → `ResetTimeoutError`（消息里带 policy 的
+  `describe()` 诊断与 elapsed）。
 
 ### 自定义 reset service（adapter）
 
@@ -815,7 +819,8 @@ class HomePoseResetAdapter(ResetServiceAdapter):
 
 strategy = RosServiceResetStrategy(
     name="home", service="/arm/reset", clock=ctx.clock,
-    adapter=HomePoseResetAdapter(), status_source="arm_control",
+    adapter=HomePoseResetAdapter(),
+    completion=ManagedControlResetCompletionPolicy(status_source="arm_control"),
 )
 ```
 
@@ -824,6 +829,106 @@ strategy = RosServiceResetStrategy(
   `depends_on` 必须覆盖它们（builder 会在装配期校验）；
 * reset 期间读的是 StateSource 的**最新样本**（reset 不在 cycle 内，没有 boundary
   snapshot），required 状态缺失会转成 `ResetError`。
+
+### 自定义完成判定（`ResetCompletionPolicy`）
+
+复位完成不一定由 `ControlStatus` 表达（其它 reset 节点、遥操跟随到位、legacy stage
+话题……）。这时实现一个 policy 描述"怎么算完成"，`RosServiceResetStrategy` 只负责
+发服务、轮询与超时：
+
+```python
+class TeleFollowResetCompletionPolicy(ResetCompletionPolicy):
+    """示例：跟随臂到位并稳定 N 次算完成（阈值/稳定性由策略自己定）."""
+
+    def __init__(self, *, follow: str = "tianyi_arm_qpos_left",
+                 target: str = "tele_arm_state",
+                 tolerance: float = 0.05, settle_polls: int = 3) -> None:
+        self._follow, self._target = follow, target
+        self._tolerance, self._settle_polls = tolerance, settle_polls
+        self._stable = 0
+
+    @property
+    def state_inputs(self):
+        return {
+            "follow": StateInput(self._follow, required=True),
+            "target": StateInput(self._target, required=True),
+        }
+
+    def on_request(self, ctx):
+        """服务发出前抓基线（这里只需要清零稳定计数）."""
+        self._stable = 0
+
+    def evaluate(self, states, ctx, elapsed):
+        error = float(np.max(np.abs(
+            np.asarray(states.value("target")) - np.asarray(states.value("follow"))
+        )))
+        if error > self._tolerance:
+            self._stable = 0
+            return ResetCompletion.pending(f"error={error:.3f} rad")
+        self._stable += 1
+        if self._stable < self._settle_polls:
+            return ResetCompletion.pending(f"settling {self._stable}/{self._settle_polls}")
+        return ResetCompletion.completed(f"reached within {self._tolerance} rad")
+
+    def describe(self, states, ctx):
+        return f"stable={self._stable}/{self._settle_polls}"
+
+strategy = RosServiceResetStrategy(
+    name="tele_home", service="/body_manual_reset/reset", clock=ctx.clock,
+    adapter=TianyiTeleBodyManualResetAdapter(...),   # 仍可搭配自定义请求
+    completion=TeleFollowResetCompletionPolicy(),
+)
+```
+
+* 三态结果：`ResetCompletion.pending(...)` / `.completed(...)` / `.failed(reason)`；
+  `FAILED` 立即抛 `ResetError`（不等超时），只有 `PENDING` 才继续等到 `timeout`；
+* `on_request(ctx)` 在**服务发出之前**调用，用来抓基线（epoch、起始位置、目标）；
+  policy 可以在 `evaluate` 内维护"稳定 N 次"这类运行期状态（同一实例不并发使用）；
+* `state_inputs` 会并入 reset 的 `state_dependencies`：runtime 在跑 reset 前先等这些
+  StateSource 就绪，注册 reset 时的 `depends_on` 必须覆盖它们；
+* `describe(states, ctx)` 可选，用于超时 / 失败诊断（默认列出各 source 的样本）；
+* policy 只做判定，不做等待与超时控制（`timeout` / `poll_period` 仍在 strategy 上）。
+
+### 调用时传参（`env.reset(**kwargs)`）
+
+reset 行为可以在**调用时**参数化：`env.reset(...)` 的关键字参数会原样放进
+`ResetContext.params`（只读），reset 侧的 adapter / policy 用 `ctx.param("name", default)` 读取。
+
+```python
+class TeleOrFixedResetAdapter(ResetServiceAdapter):
+    @property
+    def srv_type(self):
+        return BodyManualReset
+
+    @property
+    def parameter_names(self):            # ← 声明本 adapter 接受哪些 reset 参数
+        return ("mode", "target_positions")
+
+    def build_request(self, states, ctx):
+        mode = ctx.param("mode", "fixed")                 # 未传时用默认值
+        request = BodyManualReset.Request()
+        request.cmds = []
+        if mode == "tele":
+            target = np.asarray(states.value("tele_arm_state"))
+        else:
+            target = np.asarray(ctx.param("target_positions"))
+        # ... 用 target 填充 request.cmds
+        return request
+
+env.reset(mode="tele")                                     # 遥操跟随
+env.reset(mode="fixed", target_positions=[0.0] * 14)       # 固定姿态
+```
+
+规则：
+
+* 白名单默认是**空**：没有声明 `parameter_names` 的 reset 只接受 `env.reset()`；传了未声明的
+  参数名会立即抛 `ResetParameterError`（不 latch fault、不执行 stop，环境仍可继续使用）；
+* `RosServiceResetStrategy.parameter_names = adapter.parameter_names ∪ completion.parameter_names`，
+  policy 同样能用 `ctx.param(...)` 读参（例如每次 reset 用不同的 `tolerance`）；
+* 组合 reset（`SequentialResetStrategy` 或 Profile 的 `reset: [a, b]`）：白名单是各 step 的并集，
+  且**同一参数名不允许被两个 step 声明**（装配期 `ConfigError`）——保证一个 key 只属于一个 step；
+* 参数是进程内 Python 对象（numpy 数组、dataclass 都行），runtime 不做类型 / 取值校验，由
+  adapter 或 policy 自己校验；每次 `env.reset()` 的 `ctx.params` 独立且只读。
 
 ### 叠加多个 reset（顺序组合）
 

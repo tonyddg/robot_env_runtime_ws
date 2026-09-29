@@ -46,6 +46,7 @@ from robot_env_runtime.core.errors import (
     RequiredStateMissingError,
     RequiredStateStaleError,
     ResetError,
+    ResetParameterError,
     ResetTimeoutError,
     RobotRuntimeError,
     RosExecutorFailureError,
@@ -78,7 +79,13 @@ from robot_env_runtime.extension.observation import (
     TransformObservation,
 )
 from robot_env_runtime.extension.plugin import PluginRegistry, RobotPlugin
-from robot_env_runtime.extension.reset import ResetStrategy, SequentialResetStrategy
+from robot_env_runtime.extension.reset import (
+    ResetCompletion,
+    ResetCompletionKind,
+    ResetCompletionPolicy,
+    ResetStrategy,
+    SequentialResetStrategy,
+)
 from robot_env_runtime.extension.ros2 import (
     ACCEPTING_STATES,
     AsyncRosTopicStateSource,
@@ -89,6 +96,7 @@ from robot_env_runtime.extension.ros2 import (
     ControlStatusValue,
     LegacyProtocol,
     ManagedControlProtocol,
+    ManagedControlResetCompletionPolicy,
     RosControllerAdapter,
     RosPublisherController,
     RosServiceResetStrategy,
@@ -164,7 +172,12 @@ __all__ = [
     "ResetContext",
     "ResetDefinition",
     "ResetError",
+    "ResetParameterError",
     "ResetStrategy",
+    "ResetCompletion",
+    "ResetCompletionKind",
+    "ResetCompletionPolicy",
+    "ManagedControlResetCompletionPolicy",
     "ResetServiceAdapter",
     "SequentialResetStrategy",
     "ResetTimeoutError",

@@ -12,7 +12,13 @@ from robot_env_runtime.extension.observation import (
     TransformObservation,
 )
 from robot_env_runtime.extension.plugin import PluginRegistry, RobotPlugin
-from robot_env_runtime.extension.reset import ResetStrategy, SequentialResetStrategy
+from robot_env_runtime.extension.reset import (
+    ResetCompletion,
+    ResetCompletionKind,
+    ResetCompletionPolicy,
+    ResetStrategy,
+    SequentialResetStrategy,
+)
 from robot_env_runtime.extension.specs import (
     ControllerDefinition,
     ObservationDefinition,
@@ -30,6 +36,9 @@ __all__ = [
     "PluginRegistry",
     "ResetDefinition",
     "ResetStrategy",
+    "ResetCompletion",
+    "ResetCompletionKind",
+    "ResetCompletionPolicy",
     "SequentialResetStrategy",
     "RobotPlugin",
     "StateDefinition",

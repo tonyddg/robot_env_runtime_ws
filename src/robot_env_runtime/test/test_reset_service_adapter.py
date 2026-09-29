@@ -12,6 +12,7 @@ from robot_env_runtime.core.errors import ConfigError, ResetError
 from robot_env_runtime.core.state_view import StateInput, StateView
 from robot_env_runtime.core.types import ResetContext
 from robot_env_runtime.extension.ros2.service_reset import (
+    ManagedControlResetCompletionPolicy,
     ResetServiceAdapter,
     RosServiceResetStrategy,
     TriggerResetAdapter,
@@ -163,14 +164,16 @@ def test_custom_interpret_response_can_report_failure() -> None:
     assert "joint limit exceeded" in str(excinfo.value)
 
 
-def test_state_dependencies_union_adapter_and_status_source() -> None:
-    """state_dependencies = adapter 依赖 + status_source（保序去重）."""
+def test_state_dependencies_union_adapter_and_completion_policy() -> None:
+    """state_dependencies = adapter 依赖 + completion policy 依赖（保序去重）."""
     strategy = RosServiceResetStrategy(
         name="home",
         service="/arm/reset",
         clock=FakeClock(),
         adapter=_HomePoseResetAdapter(source="arm_qpos"),
-        status_source="arm_control",
+        completion=ManagedControlResetCompletionPolicy(
+            status_source="arm_control"
+        ),
     )
     assert strategy.state_dependencies == ("arm_qpos", "arm_control")
 

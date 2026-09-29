@@ -36,7 +36,10 @@ from robot_env_runtime.extension.ros2.protocol import (
     ManagedControlProtocol,
 )
 from robot_env_runtime.extension.ros2.publisher_controller import RosPublisherController
-from robot_env_runtime.extension.ros2.service_reset import RosServiceResetStrategy
+from robot_env_runtime.extension.ros2.service_reset import (
+    ManagedControlResetCompletionPolicy,
+    RosServiceResetStrategy,
+)
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter, stamp_to_seconds
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
 from robot_env_runtime.ros2.qos import make_qos
@@ -427,12 +430,14 @@ def create_example_robot_plugin(
         )
 
     def reset_factory(ctx: Any, states: Mapping[str, Any]) -> RosServiceResetStrategy:
-        """构造 managed reset 策略：调用 reset service 并等待 RESETTING → READY + 新 epoch."""
+        """构造 managed reset：调用 reset service 并等待 RESETTING → READY + 新 epoch."""
         return RosServiceResetStrategy(
             name="home",
             service=arm_config.reset_service,
             clock=ctx.clock,
-            status_source=ARM_STATUS_SOURCE,
+            completion=ManagedControlResetCompletionPolicy(
+                status_source=ARM_STATUS_SOURCE
+            ),
             timeout=ctx.settings.reset_timeout,
             logger=ctx.logger,
         )

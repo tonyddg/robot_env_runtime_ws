@@ -16,7 +16,10 @@ from robot_env_runtime.extension.ros2.protocol import (
     LegacyProtocol,
     ManagedControlProtocol,
 )
-from robot_env_runtime.extension.ros2.service_reset import RosServiceResetStrategy
+from robot_env_runtime.extension.ros2.service_reset import (
+    ManagedControlResetCompletionPolicy,
+    RosServiceResetStrategy,
+)
 from robot_env_runtime.testing import (
     FakeClock,
     FakeInferenceFuture,
@@ -117,7 +120,9 @@ def _managed_env(
             name="home",
             service=node.reset_service,
             clock=clock,
-            status_source="arm_control",
+            completion=ManagedControlResetCompletionPolicy(
+                status_source="arm_control"
+            ),
             timeout=1.0,
         )
     env = build_env(
