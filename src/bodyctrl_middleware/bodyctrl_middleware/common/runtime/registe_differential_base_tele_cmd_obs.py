@@ -16,10 +16,10 @@ from robot_env_runtime.extension.plugin import RobotPlugin
 
 class DifferentialBaseTeleCmdAdapterConfig(BaseModel):
     max_tele_linear: float = RosField(
-        0.5, read_only = True, description = "最大底盘遥操作指令线速度",
+        0.5, ge = 0.0, read_only = True, description = "最大底盘遥操作指令线速度",
     )
     max_tele_angular: float = RosField(
-        1.5, read_only = True, description = "最大底盘遥操作指令角速度",
+        1.5, ge = 0.0, read_only = True, description = "最大底盘遥操作指令角速度",
     )
     tele_cmd_vel_topic: str = RosField(
         "tele/cmd_vel", read_only = True, description = "虚拟底盘速度指令话题",

@@ -3,7 +3,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    arm_type = "bimanual"
+    arm_type = "left"
     arm_config = dict(
         bimanual = dict(
             control_arm_motor_list = [
@@ -52,12 +52,12 @@ def generate_launch_description():
         package = "bodyctrl_middleware",
         executable = "tianyi_body_manual_reset",
     )
-    tianyi_bimanual_tele_node = Node(
+    tianyi_wholebody_tele_node = Node(
         package = "bodyctrl_middleware",
-        executable = "tianyi_bimanual_tele_node",
+        executable = "tianyi_wholebody_tele_node",
         parameters = [
             {
-                "config.plugin.control_arm_motor_list": control_arm_motor_list,
+                "config.arm.arm_motor_list": control_arm_motor_list,
             }
         ]
     )
@@ -66,5 +66,5 @@ def generate_launch_description():
     return LaunchDescription([
         tianyi_arm_interpolate_control, 
         tianyi_body_manual_reset,
-        tianyi_bimanual_tele_node
+        tianyi_wholebody_tele_node
     ])

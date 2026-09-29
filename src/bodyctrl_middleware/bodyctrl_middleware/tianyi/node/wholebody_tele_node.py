@@ -3,7 +3,10 @@ from pathlib import Path
 
 from pydantic import BaseModel
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
-from bodyctrl_middleware.tianyi.plugin.tianyi_arm_only import tianyi_arm_only, TianyiArmOnlyConfig
+
+from bodyctrl_middleware.tianyi.plugin.tianyi_arm import tianyi_arm, TianyiArmConfig
+from bodyctrl_middleware.tianyi.plugin.tianyi_base import tianyi_base, TianyiBaseConfig
+
 from bodyctrl_middleware.policy.tele_policy import TelePolicy, TeleConfig
 from bodyctrl_middleware.record import (
     build_action_meta,
@@ -12,11 +15,12 @@ from bodyctrl_middleware.record import (
     parse_extra_meta,
 )
 
+from robot_env_runtime.extension.plugin import RobotPlugin
 from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.extension.plugin import PluginRegistry
 from robot_env_runtime.ros2.executor import RosExecutorHost
 
-DEFAULT_PROFILE = "config/tianyi_bimanual_tele.yaml"
+DEFAULT_PROFILE = "config/tianyi_wholebody_tele.yaml"
 
 
 class RecordConfig(BaseModel):
@@ -57,21 +61,21 @@ class Config(BaseModel):
         "~", read_only = True,
         description = "profile 设置路径, 传入绝对路径",
     )
-    plugin: TianyiArmOnlyConfig = RosField(default_factory = lambda: TianyiArmOnlyConfig)
-    record: RecordConfig = RosField(default_factory = lambda: RecordConfig)
-
+    arm: TianyiArmConfig = RosField(default_factory = lambda: TianyiArmConfig())
+    base: TianyiBaseConfig = RosField(default_factory = lambda: TianyiBaseConfig())
+    record: RecordConfig = RosField(default_factory = lambda: RecordConfig())
 
 def main(argv = None):
-    executor = RosExecutorHost(node_name = "tianyi_bimanual_tele", autostart = False)
+    executor = RosExecutorHost(node_name = "tianyi_whole_tele", autostart = False)
 
-    if executor._node is not None:
-        params = RosParamBridge(
-            executor._node, Config,
-            namespace = "config",
-        )
-        config = params.declare()
-    else:
-        config = Config()
+    if executor.node is None:
+        raise RuntimeError("executor.node 不能为 None")
+
+    params = RosParamBridge(
+        executor.node, Config,
+        namespace = "config",
+    )
+    config = params.declare()
 
     if config.profile_path == "~":
         config.profile_path = str(
@@ -81,33 +85,49 @@ def main(argv = None):
 
     executor.start()
 
+    robot = RobotPlugin("tianyi")
+    robot = tianyi_arm(config.arm, robot)
+    robot = tianyi_base(config.base, robot)
+
     env = RobotEnv.from_profile(
         config.profile_path,
         executor = executor,
         logger = executor.node.get_logger(),
-        registry = PluginRegistry([tianyi_arm_only(config.plugin)]),
-    )
-    policy = TelePolicy(
-        [TeleConfig(
-            config.plugin.tele_arm_qpos_obs_name, None,
-            [True, ] * len(config.plugin.control_arm_motor_list),
-            [],
-            0.3,  # 与实际 scale 对应
-        )],
-        logger = executor.node.get_logger()
+        registry = PluginRegistry([robot]),
     )
 
     try:
+        import yaml
+        with open(config.profile_path) as f:
+            profile_dict = yaml.load(f, yaml.SafeLoader)
+        policy = TelePolicy(
+            [
+                TeleConfig.from_profile(
+                    config.arm.tele_arm_qpos_obs_name, None,
+                    [True, ] * len(config.arm.arm_motor_list),
+                    profile_dict, "arm"
+                ),
+                TeleConfig.from_profile(
+                    config.base.tele_cmd_vel_obs_name, None,
+                    [False, ] * 2,
+                    profile_dict, "base"
+                ),
+            ],
+            # True 遥操继续, 观测值为 1, 函数返回 False 不结束遥操
+            is_tele_done_fn = lambda obs: obs.get("stop_tele", 1) != 1,
+            logger = executor.node.get_logger()
+        )
+
         if config.record.enable:
             record_meta = build_record_meta(
                 config.profile_path,
-                config.plugin,
+                config,
                 policy,
                 extra = parse_extra_meta(config.record.extra_meta_json),
             )
             action_meta = build_action_meta(
                 record_meta.get("profile"),
-                config.plugin,
+                config.arm,
             )
             collect_multi(
                 env,

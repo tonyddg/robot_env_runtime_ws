@@ -32,6 +32,7 @@ setup(
             "tianyi_interpolate_test_node = bodyctrl_middleware.tianyi.test_node.interpolate_test_node:main",
 
             "tianyi_bimanual_tele_node = bodyctrl_middleware.tianyi.node.bimanual_tele_node:main",
+            "tianyi_wholebody_tele_node = bodyctrl_middleware.tianyi.node.wholebody_tele_node:main",
         ],
     },
 )

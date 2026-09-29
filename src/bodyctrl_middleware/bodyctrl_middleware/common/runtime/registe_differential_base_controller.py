@@ -18,10 +18,10 @@ from robot_env_runtime.extension.ros2.protocol import LegacyProtocol
 
 class DifferentialBaseVelocityAdapterConfig(BaseModel):
     max_linear: float = RosField(
-        0.5, read_only = True, description = "最大底盘线速度",
+        0.5, ge = 0.0, read_only = True, description = "最大底盘线速度",
     )
     max_angular: float = RosField(
-        1.5, read_only = True, description = "最大底盘角速度",
+        1.5, ge = 0.0, read_only = True, description = "最大底盘角速度",
     )
 
     cmd_vel_topic: str = RosField(
