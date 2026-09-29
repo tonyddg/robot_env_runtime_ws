@@ -76,7 +76,7 @@ class ArmInterpolateControl(Node):
             0.1, ge = 0.0, description = "单步最大移动距离, 包括当前关节状态与插值起始关节状态最大允许误差"
         )
         min_total_time: float = RosField(
-            0.05, ge = 0.0, description = "最小单步移动时间"
+            0.01, ge = 0.0, description = "最小单步移动时间"
         )
         is_spd0_in_last: bool = RosField(
             False, description = "是否在最后一步发布 0 速度"

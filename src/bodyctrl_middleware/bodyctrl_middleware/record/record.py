@@ -141,7 +141,7 @@ def collect_once(
     exception_type: Optional[str] = None
     exception_message: Optional[str] = None
 
-    pending_padding = True
+    # pending_padding = True
     first_obs = None
 
     try:
@@ -149,19 +149,23 @@ def collect_once(
         policy.reset(observations)
         first_obs = observations
 
+        writer.append(
+            first_obs, np.zeros(env.action_dim, dtype = np.float32), None, padding = True
+        )
+
         while not policy.done() and env.ok():
             future = policy.infer_async(observations)
             env.wait_for_step(future)
             action = np.array(future.get_action(), copy = True)
             observations, info = env.step(action)
 
-            if pending_padding:
-                # 配对语义要求第 0 行是首帧 obs + 零动作；这里才写是为了让 padding 行的
-                # dtype / shape 与第一条真实 action 完全一致。
-                writer.append(
-                    first_obs, np.zeros_like(action), None, padding = True
-                )
-                pending_padding = False
+            # if pending_padding:
+            #     # 配对语义要求第 0 行是首帧 obs + 零动作；这里才写是为了让 padding 行的
+            #     # dtype / shape 与第一条真实 action 完全一致。
+            #     writer.append(
+            #         first_obs, np.zeros_like(action), None, padding = True
+            #     )
+            #     pending_padding = False
 
             writer.append(observations, action, info)
 
