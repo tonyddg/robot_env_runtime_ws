@@ -8,7 +8,7 @@ from bodyctrl_middleware_interface.msg import SetMotorResetTarget
 
 from bodyctrl_middleware.tianyi.constants import (
     TELE_ARM_STATE_TOPIC, TELE_RESULT_LENGTH, TELE_GRIPPER_OPENNESS_MAP, TELE_RESULT_TO_MOTOR_MAP,
-    SDK_LIMITS, get_qpos_bound
+    SDK_LIMITS, get_qpos_bound, valide_target_pos_list
 )
 
 # 控制器指令
@@ -20,54 +20,71 @@ from robot_env_runtime.extension.plugin import RobotPlugin
 
 # 标准重置器相关库
 from robot_env_runtime.core.state_view import StateInput, StateView
-from robot_env_runtime.extension.ros2.service_reset import RosServiceResetStrategy, ResetServiceAdapter
+from robot_env_runtime.extension.ros2.service_reset import (
+    ManagedControlResetCompletionPolicy,
+    ResetServiceAdapter,
+    RosServiceResetStrategy,
+)
 from robot_env_interface.msg import ControlStatus
 from robot_env_runtime.extension.ros2.protocol import (ControlStatusAdapter,)
+
+def _make_reset_target_req(
+    # 被控电机 id
+    motor_name_list: tuple[int, ...],
+    # 被控电机目标位置
+    target_pos_list: tuple[float, ...]
+):
+    valide_target_pos_list(motor_name_list, target_pos_list)
+    req = BodyManualReset.Request()
+    req.cmds = []
+    for name, pos in zip(motor_name_list, target_pos_list):
+        cmd = SetMotorResetTarget()
+        cmd.name = str(name)
+        cmd.pos = float(pos)
+        req.cmds.append(cmd)
+
+    return req
 
 class TianyiFixedBodyManualResetAdapter(ResetServiceAdapter):
 
     def __init__(
         self,
-        # 固定初始化模式下的被控电机 id
-        motor_name_list: Optional[tuple[int]] = None,
-        # 固定初始化模式下的被控电机目标位置
-        target_pos_list: Optional[tuple[float]] = None
+        # 默认被控电机 id
+        default_motor_name_list: Optional[tuple[int, ...]] = None,
+        # 默认被控电机目标位置, 同时空缺时由 reset 节点默认值决定
+        default_target_pos_list: Optional[tuple[float, ...]] = None
     ) -> None:
-        if motor_name_list is None and target_pos_list is None:
-            pass
-        elif motor_name_list is not None and target_pos_list is not None:
-            if len(motor_name_list) != len(set(motor_name_list)):
+        if default_motor_name_list is None and default_target_pos_list is not None:
+            raise ValueError("提供了 default_target_pos_list 后必须提供 motor_name_list")
+        elif default_motor_name_list is not None and default_target_pos_list is None:
+            if len(default_motor_name_list) != len(set(default_motor_name_list)):
                 raise ValueError("motor_name_list 中存在重复 id")
-            if len(motor_name_list) != len(target_pos_list):
-                raise ValueError("motor_name_list 与 target_pos_list 长度不同")
+        elif default_motor_name_list is not None and default_target_pos_list is not None:
+            valide_target_pos_list(
+                default_motor_name_list, default_target_pos_list
+            )
 
-            for name, pos in zip(motor_name_list, target_pos_list):
-                limit = SDK_LIMITS.get(name, None)
-                if limit is None:
-                    raise ValueError(f"关节名 {name} 没有查询到限位")
-                if pos < limit[0] or pos > limit[1]:
-                    raise ValueError(f"关节名 {name} 的目标 {pos} 超过限位 {limit}")
-
-        else:
-            raise ValueError("motor_name_list 与 target_pos_list 必须同时为 None 或不为 None")
-
-        self.motor_name_list = motor_name_list
-        self.target_pos_list = target_pos_list
+        self.default_motor_name_list = default_motor_name_list
+        self.default_target_pos_list = default_target_pos_list
 
     @property
     def srv_type(self) -> Any:
         return BodyManualReset
 
-    def build_request(self, states: StateView, ctx: ResetContext) -> BodyManualReset.Request:
-        req = BodyManualReset.Request()
-        req.cmds = []
-        if self.motor_name_list is not None and self.target_pos_list is not None:
-            for name, pos in zip(self.motor_name_list, self.target_pos_list):
-                cmd = SetMotorResetTarget()
-                cmd.name = name
-                cmd.pos = pos
-                req.cmds.append(cmd)
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        """允许 ``env.reset(**kwargs)`` 传入的参数名（默认 `()` = 不接受参数）."""
+        return ("body_manual_reset_target_pos_list", "body_manual_reset_motor_name_list")
 
+    def build_request(self, states: StateView, ctx: ResetContext) -> BodyManualReset.Request:
+        target_pos_list = ctx.params.get("body_manual_reset_target_pos_list", self.default_target_pos_list)
+        motor_name_list = ctx.params.get("body_manual_reset_motor_name_list", self.default_motor_name_list)
+        if target_pos_list is None and motor_name_list is None:
+            return BodyManualReset.Request()
+        elif target_pos_list is None or motor_name_list is None:
+            raise ValueError(f"target_pos_list {target_pos_list} 或 motor_name_list {motor_name_list} 缺失")
+
+        req = _make_reset_target_req(motor_name_list, target_pos_list)
         return req
 
 class TianyiTeleBodyManualResetAdapter(ResetServiceAdapter):
@@ -84,7 +101,6 @@ class TianyiTeleBodyManualResetAdapter(ResetServiceAdapter):
         tele_state_name: str = "tele_arm_state",
 
     ) -> None:
-
         if len(follow_motor_name_list) != len(set(follow_motor_name_list)):
             raise ValueError("follow_motor_id 中存在重复 id")
 
@@ -97,18 +113,18 @@ class TianyiTeleBodyManualResetAdapter(ResetServiceAdapter):
             if idx is None:
                 raise ValueError(f"关节 {name} 不在遥操臂到真实关节的映射表中")
             self.tele_state_to_target_qpos.append(idx)
-            
-            # limits = SDK_LIMITS.get(name, None)
-            # if limits is None:
-            #     raise ValueError(f"关节 {name} 不在真实关节表中")
-            # self.follow_motor_limits.append(limits)
-        
+
         (self.lower_bound, self.upper_bound) = get_qpos_bound(follow_motor_name_list)
         self.tele_state_name = tele_state_name
 
     @property
     def srv_type(self) -> Any:
         return BodyManualReset
+    
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        """允许 ``env.reset(**kwargs)`` 传入的参数名（默认 `()` = 不接受参数）."""
+        return ()
 
     @property
     def state_inputs(self) -> Mapping[str, StateInput]:
@@ -125,13 +141,10 @@ class TianyiTeleBodyManualResetAdapter(ResetServiceAdapter):
         target_qpos = tele_state[self.tele_state_to_target_qpos]
         target_qpos = np.clip(target_qpos, self.lower_bound, self.upper_bound)
 
-        for name, pos in zip(self.follow_motor_name_list, target_qpos):
-            cmd = SetMotorResetTarget()
-            cmd.name = name
-            cmd.pos = pos
-            req.cmds.append(cmd)
-
-        return req
+        return _make_reset_target_req(
+            self.follow_motor_name_list, 
+            target_qpos.tolist()
+        )
 
 def _regiset_tianyi_body_manual_reset_control_state(
     robot_plugin: RobotPlugin,
@@ -170,13 +183,15 @@ def registe_tianyi_fix_body_manual_reset(
     reset_name: str = "fix_body_manual_reset",
 
     # 固定初始化模式下的被控电机 id
-    motor_name_list: Optional[tuple[int]] = None,
+    motor_name_list: Optional[tuple[int, ...]] = None,
     # 固定初始化模式下的被控电机目标位置
     target_pos_list: Optional[tuple[float]] = None,
 
     body_manual_reset_root_name: str = "body_manual_reset",
-    body_manual_reset_state_name: str = "body_manual_reset_state",
+    body_manual_reset_state_name: Optional[str] = None,
 ):
+    if body_manual_reset_state_name is None:
+        body_manual_reset_state_name = reset_name + "_state"
 
     reset_service_name = body_manual_reset_root_name + "/reset"
 
@@ -185,17 +200,19 @@ def registe_tianyi_fix_body_manual_reset(
     )
 
     def reset_factory(ctx: Any, states: Mapping[str, Any]) -> RosServiceResetStrategy:
-        """构造 managed reset 策略：调用 reset service 并等待 RESETTING → READY + 新 epoch."""
+        """构造 managed reset：调用 reset service 并等待 RESETTING → READY + 新 epoch."""
         return RosServiceResetStrategy(
             name = reset_name,
             service = reset_service_name,
             clock = ctx.clock,
-            status_source = body_manual_reset_state_name,
+            completion = ManagedControlResetCompletionPolicy(
+                status_source = body_manual_reset_state_name
+            ),
             timeout = ctx.settings.reset_timeout,
             logger = ctx.logger,
             adapter = TianyiFixedBodyManualResetAdapter(
-                motor_name_list = motor_name_list,
-                target_pos_list = target_pos_list
+                default_motor_name_list = motor_name_list,
+                default_target_pos_list = target_pos_list
             )
         )
 
@@ -220,8 +237,10 @@ def registe_tianyi_tele_body_manual_reset(
     tele_state_name: str = "tele_arm_state",
 
     body_manual_reset_root_name: str = "body_manual_reset",
-    body_manual_reset_state_name: str = "body_manual_reset_state",
+    body_manual_reset_state_name: Optional[str] = None,
 ):
+    if body_manual_reset_state_name is None:
+        body_manual_reset_state_name = reset_name + "_state"
 
     reset_service_name = body_manual_reset_root_name + "/reset"
 
@@ -230,12 +249,14 @@ def registe_tianyi_tele_body_manual_reset(
     )
 
     def reset_factory(ctx: Any, states: Mapping[str, Any]) -> RosServiceResetStrategy:
-        """构造 managed reset 策略：调用 reset service 并等待 RESETTING → READY + 新 epoch."""
+        """构造 managed reset：调用 reset service 并等待 RESETTING → READY + 新 epoch."""
         return RosServiceResetStrategy(
             name = reset_name,
             service = reset_service_name,
             clock = ctx.clock,
-            status_source = body_manual_reset_state_name,
+            completion = ManagedControlResetCompletionPolicy(
+                status_source = body_manual_reset_state_name
+            ),
             timeout = ctx.settings.reset_timeout,
             logger = ctx.logger,
             adapter = TianyiTeleBodyManualResetAdapter(
