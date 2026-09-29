@@ -35,7 +35,7 @@ class ArmInterpolateControl(Node):
 
     class Config(BaseModel):
         control_rate: float = RosField(
-            200, ge = 1.0, read_only = True,
+            400, ge = 1.0, read_only = True,
             description = "插值频率",
         )
         control_mode: Literal["pos", "pd"] = RosField(
@@ -86,7 +86,7 @@ class ArmInterpolateControl(Node):
         )
 
         advance_rate: float = RosField(
-            0.9, ge = 0.1, le = 1.0, 
+            1.0, ge = 0.1, le = 1.0, 
             description = "提前到达目标比率",
         )
 
