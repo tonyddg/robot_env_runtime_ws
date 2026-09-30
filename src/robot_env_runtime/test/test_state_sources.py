@@ -216,6 +216,100 @@ def test_async_topic_source_survives_decode_failure() -> None:
     source.close()
 
 
+def test_async_source_wakes_on_arrival_without_polling() -> None:
+    """事件驱动：回调 set() 后 worker 立刻解码，不受 poll_period 影响."""
+    clock = FakeClock()
+    node = FakeRosNode()
+    source = AsyncRosTopicStateSource(
+        "camera",
+        node=node,
+        clock=clock,
+        topic="/camera",
+        msg_type=_Msg,
+        adapter=_FieldAdapter(),
+        logger=node.get_logger(),
+        # 轮询实现下 5s 内不可能取到帧；事件驱动则应立即解码
+        poll_period=5.0,
+    )
+    source.open()
+    started = time.monotonic()
+    node.deliver("/camera", _Msg(value=7))
+    while source.read() is None and time.monotonic() - started < 1.0:
+        time.sleep(0.002)
+    sample = source.read()
+    assert sample is not None and sample.value == 7
+    assert time.monotonic() - started < 1.0
+    source.close()
+
+
+def test_async_source_close_interrupts_worker_wait() -> None:
+    """close() 唤醒阻塞中的 worker，不必等 poll_period 超时."""
+    node = FakeRosNode()
+    source = AsyncRosTopicStateSource(
+        "camera",
+        node=node,
+        clock=FakeClock(),
+        topic="/camera",
+        msg_type=_Msg,
+        adapter=_FieldAdapter(),
+        logger=node.get_logger(),
+        poll_period=5.0,
+    )
+    source.open()
+    started = time.monotonic()
+    source.close()
+    assert time.monotonic() - started < 1.0
+
+
+def test_async_source_decodes_consecutive_frames() -> None:
+    """Worker 跟得上时连续多帧都被解码（事件驱动不丢帧）."""
+    node = FakeRosNode()
+    source = AsyncRosTopicStateSource(
+        "camera",
+        node=node,
+        clock=FakeClock(),
+        topic="/camera",
+        msg_type=_Msg,
+        adapter=_FieldAdapter(),
+        logger=node.get_logger(),
+        poll_period=5.0,
+    )
+    source.open()
+    for value in range(1, 6):
+        node.deliver("/camera", _Msg(value=value))
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            sample = source.read()
+            if sample is not None and sample.value == value:
+                break
+            time.sleep(0.002)
+        else:
+            raise AssertionError(f"frame {value} was not decoded in time")
+    assert source.dropped == 0
+    source.close()
+
+
+def test_async_source_idle_worker_does_not_spin() -> None:
+    """空闲 worker 阻塞在事件上：不轮询、不烧 CPU（防回退成 busy-wait）."""
+    node = FakeRosNode()
+    source = AsyncRosTopicStateSource(
+        "camera",
+        node=node,
+        clock=FakeClock(),
+        topic="/camera",
+        msg_type=_Msg,
+        adapter=_FieldAdapter(),
+        logger=node.get_logger(),
+    )
+    source.open()
+    time.sleep(0.1)          # 让 worker 进入等待
+    cpu_started = time.process_time()
+    time.sleep(0.3)
+    cpu_used = time.process_time() - cpu_started
+    assert cpu_used < 0.1    # 300ms 空闲只允许极小的调度开销
+    source.close()
+
+
 class _CompressedFrame:
     """sensor_msgs/CompressedImage 的最小替身."""
 

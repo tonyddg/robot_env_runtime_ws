@@ -535,10 +535,17 @@ AsyncRosTopicStateSource(
 ```text
 ROS callback ──► latest raw slot ──► worker thread ──► StateSample
    （极短）         （latest-wins）      adapter.decode()
+                        │
+                        └── set(wake) ──► worker 立刻醒来（事件驱动）
 ```
 
 camera 30FPS、decoder 15FPS 时旧帧会被直接丢弃，不会累积延迟；JPEG 解码、模型
 预处理等重活永远不在 SingleThreadedExecutor 的回调里执行。
+
+worker 由 `threading.Event` 驱动：回调放好新帧后立刻唤醒 worker，没有新帧时
+worker 阻塞（空闲 0 CPU）。取帧延迟只取决于解码耗时，**不再额外叠加一个轮询
+周期**；`poll_period` 只剩兜底作用（防止极端情况下丢唤醒后永久挂起），
+`close()` 会直接唤醒并 join，不必等它超时。
 
 时间戳语义（决定 observation 的 `age`）：
 

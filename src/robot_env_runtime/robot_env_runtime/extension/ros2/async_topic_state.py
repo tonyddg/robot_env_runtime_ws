@@ -5,9 +5,16 @@ AsyncRosTopicStateSource：重解码不占用 ROS executor 回调线程.
 
     ROS callback ──► latest raw slot ──► worker thread ──► StateSample
         (极短)          (latest-wins)        adapter.decode()
+                             │
+                             └── set(wake) ──► worker 立刻醒来（事件驱动）
 
 采用 latest-wins 而不是无限 FIFO：camera 30 FPS、decoder 15 FPS 时旧帧被直接
 丢弃，不会累积越来越大的延迟。
+
+worker 由 ``threading.Event`` 驱动：回调放好新帧后 ``set()`` 唤醒 worker，没有新帧
+时 worker 阻塞（空转 0 CPU）。因此"取帧延迟"只取决于解码耗时，不再被轮询周期放大
+（旧实现用 ``poll_period`` 轮询，30 FPS 相机会平白多出最多一个轮询周期的 age）。
+``poll_period`` 退化为兜底超时：极端情况下唤醒丢失时仍能在该时间内恢复。
 """
 
 from __future__ import annotations
@@ -65,6 +72,9 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         ``inline=True``：在回调内解码（确定性测试 / 降级模式）；
         ``stamp_at_arrival=True``（默认）：用回调到货时刻作为 ``received_at``；
         设为 False 则退化为"worker 开始解码"时刻。
+
+        ``poll_period``：worker 等待新帧的兜底超时（秒）。正常路径由回调 ``set()``
+        事件唤醒，不等这个超时；它只用于防御丢失唤醒导致的永久挂起。
         """
         super().__init__(
             name,
@@ -85,6 +95,7 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         self._slot: Any = None
         self._worker: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._wake = threading.Event()
         self._dropped = 0
 
     @property
@@ -144,6 +155,8 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
             if self._slot is not None:
                 self._dropped += 1
             self._slot = pending
+        # 事件驱动唤醒：worker 立刻处理这一帧，不必等下个轮询周期
+        self._wake.set()
 
     def _take_latest(self) -> _PendingMessage | None:
         """取走当前最新消息（无则返回 None）."""
@@ -157,6 +170,7 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         if self._worker is not None and self._worker.is_alive():
             return
         self._stop_event = threading.Event()
+        self._wake = threading.Event()
         self._slot = None
         self._worker = threading.Thread(
             target=self._worker_loop,
@@ -166,11 +180,15 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         self._worker.start()
 
     def _worker_loop(self) -> None:
-        """取最新帧解码；单帧失败只告警."""
+        """阻塞等待新帧（事件驱动）→ 取最新帧解码；单帧失败只告警."""
         while not self._stop_event.is_set():
+            # 没有新帧时阻塞在这里（0 CPU）；超时只是兜底
+            self._wake.wait(self._poll_period)
+            self._wake.clear()
+            if self._stop_event.is_set():
+                return
             pending = self._take_latest()
             if pending is None:
-                self._stop_event.wait(self._poll_period)
                 continue
             self._decode_and_store(
                 pending.msg,
@@ -183,6 +201,8 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         if self._worker is None:
             return
         self._stop_event.set()
+        # 唤醒阻塞中的 worker，让它立刻退出（不必等 poll_period 超时）
+        self._wake.set()
         worker = self._worker
         if worker.is_alive():
             worker.join(timeout=self._join_timeout)
