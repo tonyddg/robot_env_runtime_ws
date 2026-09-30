@@ -135,14 +135,22 @@ class FakeEnv:
         self._base_time = base_time
         self._step = 0
         self.resets = 0
+        self.stopped = False
+        self.stop_calls = 0
 
     def reset(self) -> dict:
         self._step = 0
+        self.stopped = False
         self.resets += 1
         return make_obs(0)
 
     def ok(self) -> bool:
-        return self.fault is None
+        return self.fault is None and not self.stopped
+
+    def stop(self) -> None:
+        """模拟 RobotEnv.stop()：进入 STOPPED（不 latch fault），reset() 可恢复."""
+        self.stopped = True
+        self.stop_calls += 1
 
     def wait_for_step(self, future: FakeFuture) -> None:
         self._step += 1

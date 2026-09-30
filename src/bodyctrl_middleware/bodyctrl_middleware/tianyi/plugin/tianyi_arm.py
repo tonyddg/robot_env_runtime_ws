@@ -13,7 +13,7 @@ from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_qpos_obs import regis
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_interpolate_control import registe_tianyi_arm_interpolate_control, TianyiArmInterpolateAdapterConfig
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_body_manual_reset import registe_tianyi_tele_body_manual_reset, registe_tianyi_fix_body_manual_reset
 
-from bodyctrl_middleware.common.image_decode.registe_compressed_image_obs import registe_compressed_image_obs, CompressedImageStateAdapterConfig
+from bodyctrl_middleware.common.image_decode.registe_image_obs import registe_image_obs, ImageStateAdapterConfig
 from bodyctrl_middleware.common.runtime.registe_frame_pose_obs import registe_frame_pose_obs, PoseStampedStateAdapterConfig
 from bodyctrl_middleware.common.runtime.registe_bool_obs import registe_bool_obs, BoolStateAdapterConfig
 
@@ -194,23 +194,23 @@ def tianyi_arm(
         )
 
     # 相机观测
-    color_config = CompressedImageStateAdapterConfig(
-        compressed_image_topic = config.image_color_topic_name,
-        image_dtype = "uint8", image_channel = 3, decoder_type = "normal_compress_color",
+    color_config = ImageStateAdapterConfig(
+        image_topic = config.image_color_topic_name,
+        image_dtype = "uint8", image_channel = 3, compress_decoder_type = "normal_compress_color",
         warn_after = config.image_warn_after
     )
-    depth_config = CompressedImageStateAdapterConfig(
-        compressed_image_topic = config.image_depth_topic_name,
-        image_dtype = "uint16", image_channel = 1, decoder_type = "orbbec_compress_depth",
+    depth_config = ImageStateAdapterConfig(
+        image_topic = config.image_depth_topic_name,
+        image_dtype = "uint16", image_channel = 1, compress_decoder_type = "orbbec_compress_depth",
         warn_after = config.image_warn_after
     )
-    robot = registe_compressed_image_obs(
+    robot = registe_image_obs(
         robot, color_config,
-        compressed_image_obs_name = config.image_color_obs_name,
+        image_obs_name = config.image_color_obs_name,
     )
-    robot = registe_compressed_image_obs(
+    robot = registe_image_obs(
         robot, depth_config,
-        compressed_image_obs_name = config.image_depth_obs_name,
+        image_obs_name = config.image_depth_obs_name,
     )
 
     # 末端位姿

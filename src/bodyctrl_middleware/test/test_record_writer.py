@@ -83,7 +83,9 @@ def test_layout_values_and_attrs(tmp_path) -> None:
         image_data = np.asarray(image["data"])
         assert image_data.shape == (3,) + tuple(IMAGE_SHAPE)
         assert image_data.dtype == np.uint8
-        assert image["data"].compression == "gzip"
+        # 默认不压缩：相机图像近似不可压缩，gzip 只省几个百分点却慢一个量级
+        assert image["data"].compression is None
+        assert qpos["data"].compression is None
 
         # action 数据集 + attrs
         action = handle["action"]
@@ -215,3 +217,134 @@ def test_meta_sanitization(tmp_path) -> None:
     assert meta["array"] == [1, 2, 3]
     assert meta["scalar"] == pytest.approx(1.5)
     assert meta["dataclass"] == {"name": "arm", "gain": 0.3}
+
+
+def test_compression_modes_and_overrides(tmp_path) -> None:
+    """默认不压缩；compression / compression_overrides 可显式打开压缩."""
+    gz_path = tmp_path / "episode_gz.h5py"
+    writer = EpisodeH5Writer(gz_path, batch_size = 2, compression = "gzip")
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    writer.append(make_obs(1), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(1))
+    writer.finalize("policy_done", keep = True)
+    with h5py.File(gz_path, "r") as handle:
+        # 大数组（image）压缩；<1KB 的小向量（qpos）与 action 不压缩
+        assert handle["observation/image/data"].compression == "gzip"
+        assert handle["observation/qpos/data"].compression is None
+        assert handle["action"].compression is None
+
+    lzf_path = tmp_path / "episode_lzf.h5py"
+    writer = EpisodeH5Writer(
+        lzf_path,
+        batch_size = 2,
+        compression_overrides = {"image": "lzf"},
+    )
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    writer.append(make_obs(1), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(1))
+    writer.finalize("policy_done", keep = True)
+    with h5py.File(lzf_path, "r") as handle:
+        assert handle["observation/image/data"].compression == "lzf"
+        assert handle["observation/qpos/data"].compression is None
+
+
+def test_compression_config_errors(tmp_path) -> None:
+    """非法 compression / override 必须明确报错，而不是静默退回默认值."""
+    with pytest.raises(ValueError):
+        EpisodeH5Writer(tmp_path / "a.h5py", compression = "zstd")
+    with pytest.raises(ValueError):
+        EpisodeH5Writer(
+            tmp_path / "b.h5py",
+            compression_overrides = {"image": "zstd"},
+        )
+
+    path = tmp_path / "c.h5py"
+    writer = EpisodeH5Writer(
+        path,
+        batch_size = 2,
+        compression_overrides = {"nope": "gzip"},
+    )
+    with pytest.raises(ValueError):
+        writer.append(
+            make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True,
+        )
+    writer.abort()
+
+
+def test_flush_instrumentation_and_slow_warning(tmp_path) -> None:
+    """flush 耗时被统计；超过阈值时 warn，并在 finalize 写入 root attrs."""
+
+    class _Logger:
+        def __init__(self) -> None:
+            self.messages: list = []
+
+        def warn(self, message: str) -> None:
+            self.messages.append(message)
+
+    logger = _Logger()
+    path = tmp_path / "episode_flush.h5py"
+    writer = EpisodeH5Writer(
+        path,
+        batch_size = 1,
+        flush_warn_sec = 1e-9,
+        logger = logger,
+    )
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    writer.append(make_obs(1), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(1))
+
+    stats = writer.flush_stats
+    assert stats["count"] >= 2
+    assert stats["max_sec"] > 0.0
+    assert stats["sum_sec"] >= stats["max_sec"]
+    assert stats["slow_count"] >= 1
+    assert stats["warn_sec"] == pytest.approx(1e-9)
+    assert any("超过阈值" in message for message in logger.messages)
+
+    writer.finalize("policy_done", keep = True)
+    with h5py.File(path, "r") as handle:
+        assert int(handle.attrs["flush_count"]) == stats["count"]
+        assert float(handle.attrs["flush_sec_max"]) == pytest.approx(stats["max_sec"])
+        assert float(handle.attrs["flush_sec_sum"]) == pytest.approx(stats["sum_sec"])
+        assert int(handle.attrs["flush_slow_count"]) >= 1
+        assert float(handle.attrs["flush_warn_sec"]) == pytest.approx(1e-9)
+
+
+def test_capacity_preallocation_and_shrink(tmp_path) -> None:
+    """预分配容量：采集期 dataset 按 capacity 预留，finalize 后缩回 num_steps."""
+    path = tmp_path / "episode_cap.h5py"
+    writer = EpisodeH5Writer(path, batch_size = 1)
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    with h5py.File(writer.partial_path, "r") as handle:
+        # padding 行先被 flush：容量按 2 倍增长预分配，maxshape 允许无限增长
+        assert handle["action"].shape[0] > int(handle.attrs["committed_steps"])
+        assert handle["action"].maxshape[0] is None
+    writer.append(make_obs(1), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(1))
+    writer.append(make_obs(2), np.full(ACTION_DIM, 0.2, dtype = np.float32), make_info(2))
+
+    with h5py.File(writer.partial_path, "r") as handle:
+        committed = int(handle.attrs["committed_steps"])
+        assert committed == 3
+        # 预分配出的尾部（未提交）行必须是 NaN，读取方只信任 committed_steps
+        assert handle["timing/deadline"].shape[0] == handle["action"].shape[0]
+        assert np.isnan(
+            np.asarray(handle["timing/deadline"])[committed:]
+        ).all()
+
+    writer.finalize("policy_done", keep = True)
+    with h5py.File(path, "r") as handle:
+        assert int(handle.attrs["num_steps"]) == 3
+        # 所有按行增长的数据集都缩回逻辑行数
+        assert handle["observation/qpos/data"].shape[0] == 3
+        assert handle["observation/qpos/age"].shape[0] == 3
+        assert handle["observation/qpos/timestamp"].shape[0] == 3
+        assert handle["observation/image/data"].shape[0] == 3
+        assert handle["action"].shape[0] == 3
+        for name in ("snapshot_captured_at", "deadline", "lateness"):
+            assert handle[f"timing/{name}"].shape[0] == 3
+        assert handle["timing/sent_at/arm"].shape[0] == 3
+
+        # 回归：timing 数据集在 padding 行先被 flush 的情况下也不能丢行
+        deadline = np.asarray(handle["timing/deadline"])
+        assert np.isnan(deadline[0])
+        assert deadline[1:] == pytest.approx([10.2, 10.3])
+        sent_at = np.asarray(handle["timing/sent_at/arm"])
+        assert np.isnan(sent_at[0])
+        assert sent_at[1:] == pytest.approx([10.102, 10.202])
