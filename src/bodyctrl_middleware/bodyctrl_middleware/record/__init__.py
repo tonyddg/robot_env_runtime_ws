@@ -10,6 +10,9 @@ from bodyctrl_middleware.record.episode_writer import (
     write_attrs,
 )
 from bodyctrl_middleware.record.record import (
+    ON_UNAVAILABLE_CHOICES,
+    ConfirmFn,
+    ConfirmUnavailableError,
     build_action_meta,
     build_record_meta,
     collect_multi,
@@ -18,6 +21,9 @@ from bodyctrl_middleware.record.record import (
 )
 
 __all__ = [
+    "ConfirmFn",
+    "ConfirmUnavailableError",
+    "ON_UNAVAILABLE_CHOICES",
     "EpisodeH5Writer",
     "WRITER_VERSION",
     "build_action_meta",

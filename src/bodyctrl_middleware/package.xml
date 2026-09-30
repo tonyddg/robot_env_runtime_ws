@@ -11,6 +11,7 @@
   <depend>robot_env_runtime</depend>
   <depend>rclpy</depend>
   <depend>bodyctrl_msgs</depend>
+  <depend>bodyctrl_middleware_interface</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

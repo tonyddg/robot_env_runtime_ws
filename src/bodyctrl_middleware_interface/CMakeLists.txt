@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SetMotorInterpolate.msg"
   "msg/SetMotorResetTarget.msg"
   "srv/BodyManualReset.srv"
+  "srv/InputService.srv"
   DEPENDENCIES std_msgs 
   DEPENDENCIES robot_env_interface
 )

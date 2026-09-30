@@ -22,6 +22,16 @@ Episode HDF5 writer（bodyctrl_middleware.record）.
 (第 k 次 ``step()`` 返回的 obs、该次下发的 action、该 boundary 的 info)。
 
 采集期间只写 ``*.h5py.partial``，``finalize(keep=True)`` 才原子 rename 成正式文件。
+
+写入策略（默认值面向 ~100ms 控制周期）：
+
+* **不压缩**（``compression="none"``）：相机图像近似不可压缩，gzip 只省几个百分点
+  却要几百毫秒；确需压缩时用 ``compression_overrides={"image": "lzf"}`` 单独开启。
+* **预分配容量**：dataset 以 ``maxshape=(None, ...)`` 创建、按 2 倍容量增长，
+  采集期间不做逐行 resize；``finalize()`` 再缩回真实行数（``shape[0] == num_steps``）。
+* **flush 耗时告警**：每次 flush 记录耗时，超过 ``flush_warn_sec``（默认 20ms）
+  时经 ``logger.warn`` 告警并计数；终盘写入 ``flush_sec_max`` / ``flush_sec_sum`` /
+  ``flush_slow_count`` 等 attrs。
 """
 
 import json
@@ -35,6 +45,12 @@ import h5py
 import numpy as np
 
 WRITER_VERSION = "bodyctrl_middleware.record/2"
+
+# 允许的压缩模式：默认 none（相机图像接近不可压缩，gzip 只省 ~7% 却要 200ms+）
+COMPRESSION_MODES = ("none", "lzf", "gzip")
+
+# 默认的 flush 慢告警阈值（秒）：超过就 warn（可用控制周期的 0.2 倍覆盖）
+DEFAULT_FLUSH_WARN_SEC = 0.02
 
 
 def stack_dict(data_dict_list: List[Dict[str, Union[np.ndarray, float, int]]]):
@@ -150,6 +166,11 @@ class EpisodeH5Writer:
         target_chunk_bytes: int = 4 * 1024 * 1024,
         meta: Optional[Mapping[str, Any]] = None,
         action_meta: Optional[Mapping[str, Any]] = None,
+        *,
+        compression: str = "none",
+        compression_overrides: Optional[Mapping[str, str]] = None,
+        flush_warn_sec: float = DEFAULT_FLUSH_WARN_SEC,
+        logger: Any = None,
     ):
         self.save_path = Path(save_path)
 
@@ -163,6 +184,22 @@ class EpisodeH5Writer:
         if self.batch_size < 1:
             raise ValueError("batch_size must be >= 1")
         self.target_chunk_bytes = int(target_chunk_bytes)
+
+        if compression not in COMPRESSION_MODES:
+            raise ValueError(
+                f"compression must be one of {COMPRESSION_MODES}, got {compression!r}"
+            )
+        self._compression = compression
+        overrides = dict(compression_overrides or {})
+        for key, mode in overrides.items():
+            if mode not in COMPRESSION_MODES:
+                raise ValueError(
+                    f"compression_overrides[{key!r}] must be one of "
+                    f"{COMPRESSION_MODES}, got {mode!r}"
+                )
+        self._compression_overrides = overrides
+        self._flush_warn_sec = float(flush_warn_sec)
+        self._logger = logger
 
         if self.save_path.exists():
             raise FileExistsError(
@@ -189,11 +226,21 @@ class EpisodeH5Writer:
         self._action_meta = dict(action_meta or {})
         self._buffer: List[_PendingRow] = []
         self._count = 0
+        # 已分配的容量（行）：按 2 倍增长，finalize 时再缩回逻辑行数，
+        # 这样既减少 resize/metadata 抖动，又保证成品文件 shape[0] == num_steps
+        self._capacity = 0
         self._padding_rows = 0
         self._initialized = False
         self._obs_attrs_written = False
         self._action_attrs_written = False
         self._close = False
+        self._flush_stats = {
+            "count": 0,
+            "last_sec": 0.0,
+            "max_sec": 0.0,
+            "sum_sec": 0.0,
+            "slow_count": 0,
+        }
 
         # 表示这个文件还处于采集状态
         self._file.attrs["finalized"] = False
@@ -259,23 +306,25 @@ class EpisodeH5Writer:
         if not self._buffer:
             return
 
+        started = time.perf_counter()
         batch_size = len(self._buffer)
         start = self._count
         end = start + batch_size
+
+        # 预分配容量：只有容量不够时才 resize（按 2 倍增长）
+        self._ensure_capacity(end)
 
         for name, datasets in self._obs_datasets.items():
             data_batch = np.stack(
                 [row.obs[name] for row in self._buffer],
                 axis = 0,
             )
-            self._resize_and_assign(datasets["data"], data_batch, start, end)
+            datasets["data"][start:end] = data_batch
 
-            datasets["age"].resize((end,))
             datasets["age"][start:end] = np.asarray(
                 [self._obs_scalar(row, name, "age") for row in self._buffer],
                 dtype = np.float64,
             )
-            datasets["timestamp"].resize((end,))
             datasets["timestamp"][start:end] = np.asarray(
                 [self._obs_scalar(row, name, "stamp") for row in self._buffer],
                 dtype = np.float64,
@@ -286,17 +335,15 @@ class EpisodeH5Writer:
             [row.action for row in self._buffer],
             axis = 0,
         )
-        self._resize_and_assign(self._action_dataset, action_batch, start, end)
+        self._action_dataset[start:end] = action_batch
 
         if self._timing_group is not None:
             for key, dataset in self._timing_scalars.items():
-                dataset.resize((end,))
                 dataset[start:end] = np.asarray(
                     [self._timing_scalar(row, key) for row in self._buffer],
                     dtype = np.float64,
                 )
             for controller, dataset in self._sent_at_datasets.items():
-                dataset.resize((end,))
                 dataset[start:end] = np.asarray(
                     [self._sent_at(row, controller) for row in self._buffer],
                     dtype = np.float64,
@@ -315,6 +362,9 @@ class EpisodeH5Writer:
 
         self._file.flush()
         self._buffer.clear()
+
+        elapsed = time.perf_counter() - started
+        self._record_flush_time(elapsed, start, end)
 
     def finalize(
         self,
@@ -342,6 +392,14 @@ class EpisodeH5Writer:
             self._file.attrs["num_steps"] = self._count
             self._file.attrs["padding_rows"] = self._padding_rows
             self._file.attrs["finalized"] = True
+            self._shrink_to_logical()
+            write_attrs(self._file, {
+                "flush_count": self._flush_stats["count"],
+                "flush_sec_max": self._flush_stats["max_sec"],
+                "flush_sec_sum": self._flush_stats["sum_sec"],
+                "flush_slow_count": self._flush_stats["slow_count"],
+                "flush_warn_sec": self._flush_warn_sec,
+            })
             write_attrs(self._file, {
                 "fault_kind": fault_kind,
                 "fault_message": fault_message,
@@ -384,6 +442,78 @@ class EpisodeH5Writer:
         """已写入 + 缓冲区里的总行数（含 padding 行）."""
         return self._count + len(self._buffer)
 
+    @property
+    def flush_stats(self) -> Dict[str, Any]:
+        """flush 耗时统计（count / last_sec / max_sec / sum_sec / slow_count / warn_sec）."""
+        stats = dict(self._flush_stats)
+        stats["warn_sec"] = self._flush_warn_sec
+        return stats
+
+    # -- 容量 / 压缩 / flush 统计 ------------------------------------------
+
+    def _ensure_capacity(self, needed: int) -> None:
+        """按 2 倍增长预分配容量（finalize 时会缩回逻辑行数）."""
+        if needed <= self._capacity:
+            return
+        new_capacity = max(needed, self._capacity * 2, self.batch_size * 2)
+        for dataset in self._row_datasets():
+            dataset.resize((new_capacity,) + dataset.shape[1:])
+        self._capacity = new_capacity
+
+    def _shrink_to_logical(self) -> None:
+        """把预分配出来的多余容量缩回真实行数（保证成品 shape[0] == num_steps）."""
+        if self._capacity <= self._count:
+            return
+        for dataset in self._row_datasets():
+            dataset.resize((self._count,) + dataset.shape[1:])
+        self._capacity = self._count
+
+    def _row_datasets(self) -> List[h5py.Dataset]:
+        """所有按行增长的数据集（obs data/age/timestamp、action、timing）."""
+        datasets: List[h5py.Dataset] = []
+        for entry in self._obs_datasets.values():
+            datasets.extend([entry["data"], entry["age"], entry["timestamp"]])
+        if self._action_dataset is not None:
+            datasets.append(self._action_dataset)
+        datasets.extend(self._timing_scalars.values())
+        datasets.extend(self._sent_at_datasets.values())
+        return datasets
+
+    def _compression_kwargs(self, key: str, sample: np.ndarray) -> dict:
+        """按观测名解析压缩配置；小向量（<1KB 或标量）不压缩."""
+        mode = self._compression_overrides.get(key, self._compression)
+        if sample.ndim < 2 or sample.nbytes <= 1024:
+            return {}
+        if mode == "gzip":
+            return dict(compression = "gzip", compression_opts = 1, shuffle = True)
+        if mode == "lzf":
+            return dict(compression = "lzf", shuffle = True)
+        return {}
+
+    def _record_flush_time(self, elapsed: float, start: int, end: int) -> None:
+        """记录 flush 耗时；超过阈值时告警（并计数）."""
+        stats = self._flush_stats
+        stats["count"] += 1
+        stats["last_sec"] = elapsed
+        stats["sum_sec"] += elapsed
+        stats["max_sec"] = max(stats["max_sec"], elapsed)
+        if self._flush_warn_sec > 0.0 and elapsed > self._flush_warn_sec:
+            stats["slow_count"] += 1
+            self._warn(
+                f"EpisodeH5Writer flush 耗时 {elapsed * 1000:.1f}ms 超过阈值 "
+                f"{self._flush_warn_sec * 1000:.1f}ms "
+                f"(rows {start}..{end}, {self.save_path.name}); "
+                "会吃掉控制周期预算，建议降低 batch_size 或关闭压缩"
+            )
+
+    def _warn(self, message: str) -> None:
+        """写 warn 日志（logger 可选）."""
+        if self._logger is None:
+            return
+        func = getattr(self._logger, "warn", None) or getattr(self._logger, "info", None)
+        if func is not None:
+            func(message)
+
     # -- 初始化 / 校验 -----------------------------------------------------
 
     @staticmethod
@@ -412,20 +542,26 @@ class EpisodeH5Writer:
         obs: Dict[str, np.ndarray],
         action: np.ndarray,
     ) -> None:
+        unknown = sorted(set(self._compression_overrides) - set(obs))
+        if unknown:
+            raise ValueError(
+                f"compression_overrides 里的观测名不存在: {unknown}; "
+                f"本次 episode 的观测是 {sorted(obs)}"
+            )
+
         for key, value in obs.items():
             group = self._obs_group.create_group(key)
-            compress = (value.ndim >= 2 and value.nbytes > 1024)
             self._obs_datasets[key] = {
                 "group": group,
                 "data": self._create_extendable_dataset(
-                    group, "data", value, compress = compress
+                    group, "data", value, key = key
                 ),
                 "age": self._create_scalar_dataset(group, "age"),
                 "timestamp": self._create_scalar_dataset(group, "timestamp"),
             }
 
         self._action_dataset = self._create_extendable_dataset(
-            self._file, "action", action, compress = False
+            self._file, "action", action, key = "action"
         )
         write_attrs(self._action_dataset, {
             "action_dim": int(action.shape[0]) if action.ndim > 0 else 0,
@@ -478,17 +614,21 @@ class EpisodeH5Writer:
         """创建 timing group；把此前已写入的行（padding）回填成 NaN."""
         self._timing_group = self._file.create_group("timing")
         rows_before = self._count + len(self._buffer)
+        # timing 数据集可能晚于首次 flush 才创建（padding 行先被 flush 掉），
+        # 此时 obs/action 已按 self._capacity 预分配。这里必须对齐 capacity，
+        # 否则后续 flush 的越界切片会被 h5py 当作空选择而静默丢数据。
+        rows = max(rows_before, self._capacity)
 
         for key in ("snapshot_captured_at", "deadline", "lateness"):
             self._timing_scalars[key] = self._create_scalar_dataset(
-                self._timing_group, key, rows = rows_before
+                self._timing_group, key, rows = rows
             )
 
         sent_at_group = self._timing_group.create_group("sent_at")
         commands = (info.get("controllers") or {}).get("commands") or {}
         for controller in sorted(commands.keys()):
             self._sent_at_datasets[controller] = self._create_scalar_dataset(
-                sent_at_group, controller, rows = rows_before
+                sent_at_group, controller, rows = rows
             )
 
     def _validate(self, obs: Dict[str, np.ndarray], action: np.ndarray) -> None:
@@ -556,22 +696,13 @@ class EpisodeH5Writer:
             return float("nan")
         return float(value)
 
-    @staticmethod
-    def _resize_and_assign(
-        dataset: h5py.Dataset,
-        batch: np.ndarray,
-        start: int,
-        end: int,
-    ) -> None:
-        dataset.resize((end,) + dataset.shape[1:])
-        dataset[start:end] = batch
-
     def _create_extendable_dataset(
         self,
         group: Any,
         name: str,
         sample: np.ndarray,
-        compress: bool = False,
+        *,
+        key: Optional[str] = None,
     ) -> h5py.Dataset:
         sample = np.asarray(sample)
 
@@ -587,14 +718,7 @@ class EpisodeH5Writer:
             1, min(self.batch_size, self.target_chunk_bytes // sample_bytes,),
         )
         chunks = (chunk_steps,) + sample_shape
-
-        kwargs = {}
-        if compress and sample.ndim >= 2:
-            kwargs.update(
-                compression = "gzip",
-                compression_opts = 1,
-                shuffle = True,
-            )
+        kwargs = self._compression_kwargs(key if key is not None else name, sample)
 
         return group.create_dataset(
             name,
@@ -619,6 +743,7 @@ class EpisodeH5Writer:
             maxshape = (None,),
             chunks = (chunk_steps,),
             dtype = np.float64,
+            fillvalue = np.float64("nan"),
         )
         if rows:
             dataset[:] = np.full((rows,), np.nan, dtype = np.float64)

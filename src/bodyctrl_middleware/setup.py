@@ -33,6 +33,8 @@ setup(
 
             "tianyi_bimanual_tele_node = bodyctrl_middleware.tianyi.node.bimanual_tele_node:main",
             "tianyi_wholebody_tele_node = bodyctrl_middleware.tianyi.node.wholebody_tele_node:main",
+
+            "input_service = bodyctrl_middleware.utility.input_service:main",
         ],
     },
 )
