@@ -11,7 +11,7 @@ from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
 
-from bodyctrl_middleware.tianyi.constants import (
+from bodyctrl_middleware.tianyi.hardware.constants import (
     TELE_ARM_STATE_TOPIC, TELE_RESULT_LENGTH, TELE_GRIPPER_OPENNESS_MAP, TELE_RESULT_TO_MOTOR_MAP,
 )
 

@@ -10,7 +10,7 @@ from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
 
 from robot_env_runtime.extension.plugin import RobotPlugin
 
-from bodyctrl_middleware.tianyi.constants import LEFT_ARM_MOTOR_IDS, RIGHT_ARM_MOTOR_IDS
+from bodyctrl_middleware.tianyi.hardware.constants import LEFT_ARM_MOTOR_IDS, RIGHT_ARM_MOTOR_IDS
 
 from bodyctrl_middleware.tianyi.runtime.registe_tele_arm_obs import registe_tele_arm_obs
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_qpos_obs import registe_tianyi_arm_qpos_obs

@@ -17,7 +17,7 @@ from std_srvs.srv import Trigger
 from bodyctrl_middleware_interface.srv import BodyManualReset
 from bodyctrl_middleware_interface.msg import SetMotorResetTarget
 
-from bodyctrl_middleware.tianyi.constants import (
+from bodyctrl_middleware.tianyi.hardware.constants import (
     JOINT_GROUPS, SDK_LIMITS, GROUP_DEFS,
 )
 

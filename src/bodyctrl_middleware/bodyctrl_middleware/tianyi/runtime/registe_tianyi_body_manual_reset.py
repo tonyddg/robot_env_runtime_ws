@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 from bodyctrl_middleware_interface.srv import BodyManualReset
 from bodyctrl_middleware_interface.msg import SetMotorResetTarget
 
-from bodyctrl_middleware.tianyi.constants import (
+from bodyctrl_middleware.tianyi.hardware.constants import (
     TELE_ARM_STATE_TOPIC, TELE_RESULT_LENGTH, TELE_GRIPPER_OPENNESS_MAP, TELE_RESULT_TO_MOTOR_MAP,
     SDK_LIMITS, get_qpos_bound, valide_target_pos_list
 )
