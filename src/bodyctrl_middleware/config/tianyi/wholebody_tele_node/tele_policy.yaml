@@ -1,5 +1,10 @@
-config.profile_path: "config/tianyi/wholebody_tele.yaml"
+tianyi_whole_tele:
+  ros__parameters:
+    config.profile_path: "config/tianyi/wholebody_tele.yaml"
 
-config.record.save_root: "/ros2_ws/output"
+    config.record.enable: true
+    config.record.ask_before_save: true
+    config.record.ask_before_next_episode: true
+    config.record.save_root: "/home/nvidia/robot_env_runtime_ws/output"
 
-config.policy.policy_type: tele
+    config.policy.policy_type: tele

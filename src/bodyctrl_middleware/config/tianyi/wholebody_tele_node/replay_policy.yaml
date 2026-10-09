@@ -1,9 +1,11 @@
-config.profile_path: "config/tianyi/wholebody_replay.yaml"
+tianyi_whole_tele:
+  ros__parameters:
+    config.profile_path: "config/tianyi/wholebody_replay.yaml"
 
-config.record.save_root: "/ros2_ws/output"
+    config.record.save_root: "/home/nvidia/robot_env_runtime_ws/output"
 
-config.policy.policy_type: replay
-config.policy.policy_kwargs: |-
-  {
-    "episode_path": "/ros2_ws/output/traj_9_29/trajectory_1790685756/episode_0000.h5py"
-  }
+    config.policy.policy_type: replay
+    config.policy.policy_kwargs: |-
+      {
+        "episode_path": "/ros2_ws/output/traj_9_29/trajectory_1790685756/episode_0000.h5py"
+      }
