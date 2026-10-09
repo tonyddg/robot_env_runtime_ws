@@ -18,7 +18,7 @@ from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.extension.plugin import PluginRegistry
 from robot_env_runtime.ros2.executor import RosExecutorHost
 
-DEFAULT_PROFILE = "config/tianyi_bimanual_tele.yaml"
+DEFAULT_PROFILE = "config/tianyi/bimanual_tele.yaml"
 
 
 class RecordConfig(BaseModel):

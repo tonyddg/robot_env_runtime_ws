@@ -1,0 +1,5 @@
+config.profile_path: "config/tianyi/wholebody_tele.yaml"
+
+config.record.save_root: "/ros2_ws/output"
+
+config.policy.policy_type: tele

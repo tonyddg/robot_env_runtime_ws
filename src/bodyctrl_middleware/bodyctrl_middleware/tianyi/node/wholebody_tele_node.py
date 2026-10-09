@@ -28,8 +28,16 @@ from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.extension.plugin import PluginRegistry
 from robot_env_runtime.ros2.executor import RosExecutorHost
 
-DEFAULT_PROFILE = "config/tianyi_wholebody_tele.yaml"
+DEFAULT_PROFILE = "config/tianyi/wholebody_tele.yaml"
 
+def rel_to_package(path: str, package_name: str):
+    from pathlib import Path
+    _path = Path(path)
+    # 相对路径则先转换为
+    if not _path.is_absolute():
+        from ament_index_python.packages import get_package_share_path
+        _path = get_package_share_path(package_name) / _path
+    return str(_path)
 
 SupportPolicyType = Literal["tele", "replay"]
 class PolicyConfig(BaseModel):
@@ -93,8 +101,8 @@ class RecordConfig(BaseModel):
 
 class Config(BaseModel):
     profile_path: str = RosField(
-        "~", read_only = True,
-        description = "profile 设置路径, 传入绝对路径",
+        DEFAULT_PROFILE, read_only = True,
+        description = "profile 设置文件路径, 传入相对路径时基于功能包共享文件夹解析",
     )
     arm: TianyiArmConfig = RosField(default_factory = lambda: TianyiArmConfig())
     base: TianyiBaseConfig = RosField(default_factory = lambda: TianyiBaseConfig())
@@ -170,11 +178,9 @@ def main(argv = None):
     )
     config = params.declare()
 
-    if config.profile_path == "~":
-        config.profile_path = str(
-            Path(get_package_share_directory("bodyctrl_middleware"))
-            / DEFAULT_PROFILE
-        )
+    config.profile_path = rel_to_package(
+        config.profile_path, "bodyctrl_middleware"
+    )
 
     executor.start()
 
