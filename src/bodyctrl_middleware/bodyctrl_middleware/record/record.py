@@ -183,7 +183,7 @@ def collect_once(
     exception_type: Optional[str] = None
     exception_message: Optional[str] = None
 
-    pending_padding = True
+    # pending_padding = True
     first_obs = None
 
     try:
@@ -191,21 +191,31 @@ def collect_once(
         policy.reset(observations)
         first_obs = observations
 
+        _start_time = time.perf_counter()
+        writer.append(
+            first_obs, np.zeros(env.action_dim, dtype = np.float32), None, padding = True
+        )
+        _use_time = time.perf_counter() - _start_time
+        env._executor.node.get_logger().info(f"episode {episode_index} 初次采集完成, 用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 5)
+
         while not policy.done() and env.ok():
             future = policy.infer_async(observations)
             env.wait_for_step(future)
             action = np.array(future.get_action(), copy = True)
             observations, info = env.step(action)
 
-            if pending_padding:
-                # 配对语义要求第 0 行是首帧 obs + 零动作；这里才写是为了让 padding 行的
-                # dtype / shape 与第一条真实 action 完全一致。
-                writer.append(
-                    first_obs, np.zeros_like(action), None, padding = True
-                )
-                pending_padding = False
+            # if pending_padding:
+            #     # 配对语义要求第 0 行是首帧 obs + 零动作；这里才写是为了让 padding 行的
+            #     # dtype / shape 与第一条真实 action 完全一致。
+            #     writer.append(
+            #         first_obs, np.zeros_like(action), None, padding = True
+            #     )
+            #     pending_padding = False
 
+            _start_time = time.perf_counter()
             writer.append(observations, action, info)
+            _use_time = time.perf_counter() - _start_time
+            env._executor.node.get_logger().info(f"episode {episode_index} 采集 step 完成, 用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 5)
 
         if policy.done():
             termination_reason = "policy_done"
