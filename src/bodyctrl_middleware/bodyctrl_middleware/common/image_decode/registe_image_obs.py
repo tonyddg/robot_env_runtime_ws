@@ -27,6 +27,32 @@ DECODER_DICT = dict(
     orbbec_compress_depth = decode_orbbec_compress_depth,
 )
 
+def _image_to_obs(arr: np.ndarray, dtype: Any = None):
+    '''
+    将 ndim 为 2, 3 的图片统一为 3, 其他 ndim 则抛出异常
+    '''
+    if arr.ndim == 2:
+        res = np.expand_dims(arr, axis = -1)
+    elif arr.ndim == 3:
+        res = arr
+    else:
+        raise RuntimeError(f"图片数组尺寸 {arr.shape} 应为 2 或 3 维")
+
+    return np.array(res, dtype = dtype)
+
+def _msg_to_buffer(msg: CompressedImage) -> np.ndarray:
+    """把 ``msg.data`` 归一化成 uint8 buffer."""
+    raw = getattr(msg, "data", None)
+    if raw is None:
+        raise ValueError("compressed image payload is None")
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        buffer = np.frombuffer(bytes(raw), dtype=np.uint8)
+    else:
+        buffer = np.asarray(raw, dtype=np.uint8)
+    if buffer.size == 0:
+        raise ValueError("compressed image payload is empty")
+    return buffer
+
 class ImageStateAdapterConfig(BaseModel):
     image_topic: str = RosField(
         "/camera/color/image_raw/compressed", read_only = True, description = "压缩图像话题",
@@ -44,8 +70,15 @@ class ImageStateAdapterConfig(BaseModel):
     compress_decoder_type: str = RosField(
         "normal_compress_color", read_only = True, description = "压缩图像解码器类型, 仅在使用 is_compress_image 为 True 时生效",
     )
-    is_async: bool = RosField(
-       True, read_only = True, description = "是否使用异步解码, 仅在使用 is_compress_image 为 True 时生效",
+    # is_async: bool = RosField(
+    #    True, read_only = True, description = "是否使用异步解码, 仅在使用 is_compress_image 为 True 时生效",
+    # )
+    decode_mode: Literal["sync", "async", "cache"] = RosField(
+       "cache", read_only = True, 
+       description = "仅在使用 is_compress_image 为 True 时生效"
+                     "sync 表示在接收到消息后同步解码, state source 为解码后的图像"
+                     "async 表示在接收到消息后异步解码, state source 为解码后的图像"
+                     "cache 表示 state source 中仅缓存消息, 在 step 动作指令发送后、获取 obs 时解码",
     )
 
     qos_reliability: str = RosField(
@@ -79,7 +112,7 @@ class CompressedImageStateAdapter(RosStateAdapter):
         self.config = config
 
     def decode(self, msg: CompressedImage) -> np.ndarray:
-        buffer = self._buffer(msg)
+        buffer = _msg_to_buffer(msg)
         fmt = (getattr(msg, "format", "") or "").lower()
         return DECODER_DICT[self.config.compress_decoder_type](fmt, buffer)
 
@@ -87,19 +120,27 @@ class CompressedImageStateAdapter(RosStateAdapter):
         """返回 header.stamp（epoch 秒）."""
         return stamp_to_seconds(getattr(getattr(msg, "header", None), "stamp", None))
 
-    @staticmethod
-    def _buffer(msg: CompressedImage) -> np.ndarray:
-        """把 ``msg.data`` 归一化成 uint8 buffer."""
-        raw = getattr(msg, "data", None)
-        if raw is None:
-            raise ValueError("compressed image payload is None")
-        if isinstance(raw, (bytes, bytearray, memoryview)):
-            buffer = np.frombuffer(bytes(raw), dtype=np.uint8)
-        else:
-            buffer = np.asarray(raw, dtype=np.uint8)
-        if buffer.size == 0:
-            raise ValueError("compressed image payload is empty")
-        return buffer
+class CompressedImageCacheStateAdapter(RosStateAdapter):
+
+    def __init__(
+        self,
+        # 需要获取的关节 id 列表, 也即观测结果对应的元素代指的关节 id
+        config: ImageStateAdapterConfig
+    ):
+        '''
+        仅保存 Compressed Image 消息副本, 在 Source -> obs 时 (step(act) 中动作发送后) 解码
+        相当延缓推理开始时间为代价, 避免 CPU 在控制周期内消耗大量计算用于解码
+        '''
+        self.config = config
+
+    def decode(self, msg: CompressedImage) -> tuple[str, np.ndarray]: # type: ignore
+        buffer = np.copy(_msg_to_buffer(msg))
+        fmt = (getattr(msg, "format", "") or "").lower()
+        return (fmt, buffer)
+
+    def source_stamp(self, msg: CompressedImage) -> float | None:
+        """返回 header.stamp（epoch 秒）."""
+        return stamp_to_seconds(getattr(getattr(msg, "header", None), "stamp", None))
 
 class RawImageStateAdapter(RosStateAdapter):
     def __init__(
@@ -115,17 +156,6 @@ class RawImageStateAdapter(RosStateAdapter):
     def source_stamp(self, msg: CompressedImage) -> float | None:
         """返回 header.stamp（epoch 秒）."""
         return stamp_to_seconds(getattr(getattr(msg, "header", None), "stamp", None))
-
-def _image_to_obs(arr: np.ndarray):
-    '''
-    将 ndim 为 2, 3 的图片统一为 3, 其他 ndim 则抛出异常
-    '''
-    if arr.ndim == 2:
-        return np.expand_dims(arr, axis = -1)
-    elif arr.ndim == 3:
-        return arr
-    else:
-        raise RuntimeError(f"图片数组尺寸 {arr.shape} 应为 2 或 3 维")
 
 def registe_image_obs(
     robot_plugin: RobotPlugin,
@@ -146,7 +176,10 @@ def registe_image_obs(
 
     def state_factory(ctx: ComponentContext) -> Any:
         if config.is_compress_image:
-            adapter = CompressedImageStateAdapter(config)
+            if config.decode_mode == "cache":
+                adapter = CompressedImageCacheStateAdapter(config)
+            else:
+                adapter = CompressedImageStateAdapter(config)
             msg_type = CompressedImage
         else:
             adapter = RawImageStateAdapter(config)
@@ -163,23 +196,34 @@ def registe_image_obs(
             qos = make_qos(depth = config.qos_depth, reliability = config.qos_reliability)
         )
 
-        if config.is_async and config.is_compress_image:
+        if config.decode_mode == "async" and config.is_compress_image:
             return AsyncRosTopicStateSource(**kwargs) # type: ignore
         else:
             return RosTopicStateSource(**kwargs) # type: ignore
 
     def obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
-        return TransformObservation(
-            image_obs_name,
+        kwargs = dict(
+            name = image_obs_name,
             source = image_state_name,
-            transform = lambda view: _image_to_obs(np.array(
-                view.value(image_state_name), dtype = np.dtype(config.image_dtype)
-            )),
+            # transform = lambda view: _image_to_obs(np.array(
+            #     view.value(image_state_name), dtype = np.dtype(config.image_dtype)
+            # )),
             spec = ObservationSpec(
                 dtype = config.image_dtype, shape = (None, None, config.image_channel), semantic = f"iamge with dtype {config.image_dtype} and channel {config.image_channel}"
             ),
             warn_after = config.warn_after,
         )
+        image_dtype = np.dtype(config.image_dtype)
+
+        if config.decode_mode == "cache" and config.is_compress_image:
+            def _state_to_obs(state: tuple[str, np.ndarray]):
+                fmt, buffer = state
+                return _image_to_obs(DECODER_DICT[config.compress_decoder_type](fmt, buffer), image_dtype)
+            kwargs["transform"] = lambda view: _state_to_obs(view.value(image_state_name)) # type: ignore
+        else:
+            kwargs["transform"] = lambda view: _image_to_obs(view.value(image_state_name), image_dtype) # type: ignore
+        
+        return TransformObservation(**kwargs) # type: ignore
 
     robot_plugin.state(
         image_state_name,
