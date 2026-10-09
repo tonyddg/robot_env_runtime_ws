@@ -1,5 +1,6 @@
 import math
-from typing import Any, Literal, Mapping, Optional
+import time
+from typing import Any, Callable, Literal, Mapping, Optional
 import numpy as np
 
 from pydantic import BaseModel, model_validator
@@ -163,6 +164,9 @@ def registe_image_obs(
 
     image_obs_name: str = "iamge",
     image_state_name: Optional[str] = None,
+
+    # 打印调试信息, 建议传入 node.get_logger().info
+    log_fn: Optional[Callable[..., None]] = None
 ):
     '''
     注册天轶机器人手臂关节状态
@@ -171,6 +175,8 @@ def registe_image_obs(
     '''
     if config is None:
         config = ImageStateAdapterConfig()
+    if log_fn is None:
+        log_fn = lambda message: None
     if image_state_name is None:
         image_state_name = image_obs_name + "_state"
 
@@ -218,7 +224,14 @@ def registe_image_obs(
         if config.decode_mode == "cache" and config.is_compress_image:
             def _state_to_obs(state: tuple[str, np.ndarray]):
                 fmt, buffer = state
-                return _image_to_obs(DECODER_DICT[config.compress_decoder_type](fmt, buffer), image_dtype)
+
+                _start_time = time.perf_counter()
+                res = _image_to_obs(DECODER_DICT[config.compress_decoder_type](fmt, buffer), image_dtype)
+                _use_time = time.perf_counter() - _start_time
+                log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 5)
+                
+                return res
+            
             kwargs["transform"] = lambda view: _state_to_obs(view.value(image_state_name)) # type: ignore
         else:
             kwargs["transform"] = lambda view: _image_to_obs(view.value(image_state_name), image_dtype) # type: ignore
