@@ -234,10 +234,12 @@ def tianyi_arm(
     robot = registe_image_obs(
         robot, color_config,
         image_obs_name = config.image_color_obs_name,
+        log_fn = log_fn
     )
     robot = registe_image_obs(
         robot, depth_config,
         image_obs_name = config.image_depth_obs_name,
+        log_fn = log_fn
     )
 
     # 末端位姿

@@ -196,7 +196,7 @@ class PartStateMonitor:
         cur_timestap = time.monotonic()
         if cur_timestap - self._last_timestamp > self.state_delay_tol:
             if not is_force:
-                self.on_fail(f"状态超时")
+                self.on_fail(f"状态延迟 {cur_timestap - self._last_timestamp} 超出要求的 {self.state_delay_tol}")
                 return None
 
         return self._state
