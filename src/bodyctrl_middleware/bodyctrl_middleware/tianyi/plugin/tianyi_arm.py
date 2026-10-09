@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 import numpy as np
 from pydantic import BaseModel
@@ -12,9 +12,9 @@ from bodyctrl_middleware.tianyi.runtime.registe_tele_arm_obs import registe_tele
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_qpos_obs import registe_tianyi_arm_qpos_obs
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_interpolate_control import registe_tianyi_arm_interpolate_control, TianyiArmInterpolateAdapterConfig
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_body_manual_reset import registe_tianyi_tele_body_manual_reset, registe_tianyi_fix_body_manual_reset
+from bodyctrl_middleware.tianyi.runtime.registe_tianyi_tcp_pose_obs import registe_tianyi_tcp_pose_obs
 
 from bodyctrl_middleware.common.image_decode.registe_image_obs import registe_image_obs, ImageStateAdapterConfig
-from bodyctrl_middleware.common.runtime.registe_frame_pose_obs import registe_frame_pose_obs, PoseStampedStateAdapterConfig
 from bodyctrl_middleware.common.runtime.registe_bool_obs import registe_bool_obs, BoolStateAdapterConfig
 
 class TianyiArmConfig(BaseModel):
@@ -82,15 +82,12 @@ class TianyiArmConfig(BaseModel):
         0.1, ge = 0, read_only = True,
         description = "允许相机观测观测延迟"
     )
-
-    # 末端位姿观测
-    eef_pose_topic_name: str = RosField(
-        "eef_pose", read_only = True,
-        description = "手臂末端位姿话题 (FK)"
-    )
-    eef_pose_obs_name: str = RosField(
-        "eef_pose", read_only = True,
-        description = "手臂末端位姿观测名"
+    image_decode_mode: Literal["sync", "async", "cache"] = RosField(
+       "cache", read_only = True, 
+       description = "仅在使用 is_compress_image 为 True 时生效"
+                     "sync 表示在接收到消息后同步解码, state source 为解码后的图像"
+                     "async 表示在接收到消息后异步解码, state source 为解码后的图像"
+                     "cache 表示 state source 中仅缓存消息, 在 step 动作指令发送后、获取 obs 时解码",
     )
 
     # 遥操终止信号
@@ -101,6 +98,30 @@ class TianyiArmConfig(BaseModel):
     tele_stop_sign_obs_name: str = RosField(
         "stop_tele", read_only = True,
         description = "遥操终止信号观测名, -1 为 False, 1 为 True"
+    )
+
+    # 正运动学与 TCP pose 观测
+    # 默认关节名称列表
+    fk_default_motor_id: list[int] = RosField(
+        [], read_only = True,
+        description = "正运动学计算中默认关节名称列表"
+    )
+    # 默认关节位置列表
+    fk_default_motor_qpos: list[float] = RosField(
+        [], read_only = True,
+        description = "正运动学计算中默认关节位置列表"
+    )
+    fk_tcp_frame_name: str = RosField(
+        "left_tcp_link", read_only = True,
+        description = "正运动学计算中获取的末端连杆名称"
+    )
+    fk_odom_state_name: str = RosField(
+        "", read_only = True,
+        description = "里程计 state 名称, 空字符串认为底盘固定"
+    )
+    fk_eef_pose_obs_name: str = RosField(
+        "eef_pose", read_only = True,
+        description = "手臂末端位姿观测名"
     )
 
     # 全身初始化
@@ -117,7 +138,10 @@ class TianyiArmConfig(BaseModel):
 
 def tianyi_arm(
     config: Optional[TianyiArmConfig] = None,
-    robot: Optional[RobotPlugin] = None
+    robot: Optional[RobotPlugin] = None,
+
+    # 打印调试信息, 建议传入 node.get_logger().info
+    log_fn: Optional[Callable[..., None]] = None
 ):
     if config is None:
         config = TianyiArmConfig()
@@ -197,12 +221,15 @@ def tianyi_arm(
     color_config = ImageStateAdapterConfig(
         image_topic = config.image_color_topic_name,
         image_dtype = "uint8", image_channel = 3, compress_decoder_type = "normal_compress_color",
-        warn_after = config.image_warn_after
+        warn_after = config.image_warn_after,
+        decode_mode = config.image_decode_mode
+
     )
     depth_config = ImageStateAdapterConfig(
         image_topic = config.image_depth_topic_name,
         image_dtype = "uint16", image_channel = 1, compress_decoder_type = "orbbec_compress_depth",
-        warn_after = config.image_warn_after
+        warn_after = config.image_warn_after,
+        decode_mode = config.image_decode_mode
     )
     robot = registe_image_obs(
         robot, color_config,
@@ -214,12 +241,27 @@ def tianyi_arm(
     )
 
     # 末端位姿
-    eef_pose_config = PoseStampedStateAdapterConfig(
-        pose_topic = config.eef_pose_topic_name, warn_after = config.warn_after
-    )
-    robot = registe_frame_pose_obs(
-        robot, eef_pose_config,
-        pose_obs_name = config.eef_pose_obs_name
+    # eef_pose_config = PoseStampedStateAdapterConfig(
+    #     pose_topic = config.eef_pose_topic_name, warn_after = config.warn_after
+    # )
+    # robot = registe_frame_pose_obs(
+    #     robot, eef_pose_config,
+    #     pose_obs_name = config.eef_pose_obs_name
+    # )
+
+    robot = registe_tianyi_tcp_pose_obs(
+        robot, 
+        motor_id_to_idx = tuple(config.arm_motor_list),
+        tianyi_arm_qpos_state_name = tianyi_arm_qpos_state_name,
+
+        default_motor_id = config.fk_default_motor_id,
+        default_motor_qpos = config.fk_default_motor_qpos,
+        tcp_frame = config.fk_tcp_frame_name,
+        odom_state_name = config.fk_odom_state_name if config.fk_odom_state_name != "" else None,
+        tianyi_tcp_pose_obs_name = config.fk_eef_pose_obs_name,
+
+        warn_after = config.warn_after,
+        log_fn = log_fn
     )
 
     # 遥操终止信号

@@ -15,6 +15,7 @@ dependencies = [
     "robot-refactor[meshcat]",
     "rvl>=1.0.4",
     "sapien>=3.0.3",
+    "transforms3d>=0.4.2",
     "tyro>=1.0.15",
 ]
 

@@ -1,3 +1,7 @@
+from typing import Literal
+
+import numpy as np
+
 from ament_index_python import get_package_share_directory
 from pathlib import Path
 
@@ -8,6 +12,8 @@ from bodyctrl_middleware.tianyi.plugin.tianyi_arm import tianyi_arm, TianyiArmCo
 from bodyctrl_middleware.tianyi.plugin.tianyi_base import tianyi_base, TianyiBaseConfig
 
 from bodyctrl_middleware.policy.tele_policy import TelePolicy, TeleConfig
+from bodyctrl_middleware.policy.replay_policy import ReplayPolicy
+
 from bodyctrl_middleware.record import (
     ON_UNAVAILABLE_CHOICES,
     build_action_meta,
@@ -24,6 +30,17 @@ from robot_env_runtime.ros2.executor import RosExecutorHost
 
 DEFAULT_PROFILE = "config/tianyi_wholebody_tele.yaml"
 
+
+SupportPolicyType = Literal["tele", "replay"]
+class PolicyConfig(BaseModel):
+    policy_type: SupportPolicyType = RosField(
+        "tele", read_only = True,
+        description = "支持的策略类型, 可选 tele 遥操作策略; replay 动作回放策略",
+    )
+    policy_kwargs: str = RosField(
+        "", read_only = True,
+        description = "json 形式的策略参数, 取空字符串禁用, 具体内容见 make_policy 函数",
+    )
 
 class RecordConfig(BaseModel):
     """episode 数据采集配置（默认关闭）."""
@@ -82,6 +99,64 @@ class Config(BaseModel):
     arm: TianyiArmConfig = RosField(default_factory = lambda: TianyiArmConfig())
     base: TianyiBaseConfig = RosField(default_factory = lambda: TianyiBaseConfig())
     record: RecordConfig = RosField(default_factory = lambda: RecordConfig())
+    policy: PolicyConfig = RosField(default_factory = lambda: PolicyConfig())
+
+
+def make_policy(config: Config, executor: RosExecutorHost):
+
+    if config.policy.policy_kwargs != "":
+        import json
+        extern_policy_kwargs = json.loads(config.policy.policy_kwargs)
+    else:
+        extern_policy_kwargs = {}
+
+    if config.policy.policy_type == "tele":
+        import yaml
+        with open(config.profile_path) as f:
+            profile_dict = yaml.load(f, yaml.SafeLoader)
+
+        return TelePolicy(
+            [
+                TeleConfig.from_profile(
+                    config.arm.tele_arm_qpos_obs_name, None,
+                    [True, ] * len(config.arm.arm_motor_list),
+                    profile_dict, "arm"
+                ),
+                TeleConfig.from_profile(
+                    config.base.tele_cmd_vel_obs_name, None,
+                    [False, ] * 2,
+                    profile_dict, "base"
+                ),
+            ],
+            # True 遥操继续, 观测值为 1, 函数返回 False 不结束遥操
+            is_tele_done_fn = lambda obs: obs.get("stop_tele", 1) != 1,
+            logger = executor.node.get_logger()
+        )
+
+    elif config.policy.policy_type == "replay":
+        policy_kwargs = dict(
+            # 没有提供 episode_path 时直接报错
+            # episode_path = "/ros2_ws/output/traj_9_29/trajectory_1790685756/episode_0000.h5py",
+            action_scale = None
+        )
+        policy_kwargs.update(extern_policy_kwargs)
+
+        episode_path = policy_kwargs.get("episode_path", None)
+        if episode_path is None:
+            raise ValueError("使用 replay 时必须提供 episode_path")
+
+        import h5py
+        with h5py.File(episode_path, "r") as f:
+            action_chunk = np.array(f["action"][1:], copy = True) # type: ignore
+
+        return ReplayPolicy(
+            action_chunk, 
+            policy_kwargs["action_scale"],  # type: ignore
+            logger = executor.node.get_logger()
+        )
+
+    else:
+        raise ValueError(f"未知 policy_type {config.policy.policy_type}")
 
 def main(argv = None):
     executor = RosExecutorHost(node_name = "tianyi_whole_tele", autostart = False)
@@ -104,7 +179,7 @@ def main(argv = None):
     executor.start()
 
     robot = RobotPlugin("tianyi")
-    robot = tianyi_arm(config.arm, robot)
+    robot = tianyi_arm(config.arm, robot, executor.node.get_logger().info)
     robot = tianyi_base(config.base, robot)
 
     env = RobotEnv.from_profile(
@@ -115,25 +190,8 @@ def main(argv = None):
     )
 
     try:
-        import yaml
-        with open(config.profile_path) as f:
-            profile_dict = yaml.load(f, yaml.SafeLoader)
-        policy = TelePolicy(
-            [
-                TeleConfig.from_profile(
-                    config.arm.tele_arm_qpos_obs_name, None,
-                    [True, ] * len(config.arm.arm_motor_list),
-                    profile_dict, "arm"
-                ),
-                TeleConfig.from_profile(
-                    config.base.tele_cmd_vel_obs_name, None,
-                    [False, ] * 2,
-                    profile_dict, "base"
-                ),
-            ],
-            # True 遥操继续, 观测值为 1, 函数返回 False 不结束遥操
-            is_tele_done_fn = lambda obs: obs.get("stop_tele", 1) != 1,
-            logger = executor.node.get_logger()
+        policy = make_policy(
+            config, executor
         )
 
         if config.record.enable:

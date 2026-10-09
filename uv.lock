@@ -1414,6 +1414,7 @@ dependencies = [
     { name = "robot-refactor", extra = ["meshcat"] },
     { name = "rvl" },
     { name = "sapien" },
+    { name = "transforms3d" },
     { name = "tyro" },
 ]
 
@@ -1434,6 +1435,7 @@ requires-dist = [
     { name = "robot-refactor", extras = ["meshcat"], git = "https://github.com/tonyddg/robot_refactor.git" },
     { name = "rvl", specifier = ">=1.0.4" },
     { name = "sapien", specifier = ">=3.0.3" },
+    { name = "transforms3d", specifier = ">=0.4.2" },
     { name = "tyro", specifier = ">=1.0.15" },
 ]
 
