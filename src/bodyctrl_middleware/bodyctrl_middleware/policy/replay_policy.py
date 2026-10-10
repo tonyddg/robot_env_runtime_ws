@@ -23,14 +23,19 @@ class ReplayPolicy(PolicySync):
         self.addiction_scale = addiction_scale
 
         self.cur_action_idx = 0
+        # 未 reset 就推理通常是上层忘记 reset（例如采集循环改错），给出明确错误
+        self._resetted = False
 
         self.logger = logger
         self.allow_clip = allow_clip
 
     def reset(self, obs: dict):
         self.cur_action_idx = 0
+        self._resetted = True
 
     def infer_sync(self, obs: dict) -> np.ndarray:
+        if not self._resetted:
+            raise ValueError("ReplayPolicy.infer_sync() 前必须先调用 reset()")
         action = self.action_chunk[self.cur_action_idx]
         if self.addiction_scale is not None:
             action = action * self.addiction_scale
