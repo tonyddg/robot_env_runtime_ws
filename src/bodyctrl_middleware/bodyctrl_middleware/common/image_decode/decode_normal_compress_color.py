@@ -18,3 +18,19 @@ def decode_normal_compress_color(fmt: str, buffer: np.ndarray) -> np.ndarray:
     if decoded.ndim == 3 and "rgb" in fmt and "bgr" not in fmt:
         decoded = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
     return decoded
+
+def decode_normal_compress_color_reduce2(fmt: str, buffer: np.ndarray) -> np.ndarray:
+    '''
+    fmt 与 buffer 来自 bodyctrl_middleware.common.runtime.registe_compress_image_obs.CompressImageStateAdapter:decode 处理
+    解码图片时, 还会将图片尺寸缩小到原来的 1/2 以减低解码消耗
+    '''
+    
+    decoded = cv2.imdecode(buffer, cv2.IMREAD_REDUCED_COLOR_2)
+    if decoded is None:
+        raise ValueError("图像解码结果为空")
+    # 单通道灰度的 3D (H, W, 1) 展开为 2D，统一灰度形状语义。
+    if decoded.ndim == 3 and decoded.shape[2] == 1:
+        decoded = decoded[:, :, 0]
+    if decoded.ndim == 3 and "rgb" in fmt and "bgr" not in fmt:
+        decoded = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+    return decoded

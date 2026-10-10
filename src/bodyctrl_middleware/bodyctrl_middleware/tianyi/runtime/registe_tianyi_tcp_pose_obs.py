@@ -16,7 +16,6 @@ from bodyctrl_middleware.tianyi.hardware.model import (
 # from pydantic import BaseModel, model_validator
 # from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
 
-
 def registe_tianyi_tcp_pose_obs(
     robot_plugin: RobotPlugin,
 
@@ -49,7 +48,7 @@ def registe_tianyi_tcp_pose_obs(
     '''
 
     if log_fn is None:
-        log_fn = lambda message: None
+        log_fn = lambda message, **kwargs: None
 
     if len(motor_id_to_idx) != len(set(motor_id_to_idx)):
         raise ValueError("给定手臂关节电机 id 列表存在重复")
@@ -98,7 +97,7 @@ def registe_tianyi_tcp_pose_obs(
                 q, tcp_frame
             )
             _use_time = time.perf_counter() - _start_time
-            log_fn(f"正运动学用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 5)
+            log_fn(f"正运动学用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 1)
             
             pose_base_tcp = np.identity(4)
             pose_base_tcp[:3, :3] = tcp_rot

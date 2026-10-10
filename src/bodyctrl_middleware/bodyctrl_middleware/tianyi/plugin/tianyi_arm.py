@@ -1,4 +1,4 @@
-from typing import Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import numpy as np
 from pydantic import BaseModel
@@ -14,7 +14,7 @@ from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_interpolate_control i
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_body_manual_reset import registe_tianyi_tele_body_manual_reset, registe_tianyi_fix_body_manual_reset
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_tcp_pose_obs import registe_tianyi_tcp_pose_obs
 
-from bodyctrl_middleware.common.image_decode.registe_image_obs import registe_image_obs, ImageStateAdapterConfig
+from bodyctrl_middleware.common.image_decode.registe_image_obs import registe_image_obs, ImageStateAdapterConfig, ImageProcessConfig
 from bodyctrl_middleware.common.runtime.registe_bool_obs import registe_bool_obs, BoolStateAdapterConfig
 
 class TianyiArmConfig(BaseModel):
@@ -70,6 +70,18 @@ class TianyiArmConfig(BaseModel):
         "color", read_only = True,
         description = "RGB 图片观测名"
     )
+    image_color_reduce_decode: bool = RosField(
+        True, read_only = True, # 原始分辨率 640x480 reduce 为 320x240
+        description = "是否使用 reduce 2 解码模式提高解码速度"
+    )
+    image_color_obs_process: ImageProcessConfig = RosField(
+        default_factory = lambda: ImageProcessConfig(
+            is_clip_image = True, # 裁剪 320x240 中心 224 x 224 的区域
+            clip_lx = 48, clip_rx = 272,
+            clip_ly = 8, clip_ry = 232,
+        )
+    )
+
     image_depth_topic_name: str = RosField(
         "camera/depth/image_raw/compressedDepth", read_only = True,
         description = "压缩深度图片话题"
@@ -78,6 +90,16 @@ class TianyiArmConfig(BaseModel):
         "depth", read_only = True,
         description = "深度图片观测名"
     )
+    image_depth_obs_process: ImageProcessConfig = RosField(
+        default_factory = lambda: ImageProcessConfig(
+            is_clip_image = True, # 裁剪 480x270 中心 256 x 256 的区域
+            clip_lx = 112, clip_rx = 368,
+            clip_ly = 7, clip_ry = 263,
+            is_resize_image = True, # 缩小到 128x128
+            resize_target_x = 128, resize_target_y = 128
+        )
+    )
+
     image_warn_after: float = RosField(
         0.1, ge = 0, read_only = True,
         description = "允许相机观测观测延迟"
@@ -140,8 +162,8 @@ def tianyi_arm(
     config: Optional[TianyiArmConfig] = None,
     robot: Optional[RobotPlugin] = None,
 
-    # 打印调试信息, 建议传入 node.get_logger().info
-    log_fn: Optional[Callable[..., None]] = None
+    # 打印调试信息, 建议传入 node.get_logger()
+    logger: Optional[Any] = None
 ):
     if config is None:
         config = TianyiArmConfig()
@@ -220,26 +242,28 @@ def tianyi_arm(
     # 相机观测
     color_config = ImageStateAdapterConfig(
         image_topic = config.image_color_topic_name,
-        image_dtype = "uint8", image_channel = 3, compress_decoder_type = "normal_compress_color",
+        image_dtype = "uint8", image_channel = 3, 
+        compress_decoder_type = "normal_compress_color_reduce2" if config.image_color_reduce_decode else "normal_compress_color",
         warn_after = config.image_warn_after,
-        decode_mode = config.image_decode_mode
-
+        decode_mode = config.image_decode_mode,
+        image_process_config = config.image_color_obs_process
     )
     depth_config = ImageStateAdapterConfig(
         image_topic = config.image_depth_topic_name,
         image_dtype = "uint16", image_channel = 1, compress_decoder_type = "orbbec_compress_depth",
         warn_after = config.image_warn_after,
-        decode_mode = config.image_decode_mode
+        decode_mode = config.image_decode_mode,
+        image_process_config = config.image_depth_obs_process
     )
     robot = registe_image_obs(
         robot, color_config,
         image_obs_name = config.image_color_obs_name,
-        log_fn = log_fn
+        log_fn = lambda message: logger.info(message, throttle_duration_sec = 1.0) if logger is not None else None
     )
     robot = registe_image_obs(
         robot, depth_config,
         image_obs_name = config.image_depth_obs_name,
-        log_fn = log_fn
+        log_fn = lambda message: logger.info(message, throttle_duration_sec = 1.0) if logger is not None else None
     )
 
     # 末端位姿

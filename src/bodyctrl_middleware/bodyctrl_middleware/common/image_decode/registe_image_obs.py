@@ -1,6 +1,7 @@
 import math
 import time
 from typing import Any, Callable, Literal, Mapping, Optional
+import cv2
 import numpy as np
 
 from pydantic import BaseModel, model_validator
@@ -19,27 +20,15 @@ from robot_env_runtime.extension.plugin import RobotPlugin
 from robot_env_runtime.ros2.qos import make_qos
 
 # 相机解码器
-from bodyctrl_middleware.common.image_decode.decode_normal_compress_color import decode_normal_compress_color
+from bodyctrl_middleware.common.image_decode.decode_normal_compress_color import decode_normal_compress_color, decode_normal_compress_color_reduce2
 from bodyctrl_middleware.common.image_decode.decode_orbbec_compress_depth import decode_orbbec_compress_depth
 from bodyctrl_middleware.common.image_decode.decode_image import decode_image
 
 DECODER_DICT = dict(
     normal_compress_color = decode_normal_compress_color,
     orbbec_compress_depth = decode_orbbec_compress_depth,
+    normal_compress_color_reduce2 = decode_normal_compress_color_reduce2,
 )
-
-def _image_to_obs(arr: np.ndarray, dtype: Any = None):
-    '''
-    将 ndim 为 2, 3 的图片统一为 3, 其他 ndim 则抛出异常
-    '''
-    if arr.ndim == 2:
-        res = np.expand_dims(arr, axis = -1)
-    elif arr.ndim == 3:
-        res = arr
-    else:
-        raise RuntimeError(f"图片数组尺寸 {arr.shape} 应为 2 或 3 维")
-
-    return np.array(res, dtype = dtype)
 
 def _msg_to_buffer(msg: CompressedImage) -> np.ndarray:
     """把 ``msg.data`` 归一化成 uint8 buffer."""
@@ -54,6 +43,58 @@ def _msg_to_buffer(msg: CompressedImage) -> np.ndarray:
         raise ValueError("compressed image payload is empty")
     return buffer
 
+class ImageProcessConfig(BaseModel):
+    is_clip_image: bool = RosField(
+        False, read_only = True, description = "获取 obs 时是否裁剪图像, 取 False 时配置中相关参数无效",
+    )
+    clip_lx: int = RosField(
+        0, ge = 0, read_only = True, description = "裁剪区左上 X 坐标",
+    )
+    clip_ly: int = RosField(
+        0, ge = 0, read_only = True, description = "裁剪区左上 Y 坐标",
+    )
+    clip_rx: int = RosField(
+        0, ge = 0, read_only = True, description = "裁剪区右下 X 坐标",
+    )
+    clip_ry: int = RosField(
+        0, ge = 0, read_only = True, description = "裁剪区右下 Y 坐标",
+    )
+
+    is_resize_image: bool = RosField(
+        False, read_only = True, description = "获取 obs 时是否缩放图像 (先裁剪再缩放), 取 False 时配置中相关参数无效",
+    )
+    resize_target_x: int = RosField(
+        224, ge = 0, read_only = True, description = "目标图片宽度",
+    )
+    resize_target_y: int = RosField(
+        224, ge = 0, read_only = True, description = "目标图片高度",
+    )
+
+def _image_process(arr: np.ndarray, config: ImageProcessConfig, dtype: Any = None):
+    # 将 ndim 为 2, 3 的图片统一为 3, 其他 ndim 则抛出异常
+    if arr.ndim == 2:
+        res = np.expand_dims(arr, axis = -1)
+    elif arr.ndim == 3:
+        res = arr
+    else:
+        raise RuntimeError(f"图片数组尺寸 {arr.shape} 应为 2 或 3 维")
+
+    if config.is_clip_image:
+        # OpenCV 第 0 维为 Y
+        res = res[
+            config.clip_ly: config.clip_ry,
+            config.clip_lx: config.clip_rx,
+        ]
+
+    if config.is_resize_image:
+        res = cv2.resize(
+            res, (config.resize_target_x, config.resize_target_y), 
+            # 默认缩小图片, 用于深度图
+            interpolation = cv2.INTER_NEAREST
+        )
+
+    return np.array(res, dtype = dtype)
+
 class ImageStateAdapterConfig(BaseModel):
     image_topic: str = RosField(
         "/camera/color/image_raw/compressed", read_only = True, description = "压缩图像话题",
@@ -63,6 +104,9 @@ class ImageStateAdapterConfig(BaseModel):
     )
     image_channel: int = RosField(
         3, ge = 1, read_only = True, description = "图像通道数",
+    )
+    image_process_config: ImageProcessConfig = RosField(
+        default_factory = lambda: ImageProcessConfig()
     )
 
     is_compress_image: bool = RosField(
@@ -104,6 +148,12 @@ class ImageStateAdapterConfig(BaseModel):
 
         return self
 
+def _decode_to_image(config: ImageStateAdapterConfig, buffer: np.ndarray, fmt: str):
+    image_dtype = np.dtype(config.image_dtype)
+    raw_image = DECODER_DICT[config.compress_decoder_type](fmt, buffer)
+    image = _image_process(raw_image, config.image_process_config, image_dtype)
+    return image
+
 class CompressedImageStateAdapter(RosStateAdapter):
     def __init__(
         self,
@@ -115,7 +165,7 @@ class CompressedImageStateAdapter(RosStateAdapter):
     def decode(self, msg: CompressedImage) -> np.ndarray:
         buffer = _msg_to_buffer(msg)
         fmt = (getattr(msg, "format", "") or "").lower()
-        return DECODER_DICT[self.config.compress_decoder_type](fmt, buffer)
+        return _decode_to_image(self.config, buffer, fmt)
 
     def source_stamp(self, msg: CompressedImage) -> float | None:
         """返回 header.stamp（epoch 秒）."""
@@ -165,8 +215,8 @@ def registe_image_obs(
     image_obs_name: str = "iamge",
     image_state_name: Optional[str] = None,
 
-    # 打印调试信息, 建议传入 node.get_logger().info
-    log_fn: Optional[Callable[..., None]] = None
+    # 打印调试信息, 建议传入 lambda message: node.get_logger().info(message, throttle_duration_sec = 5)
+    log_fn: Optional[Callable[[str], None]] = None
 ):
     '''
     注册天轶机器人手臂关节状态
@@ -175,10 +225,10 @@ def registe_image_obs(
     '''
     if config is None:
         config = ImageStateAdapterConfig()
-    if log_fn is None:
-        log_fn = lambda message: None
     if image_state_name is None:
         image_state_name = image_obs_name + "_state"
+    if log_fn is None:
+        log_fn = lambda message: None
 
     def state_factory(ctx: ComponentContext) -> Any:
         if config.is_compress_image:
@@ -219,22 +269,20 @@ def registe_image_obs(
             ),
             warn_after = config.warn_after,
         )
-        image_dtype = np.dtype(config.image_dtype)
 
         if config.decode_mode == "cache" and config.is_compress_image:
             def _state_to_obs(state: tuple[str, np.ndarray]):
                 fmt, buffer = state
 
                 _start_time = time.perf_counter()
-                res = _image_to_obs(DECODER_DICT[config.compress_decoder_type](fmt, buffer), image_dtype)
+                res = _decode_to_image(config, buffer, fmt)
                 _use_time = time.perf_counter() - _start_time
-                log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 5)
-                
+                log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms")
                 return res
-            
             kwargs["transform"] = lambda view: _state_to_obs(view.value(image_state_name)) # type: ignore
+
         else:
-            kwargs["transform"] = lambda view: _image_to_obs(view.value(image_state_name), image_dtype) # type: ignore
+            kwargs["transform"] = lambda view: view.value(image_state_name) # type: ignore
         
         return TransformObservation(**kwargs) # type: ignore
 
