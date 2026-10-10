@@ -18,6 +18,7 @@ Episode 采集循环（参考 ``robot_env/policy/record.py``，改用 robot_env_
 """
 
 import json
+import sys
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -25,7 +26,15 @@ from typing import Any, Callable, Mapping, Optional, Union
 
 import numpy as np
 
+from bodyctrl_middleware.record.async_writer import (
+    DEFAULT_FLUSH_INTERVAL_SEC,
+    DEFAULT_QUEUE_WARN_BYTES,
+    AsyncEpisodeWriter,
+)
 from bodyctrl_middleware.record.episode_writer import EpisodeH5Writer, jsonable
+
+# 同步 / 异步两种 episode writer（接口一致）
+EpisodeWriter = Union[EpisodeH5Writer, AsyncEpisodeWriter]
 
 ACCEPT_INPUT = set(("t", "y", "1"))
 
@@ -147,10 +156,17 @@ def collect_once(
     compression: str = "none",
     compression_overrides: Optional[Mapping[str, str]] = None,
     flush_warn_sec: float = 0.02,
+    async_write: bool = True,
+    flush_interval_sec: float = DEFAULT_FLUSH_INTERVAL_SEC,
+    queue_warn_bytes: int = DEFAULT_QUEUE_WARN_BYTES,
     logger: Any = None,
 ) -> bool:
     """
     采集一轮 episode 并落盘；返回是否真的保存了文件.
+
+    ``async_write=True``（默认）时使用 :class:`AsyncEpisodeWriter`：控制周期里
+    只做 obs / action 快照入队，建表 / 预分配 / 写入 / flush 都在后台线程完成；
+    ``async_write=False`` 复现旧的同步写入行为（用于对照 / 调试）。
 
     ``ask_before_save=True`` 时会在本轮结束后询问是否保存：
 
@@ -165,16 +181,31 @@ def collect_once(
     save_dir.mkdir(parents = True, exist_ok = True)
     save_path = save_dir / f"episode_{int(episode_index):04d}.h5py"
 
-    writer = EpisodeH5Writer(
-        save_path,
-        batch_size = batch_size,
-        meta = meta,
-        action_meta = action_meta,
-        compression = compression,
-        compression_overrides = compression_overrides,
-        flush_warn_sec = flush_warn_sec,
-        logger = logger,
-    )
+    writer: EpisodeWriter
+    if async_write:
+        writer = AsyncEpisodeWriter(
+            save_path,
+            batch_size = batch_size,
+            meta = meta,
+            action_meta = action_meta,
+            compression = compression,
+            compression_overrides = compression_overrides,
+            flush_warn_sec = flush_warn_sec,
+            logger = logger,
+            flush_interval_sec = flush_interval_sec,
+            queue_warn_bytes = queue_warn_bytes,
+        )
+    else:
+        writer = EpisodeH5Writer(
+            save_path,
+            batch_size = batch_size,
+            meta = meta,
+            action_meta = action_meta,
+            compression = compression,
+            compression_overrides = compression_overrides,
+            flush_warn_sec = flush_warn_sec,
+            logger = logger,
+        )
     _log(logger, "info", f"开始采集 episode {episode_index}: {save_path}")
 
     termination_reason = "unknown"
@@ -185,6 +216,7 @@ def collect_once(
 
     # pending_padding = True
     first_obs = None
+    recorded_steps = 0
 
     try:
         observations = env.reset()
@@ -196,7 +228,9 @@ def collect_once(
             first_obs, np.zeros(env.action_dim, dtype = np.float32), None, padding = True
         )
         _use_time = time.perf_counter() - _start_time
-        env._executor.node.get_logger().info(f"episode {episode_index} 初次采集完成, 用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 5)
+        _info_throttled(
+            env, f"episode {episode_index} 初次采集完成, 用时 {_use_time * 1000:.3f}ms"
+        )
 
         while not policy.done() and env.ok():
             future = policy.infer_async(observations)
@@ -214,8 +248,11 @@ def collect_once(
 
             _start_time = time.perf_counter()
             writer.append(observations, action, info)
+            recorded_steps += 1
             _use_time = time.perf_counter() - _start_time
-            env._executor.node.get_logger().info(f"episode {episode_index} 采集 step 完成, 用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 5)
+            _info_throttled(
+                env, f"episode {episode_index} 采集 step 完成, 用时 {_use_time * 1000:.3f}ms"
+            )
 
         if policy.done():
             termination_reason = "policy_done"
@@ -241,7 +278,7 @@ def collect_once(
             f"{type(exc).__name__}: {exc}",
         )
 
-    if writer.record_count == 0:
+    if recorded_steps == 0:
         _log(logger, "warn", "未采集到有效数据, 跳过保存")
         _finalize(
             writer, termination_reason, keep = False,
@@ -312,6 +349,9 @@ def collect_multi(
     compression: str = "none",
     compression_overrides: Optional[Mapping[str, str]] = None,
     flush_warn_sec: float = 0.02,
+    async_write: bool = True,
+    flush_interval_sec: float = DEFAULT_FLUSH_INTERVAL_SEC,
+    queue_warn_bytes: int = DEFAULT_QUEUE_WARN_BYTES,
     logger: Any = None,
 ) -> int:
     """
@@ -341,6 +381,9 @@ def collect_multi(
                 compression = compression,
                 compression_overrides = compression_overrides,
                 flush_warn_sec = flush_warn_sec,
+                async_write = async_write,
+                flush_interval_sec = flush_interval_sec,
+                queue_warn_bytes = queue_warn_bytes,
                 logger = logger,
             )
         except ConfirmUnavailableError as exc:
@@ -452,7 +495,7 @@ def _stop_env(env: Any, logger: Any) -> None:
 
 
 def _finalize(
-    writer: EpisodeH5Writer,
+    writer: EpisodeWriter,
     termination_reason: str,
     *,
     keep: bool,
@@ -502,12 +545,63 @@ def _fault_info(env: Any) -> tuple[Optional[str], Optional[str]]:
 
 
 def _log(logger: Any, level: str, message: str) -> None:
-    """写日志（logger 可选，缺失时静默）."""
+    """
+    写日志（logger 可选，缺失时静默）.
+
+    rclpy 的 ``Logger`` 按**调用点**缓存 severity：同一个调用点先后以不同
+    severity 记录会抛 ``ValueError: Logger severity cannot be changed between
+    calls.``。历史上把 info/warn/error 都从同一行 ``func(message)`` 派发，
+    于是第一个 warn 就会把采集节点打死（并掩盖真正的异常）。所以三种 severity
+    各自放在独立函数 / 独立调用点，且任何日志异常都不允许影响采集。
+    """
     if logger is None or not message:
         return
-    func = getattr(logger, level, None)
+    try:
+        if level == "error":
+            _log_error(logger, message)
+        elif level == "warn":
+            _log_warn(logger, message)
+        else:
+            _log_info(logger, message)
+    except Exception:
+        # 退化为 stderr 文本：日志问题绝不能打断采集
+        try:
+            print(f"[record:{level}] {message}", file = sys.stderr)
+        except Exception:
+            pass
+
+
+def _log_info(logger: Any, message: str) -> None:
+    func = getattr(logger, "info", None)
+    if func is not None:
+        func(message)
+
+
+def _log_warn(logger: Any, message: str) -> None:
+    func = getattr(logger, "warning", None) or getattr(logger, "warn", None)
     if func is None:
-        func = getattr(logger, "info", None)
-    if func is None:
+        _log_info(logger, message)
         return
     func(message)
+
+
+def _log_error(logger: Any, message: str) -> None:
+    func = getattr(logger, "error", None)
+    if func is not None:
+        func(message)
+
+
+def _info_throttled(owner: Any, message: str, *, period_sec: float = 5.0) -> None:
+    """给采集循环里的耗时打点用：拿不到 ROS logger 时静默跳过."""
+    node = getattr(getattr(owner, "_executor", None), "node", None)
+    logger = node.get_logger() if node is not None and hasattr(node, "get_logger") else None
+    func = getattr(logger, "info", None) if logger is not None else None
+    if func is None:
+        return
+    try:
+        func(message, throttle_duration_sec = period_sec)
+    except Exception:
+        try:
+            func(message)
+        except Exception:
+            pass

@@ -6,5 +6,12 @@ tianyi_whole_tele:
     config.record.ask_before_save: true
     config.record.ask_before_next_episode: true
     config.record.save_root: "/home/nvidia/robot_env_runtime_ws/output"
+    # 异步写盘：控制周期只做快照入队，建表/写入/flush 都在后台线程
+    config.record.async_write: true
+    config.record.batch_size: 32
+    # 后台 flush 间隔（秒）：硬崩溃最多丢这么多数据
+    config.record.flush_interval_sec: 1.0
+    # 待写积压告警阈值（字节）
+    config.record.queue_warn_bytes: 268435456
 
     config.policy.policy_type: tele

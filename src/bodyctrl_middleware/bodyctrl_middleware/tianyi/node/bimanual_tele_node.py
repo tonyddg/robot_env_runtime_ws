@@ -37,8 +37,20 @@ class RecordConfig(BaseModel):
         description = "起始 episode 编号（文件名 episode_<index:04d>.h5py）",
     )
     batch_size: int = RosField(
-        1, ge = 1, read_only = True,
-        description = "writer 批量 flush 的行数",
+        32, ge = 1, read_only = True,
+        description = "writer 批量 flush 的行数（异步模式下同时影响 chunk / 初始容量）",
+    )
+    async_write: bool = RosField(
+        True, read_only = True,
+        description = "是否异步写盘：控制周期只做快照入队, HDF5 I/O 在后台线程",
+    )
+    flush_interval_sec: float = RosField(
+        1.0, gt = 0.0, read_only = True,
+        description = "异步模式下后台 flush 间隔（秒）, 决定硬崩溃最多丢多少数据",
+    )
+    queue_warn_bytes: int = RosField(
+        268435456, ge = 0, read_only = True,
+        description = "异步写盘积压告警阈值（字节, 0 = 不告警）",
     )
     ask_before_save: bool = RosField(
         False, read_only = True,
@@ -160,6 +172,9 @@ def main(argv = None):
                 confirm = confirm,
                 on_unavailable = config.record.confirm_on_unavailable,
                 stop_before_confirm = config.record.stop_before_confirm,
+                async_write = config.record.async_write,
+                flush_interval_sec = config.record.flush_interval_sec,
+                queue_warn_bytes = config.record.queue_warn_bytes,
                 logger = executor.node.get_logger(),
             )
         else:

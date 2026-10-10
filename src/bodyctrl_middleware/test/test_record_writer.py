@@ -348,3 +348,26 @@ def test_capacity_preallocation_and_shrink(tmp_path) -> None:
         sent_at = np.asarray(handle["timing/sent_at/arm"])
         assert np.isnan(sent_at[0])
         assert sent_at[1:] == pytest.approx([10.102, 10.202])
+
+
+def test_init_capacity_preallocates_rows(tmp_path) -> None:
+    """init_capacity 预分配行数（旧的 init_capcity 拼写已重命名）."""
+    path = tmp_path / "episode_init.h5py"
+    writer = EpisodeH5Writer(path, batch_size = 1, init_capacity = 4)
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    with h5py.File(writer.partial_path, "r") as handle:
+        assert handle["action"].shape[0] == 4
+    writer.abort()
+
+
+def test_default_chunk_bytes_fit_h5py_cache(tmp_path) -> None:
+    """默认 target_chunk_bytes=1MiB：大图像单 chunk 不超过 h5py 默认 chunk cache."""
+    path = tmp_path / "episode_chunk.h5py"
+    writer = EpisodeH5Writer(path, batch_size = 32)
+    obs = {"image": np.zeros((480, 640, 3), dtype = np.uint8)}
+    writer.append(obs, np.zeros(2, dtype = np.float32), None, padding = True)
+    with h5py.File(writer.partial_path, "r") as handle:
+        dataset = handle["observation/image/data"]
+        chunk_bytes = int(np.prod(dataset.chunks))
+        assert chunk_bytes <= 1024 * 1024
+    writer.abort()

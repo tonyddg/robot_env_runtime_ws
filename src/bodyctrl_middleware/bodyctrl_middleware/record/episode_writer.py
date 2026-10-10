@@ -163,7 +163,9 @@ class EpisodeH5Writer:
         self,
         save_path: Union[Path, str],
         batch_size: int = 32,
-        target_chunk_bytes: int = 4 * 1024 * 1024,
+        # 对齐 h5py 默认 chunk cache（1MiB）：chunk 大于 cache 时，非整 chunk
+        # 写入（比如 flush 行数与 chunk 行数不对齐）会触发读改写。
+        target_chunk_bytes: int = 1024 * 1024,
         meta: Optional[Mapping[str, Any]] = None,
         action_meta: Optional[Mapping[str, Any]] = None,
         *,
@@ -171,7 +173,7 @@ class EpisodeH5Writer:
         compression_overrides: Optional[Mapping[str, str]] = None,
         flush_warn_sec: float = DEFAULT_FLUSH_WARN_SEC,
         logger: Any = None,
-        init_capcity: int = 512,
+        init_capacity: int = 512,
     ):
         self.save_path = Path(save_path)
 
@@ -181,7 +183,7 @@ class EpisodeH5Writer:
             self.save_path.suffix + ".partial"
         )
 
-        self.init_capcity = init_capcity
+        self.init_capacity = int(init_capacity)
         self.batch_size = int(batch_size)
         if self.batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -291,7 +293,7 @@ class EpisodeH5Writer:
 
         if not self._initialized:
             self._initialize(obs_snapshot, action_snapshot)
-            self._ensure_capacity(self.init_capcity)
+            self._ensure_capacity(self.init_capacity)
         else:
             self._validate(obs_snapshot, action_snapshot)
 
@@ -539,9 +541,18 @@ class EpisodeH5Writer:
         """写 warn 日志（logger 可选）."""
         if self._logger is None:
             return
-        func = getattr(self._logger, "warn", None) or getattr(self._logger, "info", None)
-        if func is not None:
+        func = (
+            getattr(self._logger, "warning", None)
+            or getattr(self._logger, "warn", None)
+            or getattr(self._logger, "info", None)
+        )
+        if func is None:
+            return
+        try:
             func(message)
+        except Exception:
+            # 日志绝不能打断采集（例如 rclpy 的调用点 severity 限制）
+            pass
 
     # -- 初始化 / 校验 -----------------------------------------------------
 
