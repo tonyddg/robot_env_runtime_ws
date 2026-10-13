@@ -122,7 +122,7 @@ def test_only_padding_rows_are_not_kept(tmp_path) -> None:
 def test_partial_flush_and_keep_false(tmp_path) -> None:
     """batch_size=1：每次 append 都推进 committed_steps；keep=False 删除 partial."""
     path = tmp_path / "episode_0002.h5py"
-    writer = EpisodeH5Writer(path, batch_size = 1)
+    writer = EpisodeH5Writer(path, batch_size = 1, flush_policy = "batch")
     writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
     with h5py.File(writer.partial_path, "r") as handle:
         assert int(handle.attrs["committed_steps"]) == 1
@@ -136,7 +136,7 @@ def test_partial_flush_and_keep_false(tmp_path) -> None:
 def test_abort_keeps_readable_partial(tmp_path) -> None:
     """abort() 保留 partial 文件，崩溃现场仍可打开检查."""
     path = tmp_path / "episode_0003.h5py"
-    writer = EpisodeH5Writer(path, batch_size = 1)
+    writer = EpisodeH5Writer(path, batch_size = 1, flush_policy = "batch")
     writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
     writer.append(make_obs(1), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(1))
     writer.abort()
@@ -284,6 +284,7 @@ def test_flush_instrumentation_and_slow_warning(tmp_path) -> None:
     writer = EpisodeH5Writer(
         path,
         batch_size = 1,
+        flush_policy = "batch",
         flush_warn_sec = 1e-9,
         logger = logger,
     )
@@ -310,7 +311,7 @@ def test_flush_instrumentation_and_slow_warning(tmp_path) -> None:
 def test_capacity_preallocation_and_shrink(tmp_path) -> None:
     """预分配容量：采集期 dataset 按 capacity 预留，finalize 后缩回 num_steps."""
     path = tmp_path / "episode_cap.h5py"
-    writer = EpisodeH5Writer(path, batch_size = 1)
+    writer = EpisodeH5Writer(path, batch_size = 1, flush_policy = "batch")
     writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
     with h5py.File(writer.partial_path, "r") as handle:
         # padding 行先被 flush：容量按 2 倍增长预分配，maxshape 允许无限增长
@@ -353,7 +354,9 @@ def test_capacity_preallocation_and_shrink(tmp_path) -> None:
 def test_init_capacity_preallocates_rows(tmp_path) -> None:
     """init_capacity 预分配行数（旧的 init_capcity 拼写已重命名）."""
     path = tmp_path / "episode_init.h5py"
-    writer = EpisodeH5Writer(path, batch_size = 1, init_capacity = 4)
+    writer = EpisodeH5Writer(
+        path, batch_size = 1, init_capacity = 4, flush_policy = "batch",
+    )
     writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
     with h5py.File(writer.partial_path, "r") as handle:
         assert handle["action"].shape[0] == 4
@@ -363,7 +366,7 @@ def test_init_capacity_preallocates_rows(tmp_path) -> None:
 def test_default_chunk_bytes_fit_h5py_cache(tmp_path) -> None:
     """默认 target_chunk_bytes=1MiB：大图像单 chunk 不超过 h5py 默认 chunk cache."""
     path = tmp_path / "episode_chunk.h5py"
-    writer = EpisodeH5Writer(path, batch_size = 32)
+    writer = EpisodeH5Writer(path, batch_size = 32, flush_policy = "batch")
     obs = {"image": np.zeros((480, 640, 3), dtype = np.uint8)}
     writer.append(obs, np.zeros(2, dtype = np.float32), None, padding = True)
     with h5py.File(writer.partial_path, "r") as handle:
@@ -371,3 +374,140 @@ def test_default_chunk_bytes_fit_h5py_cache(tmp_path) -> None:
         chunk_bytes = int(np.prod(dataset.chunks))
         assert chunk_bytes <= 1024 * 1024
     writer.abort()
+
+
+def test_finalize_policy_defers_all_writes(tmp_path) -> None:
+    """finalize 模式：append 阶段完全不建表不写盘，结束时才写."""
+    path = tmp_path / "episode_defer.h5py"
+    writer = EpisodeH5Writer(path, write_chunk_rows = 2)
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    for step in (1, 2, 3):
+        writer.append(
+            make_obs(step), np.full(ACTION_DIM, 0.1 * step, dtype = np.float32), make_info(step),
+        )
+
+    with h5py.File(writer.partial_path, "r") as handle:
+        assert "action" not in handle                 # 还没建 dataset
+        assert len(handle["observation"]) == 0        # 观测组还是空的
+        assert int(handle.attrs["committed_steps"]) == 0
+
+    writer.finalize("policy_done", keep = True)
+    with h5py.File(path, "r") as handle:
+        assert int(handle.attrs["num_steps"]) == 4
+        assert handle.attrs["flush_policy"] == "finalize"
+        data = np.asarray(handle["observation/qpos/data"])
+        assert data[:, 0].tolist() == pytest.approx([0.0, 1.0, 2.0, 3.0])
+        assert np.asarray(handle["action"])[:, 0].tolist() == pytest.approx(
+            [0.0, 0.1, 0.2, 0.3]
+        )
+        assert np.isnan(np.asarray(handle["observation/qpos/age"])[0])
+
+
+def test_finalize_policy_writes_in_chunks(tmp_path, monkeypatch) -> None:
+    """finalize 模式按 write_chunk_rows 分块写：7 行 + chunk 3 → [3, 3, 1]."""
+    flushes: list = []
+    original = EpisodeH5Writer.flush
+
+    def counting(writer, rows = None):
+        # 记录真正写出的行数（flush 的入参只是"最多写多少"）
+        pending = len(writer._buffer)
+        flushes.append(pending if rows is None else min(rows, pending))
+        original(writer, rows)
+
+    monkeypatch.setattr(EpisodeH5Writer, "flush", counting)
+    writer = EpisodeH5Writer(tmp_path / "episode_chunked.h5py", write_chunk_rows = 3)
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    for step in range(1, 7):
+        writer.append(
+            make_obs(step), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(step),
+        )
+    writer.finalize("policy_done", keep = True)
+    assert flushes == [3, 3, 1]
+
+
+@pytest.mark.parametrize("flush_policy", ["batch", "finalize"])
+def test_flush_policy_produces_same_values(tmp_path, flush_policy: str) -> None:
+    """两种写出时机产出的数据逐值一致（配对语义不受影响）."""
+    path = tmp_path / f"episode_{flush_policy}.h5py"
+    writer = EpisodeH5Writer(
+        path, batch_size = 2, write_chunk_rows = 3, flush_policy = flush_policy,
+    )
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    for step in range(1, 5):
+        writer.append(
+            make_obs(step), np.full(ACTION_DIM, 0.1 * step, dtype = np.float32), make_info(step),
+        )
+    writer.finalize("policy_done", keep = True)
+
+    with h5py.File(path, "r") as handle:
+        assert int(handle.attrs["num_steps"]) == 5
+        assert np.asarray(handle["observation/qpos/data"])[:, 0].tolist() == pytest.approx(
+            [0.0, 1.0, 2.0, 3.0, 4.0]
+        )
+        assert np.asarray(handle["action"])[:, 0].tolist() == pytest.approx(
+            [0.0, 0.1, 0.2, 0.3, 0.4]
+        )
+        age = np.asarray(handle["observation/qpos/age"])
+        assert np.isnan(age[0])
+        assert age[1:].tolist() == pytest.approx([0.01, 0.02, 0.03, 0.04])
+
+
+def test_buffer_warning_and_high_water(tmp_path) -> None:
+    """待写内存超过 buffer_warn_bytes 只告警一次，峰值写进 attrs."""
+
+    class _Logger:
+        def __init__(self) -> None:
+            self.messages: list = []
+
+        def warning(self, message: str) -> None:
+            self.messages.append(message)
+
+    logger = _Logger()
+    path = tmp_path / "episode_mem.h5py"
+    writer = EpisodeH5Writer(path, buffer_warn_bytes = 1, logger = logger)
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    writer.append(make_obs(1), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(1))
+    assert sum("待写内存" in message for message in logger.messages) == 1
+
+    writer.finalize("policy_done", keep = True)
+    with h5py.File(path, "r") as handle:
+        assert int(handle.attrs["buffer_high_water_bytes"]) > 1
+        assert int(handle.attrs["buffer_warn_bytes"]) == 1
+
+
+def test_caller_mutation_does_not_change_written_row(tmp_path) -> None:
+    """append 之后调用方改动数组，不影响落盘内容（finalize 模式先拷贝再缓存）."""
+    path = tmp_path / "episode_mut.h5py"
+    writer = EpisodeH5Writer(path)
+    obs = make_obs(1)
+    action = np.full(ACTION_DIM, 0.5, dtype = np.float32)
+    writer.append(obs, action, make_info(1))
+    obs["qpos"][:] = -1.0
+    action[:] = -1.0
+
+    writer.finalize("policy_done", keep = True)
+    with h5py.File(path, "r") as handle:
+        assert np.asarray(handle["observation/qpos/data"])[0].tolist() == pytest.approx(
+            [1.0] * ACTION_DIM
+        )
+        assert np.asarray(handle["action"])[0].tolist() == pytest.approx(
+            [0.5] * ACTION_DIM
+        )
+
+
+def test_finalize_write_error_keeps_partial(tmp_path, monkeypatch) -> None:
+    """收尾写盘失败：异常抛出且 .partial 保留（collect_once 会记为 exception）."""
+
+    def broken_flush(writer, rows = None):
+        raise OSError("disk full")
+
+    path = tmp_path / "episode_fail.h5py"
+    writer = EpisodeH5Writer(path)
+    writer.append(make_obs(0), np.zeros(ACTION_DIM, dtype = np.float32), None, padding = True)
+    writer.append(make_obs(1), np.full(ACTION_DIM, 0.1, dtype = np.float32), make_info(1))
+    monkeypatch.setattr(EpisodeH5Writer, "flush", broken_flush)
+
+    with pytest.raises(OSError):
+        writer.finalize("policy_done", keep = True)
+    assert writer.partial_path.exists()
+    assert not path.exists()

@@ -27,15 +27,11 @@ from typing import Any, Callable, Mapping, Optional, Union
 
 import numpy as np
 
-from bodyctrl_middleware.record.async_writer import (
-    DEFAULT_FLUSH_INTERVAL_SEC,
-    DEFAULT_QUEUE_WARN_BYTES,
-    AsyncEpisodeWriter,
+from bodyctrl_middleware.record.episode_writer import (
+    DEFAULT_BUFFER_WARN_BYTES,
+    EpisodeH5Writer,
+    jsonable,
 )
-from bodyctrl_middleware.record.episode_writer import EpisodeH5Writer, jsonable
-
-# 同步 / 异步两种 episode writer（接口一致）
-EpisodeWriter = Union[EpisodeH5Writer, AsyncEpisodeWriter]
 
 ACCEPT_INPUT = set(("t", "y", "1"))
 
@@ -110,7 +106,6 @@ class CycleTiming:
         reset_sec: Optional[float] = None,
         policy_reset_sec: Optional[float] = None,
         padding_append_sec: Optional[float] = None,
-        prewarm_sec: Optional[float] = None,
     ) -> None:
         """记录循环开始前的一次性开销（reset / padding 行写入）."""
         if not self.enabled:
@@ -122,8 +117,6 @@ class CycleTiming:
             parts.append(f"policy.reset={policy_reset_sec * 1000:.1f}ms")
         if padding_append_sec is not None:
             parts.append(f"padding_append={padding_append_sec * 1000:.1f}ms")
-        if prewarm_sec is not None:
-            parts.append(f"prewarm={prewarm_sec * 1000:.1f}ms")
         if parts:
             self._log(f"[cycle-timing]{self._tag()} setup: " + " ".join(parts))
 
@@ -303,26 +296,27 @@ def collect_once(
     compression: str = "none",
     compression_overrides: Optional[Mapping[str, str]] = None,
     flush_warn_sec: float = 0.02,
-    async_write: bool = True,
-    flush_interval_sec: float = DEFAULT_FLUSH_INTERVAL_SEC,
-    queue_warn_bytes: int = DEFAULT_QUEUE_WARN_BYTES,
+    flush_policy: str = "finalize",
+    write_chunk_rows: int = 512,
+    max_steps: int = 0,
+    buffer_warn_bytes: int = DEFAULT_BUFFER_WARN_BYTES,
     debug_timing: bool = False,
     logger: Any = None,
 ) -> bool:
     """
     采集一轮 episode 并落盘；返回是否真的保存了文件.
 
-    ``async_write=True``（默认）时使用 :class:`AsyncEpisodeWriter`：控制周期里
-    只做 obs / action 快照入队，建表 / 预分配 / 写入 / flush 都在后台线程完成；
-    ``async_write=False`` 复现旧的同步写入行为（用于对照 / 调试）。
+    ``flush_policy="finalize"``（默认）：控制循环期间 writer 只做快照 + 校验 +
+    内存缓存（完全不碰磁盘），episode 结束时按 ``write_chunk_rows`` 分块一次性写盘；
+    配合 ``max_steps``（>0 时到点正常收尾）限制整轮内存占用。``flush_policy="batch"``
+    是旧的边攒边写行为（长 episode / 内存受限时使用）。
 
     ``debug_timing=True`` 时每个 cycle 打印一行各阶段耗时（infer / wait /
     action / step / write / total，另附 ``slack`` 与 ``post``），并在 episode 结束时
     打印 median / max 汇总；没有 logger 时直接打印到 stdout。
 
-    异步 writer 会在进入控制循环之前先等 worker 把 padding 行（建表 / 预分配 /
-    首次落盘）写完（setup 行里的 ``prewarm``），随后调用 ``env.rebase_cycle_deadline()``
-    重锚第一个周期的 deadline，保证预热不会挤占第一个控制周期的预算。
+    进入控制循环之前会调用 ``env.rebase_cycle_deadline()``（若 runtime 支持）重锚
+    第一个周期的 deadline，把 reset 尾部与 setup 打点的开销排除在第一个周期之外。
 
     ``ask_before_save=True`` 时会在本轮结束后询问是否保存：
 
@@ -337,31 +331,19 @@ def collect_once(
     save_dir.mkdir(parents = True, exist_ok = True)
     save_path = save_dir / f"episode_{int(episode_index):04d}.h5py"
 
-    writer: EpisodeWriter
-    if async_write:
-        writer = AsyncEpisodeWriter(
-            save_path,
-            batch_size = batch_size,
-            meta = meta,
-            action_meta = action_meta,
-            compression = compression,
-            compression_overrides = compression_overrides,
-            flush_warn_sec = flush_warn_sec,
-            logger = logger,
-            flush_interval_sec = flush_interval_sec,
-            queue_warn_bytes = queue_warn_bytes,
-        )
-    else:
-        writer = EpisodeH5Writer(
-            save_path,
-            batch_size = batch_size,
-            meta = meta,
-            action_meta = action_meta,
-            compression = compression,
-            compression_overrides = compression_overrides,
-            flush_warn_sec = flush_warn_sec,
-            logger = logger,
-        )
+    writer = EpisodeH5Writer(
+        save_path,
+        batch_size = batch_size,
+        meta = meta,
+        action_meta = action_meta,
+        compression = compression,
+        compression_overrides = compression_overrides,
+        flush_warn_sec = flush_warn_sec,
+        logger = logger,
+        flush_policy = flush_policy,
+        write_chunk_rows = write_chunk_rows,
+        buffer_warn_bytes = buffer_warn_bytes,
+    )
     _log(logger, "info", f"开始采集 episode {episode_index}: {save_path}")
 
     termination_reason = "unknown"
@@ -389,20 +371,10 @@ def collect_once(
         )
         _use_time = time.perf_counter() - _start_time
 
-        # 把 writer 的建表 / 预分配 / 首次落盘完全挡在控制循环之前：
-        # 异步 writer 会在此等 worker 处理完 padding 行（同步 writer 在 append 内已完成）。
-        prewarm_sec: Optional[float] = None
-        wait_idle = getattr(writer, "wait_idle", None)
-        if callable(wait_idle):
-            _prewarm_start = time.perf_counter()
-            wait_idle()
-            prewarm_sec = time.perf_counter() - _prewarm_start
-
         timing.log_setup(
             reset_sec = _reset_done - _setup_start,
             policy_reset_sec = _policy_reset_done - _reset_done,
             padding_append_sec = _use_time,
-            prewarm_sec = prewarm_sec,
         )
         _info_throttled(
             env, f"episode {episode_index} 初次采集完成, 用时 {_use_time * 1000:.3f}ms"
@@ -413,7 +385,13 @@ def collect_once(
         if callable(rebase_deadline):
             rebase_deadline()
 
+        reached_max_steps = False
         while not policy.done() and env.ok():
+            if max_steps > 0 and recorded_steps >= max_steps:
+                # 到点正常收尾（finalize 模式下 max_steps 就是内存上限的兜底）
+                reached_max_steps = True
+                break
+
             _cycle_start = time.perf_counter()
             future = policy.infer_async(observations)
             _infer_done = time.perf_counter()
@@ -456,7 +434,13 @@ def collect_once(
                 env, f"episode {episode_index} 采集 step 完成, 用时 {_use_time * 1000:.3f}ms"
             )
 
-        if policy.done():
+        if reached_max_steps:
+            termination_reason = "max_steps"
+            _log(
+                logger, "info",
+                f"episode {episode_index} 达到 max_steps={max_steps}, 正常结束本轮",
+            )
+        elif policy.done():
             termination_reason = "policy_done"
         elif not env.ok():
             termination_reason = "robot_faulted"
@@ -553,9 +537,10 @@ def collect_multi(
     compression: str = "none",
     compression_overrides: Optional[Mapping[str, str]] = None,
     flush_warn_sec: float = 0.02,
-    async_write: bool = True,
-    flush_interval_sec: float = DEFAULT_FLUSH_INTERVAL_SEC,
-    queue_warn_bytes: int = DEFAULT_QUEUE_WARN_BYTES,
+    flush_policy: str = "finalize",
+    write_chunk_rows: int = 512,
+    max_steps: int = 0,
+    buffer_warn_bytes: int = DEFAULT_BUFFER_WARN_BYTES,
     debug_timing: bool = False,
     logger: Any = None,
 ) -> int:
@@ -586,9 +571,10 @@ def collect_multi(
                 compression = compression,
                 compression_overrides = compression_overrides,
                 flush_warn_sec = flush_warn_sec,
-                async_write = async_write,
-                flush_interval_sec = flush_interval_sec,
-                queue_warn_bytes = queue_warn_bytes,
+                flush_policy = flush_policy,
+                write_chunk_rows = write_chunk_rows,
+                max_steps = max_steps,
+                buffer_warn_bytes = buffer_warn_bytes,
                 debug_timing = debug_timing,
                 logger = logger,
             )
@@ -701,7 +687,7 @@ def _stop_env(env: Any, logger: Any) -> None:
 
 
 def _finalize(
-    writer: EpisodeWriter,
+    writer: EpisodeH5Writer,
     termination_reason: str,
     *,
     keep: bool,

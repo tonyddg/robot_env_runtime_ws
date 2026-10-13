@@ -120,8 +120,8 @@ def test_run_tele_loop_silent_without_debug() -> None:
     assert logger.messages == []
 
 
-def test_collect_once_prewarms_writer_and_rebases_clock(tmp_path) -> None:
-    """进循环前先等 writer 预热完成，并调用 env.rebase_cycle_deadline() 重锚时钟."""
+def test_collect_once_rebases_cycle_clock_before_loop(tmp_path) -> None:
+    """进循环前调用 env.rebase_cycle_deadline() 重锚时钟（setup 开销不进第一周期）."""
     logger = _Logger()
 
     class _Env(FakeEnv):
@@ -142,5 +142,5 @@ def test_collect_once_prewarms_writer_and_rebases_clock(tmp_path) -> None:
 
     lines = [message for message in logger.messages if "[cycle-timing]" in message]
     setup_line = next(message for message in lines if "setup:" in message)
-    assert "prewarm=" in setup_line
     assert "[ms]:" not in setup_line
+    assert "padding_append=" in setup_line

@@ -25,10 +25,18 @@ Episode HDF5 writer（bodyctrl_middleware.record）.
 
 写入策略（默认值面向 ~100ms 控制周期）：
 
+* **写出时机**（``flush_policy``）：
+  - ``"finalize"``（默认）：循环期间只做快照 + 校验 + 缓存在内存里，**完全不碰磁盘**
+    （连建表都推迟），episode 结束时按 ``write_chunk_rows`` 分块一次性写完再 rename。
+    适合"内存大、磁盘慢"的板子；代价是进程崩溃会丢掉整轮数据。
+  - ``"batch"``：缓冲区达到 ``batch_size`` 行就写一次（旧行为），适合长 episode /
+    内存小 / 希望崩溃最多丢一小段的场景。
 * **不压缩**（``compression="none"``）：相机图像近似不可压缩，gzip 只省几个百分点
   却要几百毫秒；确需压缩时用 ``compression_overrides={"image": "lzf"}`` 单独开启。
 * **预分配容量**：dataset 以 ``maxshape=(None, ...)`` 创建、按 2 倍容量增长，
   采集期间不做逐行 resize；``finalize()`` 再缩回真实行数（``shape[0] == num_steps``）。
+* **待写内存告警**：``finalize`` 模式下整轮数据留在内存，超过 ``buffer_warn_bytes``
+  时限频告警一次，峰值写进 ``buffer_high_water_bytes`` attr（配合 ``max_steps`` 限流）。
 * **flush 耗时告警**：每次 flush 记录耗时，超过 ``flush_warn_sec``（默认 20ms）
   时经 ``logger.warn`` 告警并计数；终盘写入 ``flush_sec_max`` / ``flush_sec_sum`` /
   ``flush_slow_count`` 等 attrs。
@@ -51,6 +59,12 @@ COMPRESSION_MODES = ("none", "lzf", "gzip")
 
 # 默认的 flush 慢告警阈值（秒）：超过就 warn（可用控制周期的 0.2 倍覆盖）
 DEFAULT_FLUSH_WARN_SEC = 0.02
+
+# 写出时机：finalize = 循环期间只缓存、结束时分块写；batch = 攒够 batch_size 就写
+FLUSH_POLICIES = ("finalize", "batch")
+
+# finalize 模式下的待写内存告警阈值（字节）
+DEFAULT_BUFFER_WARN_BYTES = 256 * 1024 * 1024
 
 
 def stack_dict(data_dict_list: List[Dict[str, Union[np.ndarray, float, int]]]):
@@ -143,6 +157,7 @@ class _PendingRow:
     action: np.ndarray
     info: Optional[Mapping[str, Any]]
     padding: bool
+    nbytes: int = 0
 
 
 class EpisodeH5Writer:
@@ -174,6 +189,9 @@ class EpisodeH5Writer:
         flush_warn_sec: float = DEFAULT_FLUSH_WARN_SEC,
         logger: Any = None,
         init_capacity: int = 512,
+        flush_policy: str = "finalize",
+        write_chunk_rows: int = 512,
+        buffer_warn_bytes: int = DEFAULT_BUFFER_WARN_BYTES,
     ):
         self.save_path = Path(save_path)
 
@@ -188,6 +206,18 @@ class EpisodeH5Writer:
         if self.batch_size < 1:
             raise ValueError("batch_size must be >= 1")
         self.target_chunk_bytes = int(target_chunk_bytes)
+
+        if flush_policy not in FLUSH_POLICIES:
+            raise ValueError(
+                f"flush_policy must be one of {FLUSH_POLICIES}, got {flush_policy!r}"
+            )
+        self.flush_policy = flush_policy
+        self.write_chunk_rows = int(write_chunk_rows)
+        if self.write_chunk_rows < 1:
+            raise ValueError("write_chunk_rows must be >= 1")
+        self.buffer_warn_bytes = int(buffer_warn_bytes)
+        if self.buffer_warn_bytes < 0:
+            raise ValueError("buffer_warn_bytes must be >= 0")
 
         if compression not in COMPRESSION_MODES:
             raise ValueError(
@@ -235,6 +265,12 @@ class EpisodeH5Writer:
         self._capacity = 0
         self._padding_rows = 0
         self._initialized = False
+        # finalize 模式下 append 不建 dataset，形状/dtype 校验用首行记录的 spec
+        self._spec_obs: Optional[Dict[str, Any]] = None
+        self._spec_action: Optional[Any] = None
+        self._buffer_bytes = 0
+        self._buffer_high_water = 0
+        self._buffer_warned = False
         self._obs_attrs_written = False
         self._action_attrs_written = False
         self._close = False
@@ -287,59 +323,77 @@ class EpisodeH5Writer:
         if action_snapshot.dtype == object:
             raise TypeError("action has unsupported object dtype")
 
-        if not self._initialized:
-            self._initialize(obs_snapshot, action_snapshot)
-            self._ensure_capacity(self.init_capacity)
+        if self.flush_policy == "batch":
+            if not self._initialized:
+                self._initialize(obs_snapshot, action_snapshot)
+                self._ensure_capacity(self.init_capacity)
+            else:
+                self._validate(obs_snapshot, action_snapshot)
+            if info is not None:
+                self._ensure_info_dependent_structures(info)
         else:
-            self._validate(obs_snapshot, action_snapshot)
+            # finalize 模式：循环期间不建表、不写盘，只用首行记录的 spec 做校验
+            if self._spec_obs is None:
+                self._remember_spec(obs_snapshot, action_snapshot)
+            else:
+                self._validate_spec(obs_snapshot, action_snapshot)
 
-        if info is not None:
-            self._ensure_info_dependent_structures(info)
-
-        self._buffer.append(
-            _PendingRow(
-                obs = obs_snapshot,
-                action = action_snapshot,
-                info = dict(info) if info is not None else None,
-                padding = bool(padding),
-            )
+        row = _PendingRow(
+            obs = obs_snapshot,
+            action = action_snapshot,
+            info = dict(info) if info is not None else None,
+            padding = bool(padding),
+            nbytes = int(action_snapshot.nbytes) + sum(
+                int(value.nbytes) for value in obs_snapshot.values()
+            ),
         )
+        self._buffer.append(row)
+        self._track_buffer(row)
 
-        if len(self._buffer) >= self.batch_size:
+        if self.flush_policy == "batch" and len(self._buffer) >= self.batch_size:
             self.flush()
 
-    def flush(self) -> None:
-        """把缓冲区写入 HDF5，并推进 committed_steps（崩溃后可信边界）."""
+    def flush(self, rows: Optional[int] = None) -> None:
+        """
+        把缓冲区**前 ``rows`` 行**（None = 全部）写入 HDF5，并推进 committed_steps.
+
+        - ``flush_policy="batch"``：由 append / 调用方驱动；
+        - ``flush_policy="finalize"``：只在 ``finalize()`` 里按 ``write_chunk_rows``
+          分块调用（建表也发生在第一次 flush 之前）。
+        """
         if not self._buffer:
+            return
+        count = len(self._buffer) if rows is None else min(int(rows), len(self._buffer))
+        if count <= 0:
             return
 
         started = time.perf_counter()
-        batch_size = len(self._buffer)
+        written = self._buffer[:count]
         start = self._count
-        end = start + batch_size
+        end = start + count
 
         # 预分配容量：只有容量不够时才 resize（按 2 倍增长）
         self._ensure_capacity(end)
 
         for name, datasets in self._obs_datasets.items():
             data_batch = np.stack(
-                [row.obs[name] for row in self._buffer],
+                [row.obs[name] for row in written],
                 axis = 0,
             )
             datasets["data"][start:end] = data_batch
 
             datasets["age"][start:end] = np.asarray(
-                [self._obs_scalar(row, name, "age") for row in self._buffer],
+                [self._obs_scalar(row, name, "age") for row in written],
                 dtype = np.float64,
             )
             datasets["timestamp"][start:end] = np.asarray(
-                [self._obs_scalar(row, name, "stamp") for row in self._buffer],
+                [self._obs_scalar(row, name, "stamp") for row in written],
                 dtype = np.float64,
             )
 
         assert self._action_dataset is not None
         action_batch = np.stack(
-            [row.action for row in self._buffer],
+            [row.action for row in written],
             axis = 0,
         )
         self._action_dataset[start:end] = action_batch
@@ -347,16 +401,16 @@ class EpisodeH5Writer:
         if self._timing_group is not None:
             for key, dataset in self._timing_scalars.items():
                 dataset[start:end] = np.asarray(
-                    [self._timing_scalar(row, key) for row in self._buffer],
+                    [self._timing_scalar(row, key) for row in written],
                     dtype = np.float64,
                 )
             for controller, dataset in self._sent_at_datasets.items():
                 dataset[start:end] = np.asarray(
-                    [self._sent_at(row, controller) for row in self._buffer],
+                    [self._sent_at(row, controller) for row in written],
                     dtype = np.float64,
                 )
 
-        self._padding_rows += sum(1 for row in self._buffer if row.padding)
+        self._padding_rows += sum(1 for row in written if row.padding)
 
         # 先让 dataset 写入 HDF5
         self._file.flush()
@@ -368,7 +422,8 @@ class EpisodeH5Writer:
         self._file.attrs["padding_rows"] = self._padding_rows
 
         self._file.flush()
-        self._buffer.clear()
+        self._buffer = self._buffer[count:]
+        self._buffer_bytes -= sum(row.nbytes for row in written)
 
         elapsed = time.perf_counter() - started
         self._record_flush_time(elapsed, start, end)
@@ -385,13 +440,17 @@ class EpisodeH5Writer:
         extra_attrs: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """
-        收尾：flush、补文件级 attrs、可选取保留（原子 rename）或丢弃.
+        收尾：把缓冲区写完（finalize 模式下就是整轮数据）、补文件级 attrs、
+        可选取保留（原子 rename）或丢弃.
 
         只有 padding 行、没有任何真实 step 行的 episode 一律不保留（``keep`` 被忽略），
         避免产出没有 info / age / timestamp 的"空"文件。
         """
         try:
-            self.flush()
+            if self.flush_policy == "finalize":
+                self._write_deferred_rows()
+            else:
+                self.flush()
             if keep and self._count <= self._padding_rows:
                 keep = False
 
@@ -401,6 +460,10 @@ class EpisodeH5Writer:
             self._file.attrs["finalized"] = True
             self._shrink_to_logical()
             write_attrs(self._file, {
+                "flush_policy": self.flush_policy,
+                "write_chunk_rows": self.write_chunk_rows,
+                "buffer_high_water_bytes": self._buffer_high_water,
+                "buffer_warn_bytes": self.buffer_warn_bytes,
                 "flush_count": self._flush_stats["count"],
                 "flush_sec_max": self._flush_stats["max_sec"],
                 "flush_sec_sum": self._flush_stats["sum_sec"],
@@ -429,6 +492,23 @@ class EpisodeH5Writer:
             os.replace(self.partial_path, self.save_path)
         else:
             self.partial_path.unlink(missing_ok = True)
+
+    def _write_deferred_rows(self) -> None:
+        """
+        finalize 模式：建表 + 按 ``write_chunk_rows`` 分块写出整轮缓存.
+
+        只在 ``finalize()`` 里调用——episode 结束前不碰磁盘是这一模式的核心承诺。
+        """
+        if not self._buffer:
+            return
+        first_info = next(
+            (row.info for row in self._buffer if row.info is not None), None,
+        )
+        self._initialize(self._buffer[0].obs, self._buffer[0].action)
+        if first_info is not None:
+            self._ensure_info_dependent_structures(first_info)
+        while self._buffer:
+            self.flush(self.write_chunk_rows)
 
     def abort(self) -> None:
         """放弃写入：关闭文件但保留 ``.partial``（崩溃现场可事后检查）."""
@@ -508,12 +588,23 @@ class EpisodeH5Writer:
         stats["max_sec"] = max(stats["max_sec"], elapsed)
         if self._flush_warn_sec > 0.0 and elapsed > self._flush_warn_sec:
             stats["slow_count"] += 1
+            if self.flush_policy == "finalize":
+                suggestion = "会拖长 episode 收尾写盘, 可减小 write_chunk_rows / max_steps"
+            else:
+                suggestion = "会吃掉控制周期预算，建议降低 batch_size 或关闭压缩"
             self._warn(
                 f"EpisodeH5Writer flush 耗时 {elapsed * 1000:.1f}ms 超过阈值 "
                 f"{self._flush_warn_sec * 1000:.1f}ms "
                 f"(rows {start}..{end}, {self.save_path.name}); "
-                "会吃掉控制周期预算，建议降低 batch_size 或关闭压缩"
+                f"{suggestion}"
             )
+
+    @property
+    def _chunk_rows(self) -> int:
+        """chunk 尺寸（行）：finalize 模式按 write_chunk_rows，batch 模式按 batch_size."""
+        if self.flush_policy == "finalize":
+            return self.write_chunk_rows
+        return self.batch_size
 
     def _warn(self, message: str) -> None:
         """写 warn 日志（logger 可选）."""
@@ -681,6 +772,71 @@ class EpisodeH5Writer:
                 f"{action.dtype} != {self._action_dataset.dtype}"
             )
 
+    # finalize 模式：没有 dataset 可对照，用首行记录的形状/dtype 做同样的校验
+    def _remember_spec(
+        self, obs: Dict[str, np.ndarray], action: np.ndarray,
+    ) -> None:
+        unknown = sorted(set(self._compression_overrides) - set(obs))
+        if unknown:
+            raise ValueError(
+                f"compression_overrides 里的观测名不存在: {unknown}; "
+                f"本次 episode 的观测是 {sorted(obs)}"
+            )
+        self._spec_obs = {
+            name: (value.shape, value.dtype) for name, value in obs.items()
+        }
+        self._spec_action = (action.shape, action.dtype)
+
+    def _validate_spec(
+        self, obs: Dict[str, np.ndarray], action: np.ndarray,
+    ) -> None:
+        assert self._spec_obs is not None and self._spec_action is not None
+        if set(obs.keys()) != set(self._spec_obs.keys()):
+            raise ValueError(
+                "Observation keys changed during episode: "
+                f"{sorted(obs.keys())} != {sorted(self._spec_obs.keys())}"
+            )
+        for key, value in obs.items():
+            expected_shape, expected_dtype = self._spec_obs[key]
+            if value.shape != expected_shape:
+                raise ValueError(
+                    f"Observation {key!r} shape changed: "
+                    f"{value.shape} != {expected_shape}"
+                )
+            if value.dtype != expected_dtype:
+                raise ValueError(
+                    f"Observation {key!r} dtype changed: "
+                    f"{value.dtype} != {expected_dtype}"
+                )
+
+        expected_shape, expected_dtype = self._spec_action
+        if action.shape != expected_shape:
+            raise ValueError(
+                f"Action shape changed: {action.shape} != {expected_shape}"
+            )
+        if action.dtype != expected_dtype:
+            raise ValueError(
+                f"Action dtype changed: {action.dtype} != {expected_dtype}"
+            )
+
+    def _track_buffer(self, row: _PendingRow) -> None:
+        """累计待写内存并在超过阈值时限频告警（finalize 模式下就是整轮数据）."""
+        self._buffer_bytes += row.nbytes
+        self._buffer_high_water = max(self._buffer_high_water, self._buffer_bytes)
+        if (
+            not self._buffer_warned
+            and self.buffer_warn_bytes > 0
+            and self._buffer_bytes > self.buffer_warn_bytes
+        ):
+            self._buffer_warned = True
+            self._warn(
+                f"EpisodeH5Writer 待写内存 "
+                f"{self._buffer_bytes / 1024 / 1024:.1f}MB 超过阈值 "
+                f"{self.buffer_warn_bytes / 1024 / 1024:.1f}MB "
+                f"({self.save_path.name}); finalize 模式整轮数据都在内存里, "
+                "注意 max_steps 与 buffer_warn_bytes"
+            )
+
     # -- 行取值 / 数据集 ---------------------------------------------------
 
     @staticmethod
@@ -733,7 +889,7 @@ class EpisodeH5Writer:
         sample_bytes = max(sample.nbytes, 1)
 
         chunk_steps = max(
-            1, min(self.batch_size, self.target_chunk_bytes // sample_bytes,),
+            1, min(self._chunk_rows, self.target_chunk_bytes // sample_bytes,),
         )
         chunks = (chunk_steps,) + sample_shape
         kwargs = self._compression_kwargs(key if key is not None else name, sample)
@@ -754,7 +910,7 @@ class EpisodeH5Writer:
         rows: int = 0,
     ) -> h5py.Dataset:
         """创建 float64 的一维（按行增长）dataset；``rows`` 行预填 NaN."""
-        chunk_steps = max(1, min(self.batch_size, self.target_chunk_bytes // 8))
+        chunk_steps = max(1, min(self._chunk_rows, self.target_chunk_bytes // 8))
         dataset = group.create_dataset(
             name,
             shape = (rows,),

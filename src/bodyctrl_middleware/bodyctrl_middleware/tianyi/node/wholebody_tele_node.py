@@ -17,6 +17,7 @@ from bodyctrl_middleware.policy.tele_policy import TelePolicy, TeleConfig
 from bodyctrl_middleware.policy.replay_policy import ReplayPolicy
 
 from bodyctrl_middleware.record import (
+    FLUSH_POLICIES,
     ON_UNAVAILABLE_CHOICES,
     CycleTiming,
     build_action_meta,
@@ -70,19 +71,23 @@ class RecordConfig(BaseModel):
     )
     batch_size: int = RosField(
         32, ge = 1, read_only = True,
-        description = "writer 批量 flush 的行数（异步模式下同时影响 chunk / 初始容量）",
+        description = "writer 批量 flush 的行数（flush_policy=batch 时生效）",
     )
-    async_write: bool = RosField(
-        True, read_only = True,
-        description = "是否异步写盘：控制周期只做快照入队, HDF5 I/O 在后台线程",
+    flush_policy: str = RosField(
+        "finalize", read_only = True,
+        description = "写出时机: finalize = 循环期间只缓存内存、结束时分块写盘; batch = 攒够 batch_size 就写",
     )
-    flush_interval_sec: float = RosField(
-        1.0, gt = 0.0, read_only = True,
-        description = "异步模式下后台 flush 间隔（秒）, 决定硬崩溃最多丢多少数据",
+    write_chunk_rows: int = RosField(
+        512, ge = 1, read_only = True,
+        description = "finalize 模式下分块写盘的行数",
     )
-    queue_warn_bytes: int = RosField(
+    max_steps: int = RosField(
+        6000, ge = 0, read_only = True,
+        description = "单轮最大控制步数（0 = 不限）; finalize 模式下用于限制内存占用",
+    )
+    buffer_warn_bytes: int = RosField(
         268435456, ge = 0, read_only = True,
-        description = "异步写盘积压告警阈值（字节, 0 = 不告警）",
+        description = "待写内存告警阈值（字节, 0 = 不告警）",
     )
     ask_before_save: bool = RosField(
         False, read_only = True,
@@ -264,6 +269,11 @@ def main(argv = None):
                     f"{ON_UNAVAILABLE_CHOICES}, got "
                     f"{config.record.confirm_on_unavailable!r}"
                 )
+            if config.record.flush_policy not in FLUSH_POLICIES:
+                raise ValueError(
+                    "config.record.flush_policy must be one of "
+                    f"{FLUSH_POLICIES}, got {config.record.flush_policy!r}"
+                )
             confirm = None
             if config.record.ask_before_save:
                 if config.record.confirm_service:
@@ -301,9 +311,10 @@ def main(argv = None):
                 confirm = confirm,
                 on_unavailable = config.record.confirm_on_unavailable,
                 stop_before_confirm = config.record.stop_before_confirm,
-                async_write = config.record.async_write,
-                flush_interval_sec = config.record.flush_interval_sec,
-                queue_warn_bytes = config.record.queue_warn_bytes,
+                flush_policy = config.record.flush_policy,
+                write_chunk_rows = config.record.write_chunk_rows,
+                max_steps = config.record.max_steps,
+                buffer_warn_bytes = config.record.buffer_warn_bytes,
                 debug_timing = config.debug_timing,
                 logger = executor.node.get_logger(),
             )

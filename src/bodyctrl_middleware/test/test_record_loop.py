@@ -18,16 +18,12 @@ from bodyctrl_middleware.record import (
 )
 from harness import ACTION_DIM, FakeEnv, FakePolicy, FakeTeleConfig
 
-# 采集循环对同步 / 异步 writer 的行为必须一致
-async_write_modes = pytest.mark.parametrize("async_write", [False, True])
 
-
-@async_write_modes
-def test_collect_once_pairs_rows_like_reference(tmp_path, async_write) -> None:
+def test_collect_once_pairs_rows_like_reference(tmp_path) -> None:
     """行 0 是 padding；行 k = (第 k 次 step 的 obs、下发的 action、该 boundary 的 info)."""
     env = FakeEnv()
     policy = FakePolicy(steps = 3)
-    saved = collect_once(env, policy, 0, tmp_path, async_write = async_write)
+    saved = collect_once(env, policy, 0, tmp_path)
     assert saved is True
 
     path = tmp_path / "episode_0000.h5py"
@@ -55,12 +51,11 @@ def test_collect_once_pairs_rows_like_reference(tmp_path, async_write) -> None:
     assert [float(obs[0]) for obs in policy.seen_obs] == pytest.approx([0.0, 1.0, 2.0])
 
 
-@async_write_modes
-def test_collect_once_keeps_episode_on_fault(tmp_path, async_write) -> None:
+def test_collect_once_keeps_episode_on_fault(tmp_path) -> None:
     """runtime fault → termination_reason=robot_faulted + fault attrs，数据保留."""
     env = FakeEnv(fail_after = 2)
     policy = FakePolicy(steps = 5)
-    assert collect_once(env, policy, 1, tmp_path, async_write = async_write) is True
+    assert collect_once(env, policy, 1, tmp_path) is True
 
     path = tmp_path / "episode_0001.h5py"
     with h5py.File(path, "r") as handle:
@@ -73,12 +68,11 @@ def test_collect_once_keeps_episode_on_fault(tmp_path, async_write) -> None:
         )
 
 
-@async_write_modes
-def test_collect_once_keeps_episode_on_exception(tmp_path, async_write) -> None:
+def test_collect_once_keeps_episode_on_exception(tmp_path) -> None:
     """普通异常 → termination_reason=exception + 异常类型/文本，数据保留."""
     env = FakeEnv(raise_after = 2)
     policy = FakePolicy(steps = 5)
-    assert collect_once(env, policy, 2, tmp_path, async_write = async_write) is True
+    assert collect_once(env, policy, 2, tmp_path) is True
 
     with h5py.File(tmp_path / "episode_0002.h5py", "r") as handle:
         assert handle.attrs["termination_reason"] == "exception"
@@ -87,25 +81,19 @@ def test_collect_once_keeps_episode_on_exception(tmp_path, async_write) -> None:
         assert int(handle.attrs["num_steps"]) == 2      # padding + 1 步
 
 
-@async_write_modes
-def test_collect_once_discards_episode_without_steps(tmp_path, async_write) -> None:
+def test_collect_once_discards_episode_without_steps(tmp_path) -> None:
     """一个 step 都没跑 → 不产出任何文件."""
     env = FakeEnv()
     policy = FakePolicy(steps = 0)
-    assert collect_once(env, policy, 3, tmp_path, async_write = async_write) is False
+    assert collect_once(env, policy, 3, tmp_path) is False
     assert list(tmp_path.iterdir()) == []
 
 
-@async_write_modes
-def test_collect_multi_creates_trajectory_dir_and_numbers_episodes(
-    tmp_path, async_write,
-) -> None:
+def test_collect_multi_creates_trajectory_dir_and_numbers_episodes(tmp_path) -> None:
     """collect_multi 建 trajectory_<ts>/ 目录，按 episode_start 编号，默认只跑一轮."""
     env = FakeEnv()
     policy = FakePolicy(steps = 1)
-    saved = collect_multi(
-        env, policy, tmp_path, episode_start = 3, async_write = async_write,
-    )
+    saved = collect_multi(env, policy, tmp_path, episode_start = 3)
     assert saved == 1
 
     trajectory_dirs = list(tmp_path.glob("trajectory_*"))
@@ -188,12 +176,26 @@ def test_collect_once_rejects_existing_episode_path(tmp_path) -> None:
         collect_once(FakeEnv(), FakePolicy(steps = 1), 0, tmp_path)
 
 
-@async_write_modes
-def test_action_dim_matches_recorded_data(tmp_path, async_write) -> None:
+def test_action_dim_matches_recorded_data(tmp_path) -> None:
     """action 维度与 policy 输出一致（避免隐式 reshape）."""
     env = FakeEnv()
     policy = FakePolicy(steps = 1)
-    collect_once(env, policy, 0, tmp_path, async_write = async_write)
+    collect_once(env, policy, 0, tmp_path)
     with h5py.File(tmp_path / "episode_0000.h5py", "r") as handle:
         assert handle["action"].shape == (2, ACTION_DIM)
         assert handle["action"].attrs["action_dim"] == ACTION_DIM
+
+
+def test_collect_once_stops_at_max_steps(tmp_path) -> None:
+    """max_steps 到点正常收尾（termination_reason=max_steps），给 finalize 内存兜底."""
+    env = FakeEnv()
+    policy = FakePolicy(steps = 5)
+    saved = collect_once(env, policy, 0, tmp_path, max_steps = 2)
+    assert saved is True
+
+    with h5py.File(tmp_path / "episode_0000.h5py", "r") as handle:
+        assert handle.attrs["termination_reason"] == "max_steps"
+        assert int(handle.attrs["num_steps"]) == 3       # padding + 2 步
+        assert np.asarray(handle["observation/qpos/data"])[:, 0].tolist() == pytest.approx(
+            [0.0, 1.0, 2.0]
+        )
