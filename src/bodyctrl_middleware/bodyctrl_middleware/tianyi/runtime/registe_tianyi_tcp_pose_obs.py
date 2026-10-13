@@ -97,7 +97,7 @@ def registe_tianyi_tcp_pose_obs(
                 q, tcp_frame
             )
             _use_time = time.perf_counter() - _start_time
-            log_fn(f"正运动学用时 {_use_time * 1000:.3f}ms", throttle_duration_sec = 1)
+            log_fn(f"正运动学用时 {_use_time * 1000:.3f}ms")
             
             pose_base_tcp = np.identity(4)
             pose_base_tcp[:3, :3] = tcp_rot

@@ -13,8 +13,10 @@ observations:
   - eef_pose
 
   - odom
-  - tele_vel  
-
+  - tele_vel 
+   
+  # 停止遥操作信号
+  - stop_tele
 
 # 归一化 action（每维 ∈ [-1, 1]）如何路由到 controller。
 actions:
