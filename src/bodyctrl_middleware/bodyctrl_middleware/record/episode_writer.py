@@ -273,7 +273,6 @@ class EpisodeH5Writer:
         ``padding=True`` 表示这是配对语义要求的第一行（首帧 obs + 零动作），此时必须
         不带 ``info``；普通行必须带 ``info``（缺 info 会明确报错，而不是静默写 NaN）。
         """
-        started = time.perf_counter()
 
         if padding and info is not None:
             raise ValueError("padding row must not carry info")
@@ -288,17 +287,11 @@ class EpisodeH5Writer:
         if action_snapshot.dtype == object:
             raise TypeError("action has unsupported object dtype")
 
-        elapsed = time.perf_counter() - started
-        self._warn(f"创建 snapshot 用时: {elapsed:.3f}s")
-
         if not self._initialized:
             self._initialize(obs_snapshot, action_snapshot)
             self._ensure_capacity(self.init_capacity)
         else:
             self._validate(obs_snapshot, action_snapshot)
-
-        elapsed = time.perf_counter() - started
-        self._warn(f"验证数据用时: {elapsed:.3f}s")
 
         if info is not None:
             self._ensure_info_dependent_structures(info)
@@ -312,14 +305,8 @@ class EpisodeH5Writer:
             )
         )
 
-        elapsed = time.perf_counter() - started
-        self._warn(f"添加 buffer 用时: {elapsed:.3f}s")
-
         if len(self._buffer) >= self.batch_size:
             self.flush()
-
-        elapsed = time.perf_counter() - started
-        self._warn(f"添加数据用时: {elapsed:.3f}s")
 
     def flush(self) -> None:
         """把缓冲区写入 HDF5，并推进 committed_steps（崩溃后可信边界）."""
@@ -371,14 +358,8 @@ class EpisodeH5Writer:
 
         self._padding_rows += sum(1 for row in self._buffer if row.padding)
 
-        elapsed = time.perf_counter() - started
-        self._warn(f"数据准备用时: {elapsed:.3f}s")
-
         # 先让 dataset 写入 HDF5
         self._file.flush()
-
-        elapsed = time.perf_counter() - started
-        self._warn(f"第一次写入用时: {elapsed:.3f}s")
 
         # 只有前面全部成功之后，
         # 才更新 committed_steps
@@ -388,9 +369,6 @@ class EpisodeH5Writer:
 
         self._file.flush()
         self._buffer.clear()
-
-        elapsed = time.perf_counter() - started
-        self._warn(f"总共写入用时: {elapsed:.3f}s")
 
         elapsed = time.perf_counter() - started
         self._record_flush_time(elapsed, start, end)
