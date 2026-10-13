@@ -2,10 +2,29 @@ tianyi_whole_tele:
   ros__parameters:
     config.profile_path: "config/tianyi/wholebody_replay.yaml"
 
+    config.arm.is_enable_tele: false
+    config.arm.image_decode_mode: "async"
+
+    config.record.enable: true
+    config.record.ask_before_save: true
+    config.record.ask_before_next_episode: true
     config.record.save_root: "/home/nvidia/robot_env_runtime_ws/output"
+    # 写出时机：finalize = 循环期间只缓存内存，episode 结束后分块一次性写盘（慢盘推荐）
+    # batch = 旧的边攒边写（长 episode / 内存受限时用）
+    config.record.flush_policy: "finalize"
+    config.record.write_chunk_rows: 512
+    # 单轮最大步数（0 = 不限）：finalize 模式下用它限制内存（0.18MB/行, 6000 步 ≈ 1.1GB）
+    config.record.max_steps: 6000
+    # 待写内存告警阈值（字节）
+    config.record.buffer_warn_bytes: 268435456
+    config.record.compress_method: "gzip"
+
+    # 循环耗时打点：true 时每 cycle 打印 infer/wait/action/step/write/total
+    # 以及 slack(进入 wait 时距 deadline 的余量)、post(deadline 之后 runtime 内部开销)
+    config.debug_timing: true
 
     config.policy.policy_type: replay
     config.policy.policy_kwargs: |-
       {
-        "episode_path": "/ros2_ws/output/traj_9_29/trajectory_1790685756/episode_0000.h5py"
+        "episode_path": "/home/nvidia/robot_env_runtime_ws/output/trajectory_1791889197/episode_0000.h5py"
       }

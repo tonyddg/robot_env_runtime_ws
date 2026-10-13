@@ -25,12 +25,13 @@ actions:
     scale: [0.5, 1.5]
 
 reset: 
-  - body_reset
+  # 底盘先还原再初始化手部
   - base_reset
+  - body_reset
 
 runtime:
   control_period: 0.1
-  overrun_tolerance: 0.01
+  overrun_tolerance: 0.05
   reset_timeout: 30.0
   state_ready_timeout: 10.0
   service_timeout: 2.0
