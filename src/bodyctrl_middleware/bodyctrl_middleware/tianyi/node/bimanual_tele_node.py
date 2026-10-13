@@ -1,5 +1,8 @@
 from ament_index_python import get_package_share_directory
 from pathlib import Path
+from typing import Any
+
+import time
 
 from pydantic import BaseModel
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
@@ -7,6 +10,7 @@ from bodyctrl_middleware.tianyi.plugin.tianyi_arm_only import tianyi_arm_only, T
 from bodyctrl_middleware.policy.tele_policy import TelePolicy, TeleConfig
 from bodyctrl_middleware.record import (
     ON_UNAVAILABLE_CHOICES,
+    CycleTiming,
     build_action_meta,
     build_record_meta,
     collect_multi,
@@ -87,8 +91,50 @@ class Config(BaseModel):
         "~", read_only = True,
         description = "profile 设置路径, 传入绝对路径",
     )
+    debug_timing: bool = RosField(
+        False, read_only = True,
+        description = "是否打印循环各阶段耗时(infer/wait/step/write + slack/post), 采集与遥操循环通用",
+    )
     plugin: TianyiArmOnlyConfig = RosField(default_factory = lambda: TianyiArmOnlyConfig)
     record: RecordConfig = RosField(default_factory = lambda: RecordConfig)
+
+
+def _run_tele_loop(env: RobotEnv, policy: Any, logger: Any, debug_timing: bool) -> None:
+    """不采集数据时的遥操循环（``debug_timing=True`` 时打印各阶段耗时）."""
+    timing = CycleTiming(logger, enabled = debug_timing, tag = "tele loop")
+
+    _setup_start = time.perf_counter()
+    observations = env.reset()
+    _reset_done = time.perf_counter()
+    policy.reset(observations)
+    timing.log_setup(
+        reset_sec = _reset_done - _setup_start,
+        policy_reset_sec = time.perf_counter() - _reset_done,
+    )
+
+    while not policy.done() and env.ok():
+        _cycle_start = time.perf_counter()
+        future = policy.infer_async(observations)
+        _infer_done = time.perf_counter()
+        env.wait_for_step(future)
+        _wait_done = time.perf_counter()
+        observations, info = env.step(future.get_action())
+        _step_done = time.perf_counter()
+
+        timing.record(
+            (info.get("cycle") or {}).get("index", 0),
+            {
+                "infer": _infer_done - _cycle_start,
+                "wait": _wait_done - _infer_done,
+                "step": _step_done - _wait_done,
+                "total": _step_done - _cycle_start,
+            },
+            info = info,
+            wait_entered_at = _infer_done,
+            wait_returned_at = _wait_done,
+        )
+
+    timing.log_summary()
 
 
 def main(argv = None):
@@ -175,15 +221,11 @@ def main(argv = None):
                 async_write = config.record.async_write,
                 flush_interval_sec = config.record.flush_interval_sec,
                 queue_warn_bytes = config.record.queue_warn_bytes,
+                debug_timing = config.debug_timing,
                 logger = executor.node.get_logger(),
             )
         else:
-            observations = env.reset()
-            policy.reset(observations)
-            while not policy.done() and env.ok():
-                future = policy.infer_async(observations)
-                env.wait_for_step(future)
-                observations, info = env.step(future.get_action())
+            _run_tele_loop(env, policy, executor.node.get_logger(), config.debug_timing)
     finally:
         if env is not None:
             env.close()

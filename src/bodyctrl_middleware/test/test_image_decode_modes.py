@@ -7,6 +7,7 @@ import pytest
 
 from bodyctrl_middleware.common.image_decode import registe_image_obs as image_module
 from bodyctrl_middleware.common.image_decode.registe_image_obs import registe_image_obs
+from bodyctrl_middleware.common.image_decode.registe_image_obs import ImageProcessConfig
 from robot_env_runtime.core.state_view import StateInput, StateView
 from robot_env_runtime.core.types import RuntimeSettings
 from robot_env_runtime.extension.plugin import RobotPlugin
@@ -164,3 +165,29 @@ def test_two_observations_on_same_topic_are_isolated() -> None:
     sync_out = np.asarray(sync_obs.build(_view_for(clock, "color_sync_state", sync_value)))
     cache_out = np.asarray(cache_obs.build(_view_for(clock, "color_cache_state", cache_state)))
     assert sync_out.shape == cache_out.shape == COLOR_SHAPE
+
+
+def test_image_process_config_rejects_empty_clip_and_zero_resize() -> None:
+    """裁空 / 缩放目标为 0 的配置要在构造时就报清晰错误（而不是 cv2 的难懂异常）."""
+    with pytest.raises(ValueError, match = "裁剪区为空"):
+        color_config(image_process_config = ImageProcessConfig(
+            is_clip_image = True, clip_lx = 10, clip_rx = 10,
+        ))
+    with pytest.raises(ValueError, match = "目标尺寸为 0"):
+        color_config(image_process_config = ImageProcessConfig(
+            is_resize_image = True, resize_target_x = 0,
+        ))
+
+
+def test_depth_resize_keeps_channel_dim() -> None:
+    """深度图 resize 后仍是 (H, W, 1)（cv2 会丢掉单通道的那个维度）."""
+    clock = FakeClock()
+    config = depth_config(image_process_config = ImageProcessConfig(
+        is_resize_image = True, resize_target_x = 2, resize_target_y = 2,
+    ))
+    plugin = registe_image_obs(RobotPlugin("t"), config, image_obs_name = "depth_small")
+    obs = plugin.observations["depth_small"].factory(_ctx(clock), {})
+    state = cache_value(make_depth_msg(), config)
+    out = np.asarray(obs.build(_view_for(clock, "depth_small_state", state)))
+    assert out.shape == (2, 2, 1)
+    assert out.dtype == np.uint16

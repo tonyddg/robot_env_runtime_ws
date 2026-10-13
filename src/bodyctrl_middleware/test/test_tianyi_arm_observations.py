@@ -29,6 +29,14 @@ from fake_image import (
 
 TCP_FRAME = "left_tcp_link"
 
+# 真机默认配置：彩色 640x480（reduce2 解码成 320x240）裁剪成 224x224，
+# 深度 480x270 裁剪成 256x256 再缩放到 128x128；假图用同样的原始尺寸，
+# 保证默认裁剪 + 缩放路径真的被覆盖到
+COLOR_SOURCE_SHAPE = (480, 640, 3)
+DEPTH_SOURCE_SHAPE = (270, 480)
+COLOR_OBS_SHAPE = (224, 224, 3)
+DEPTH_OBS_SHAPE = (128, 128, 1)
+
 
 @pytest.fixture(scope = "module", autouse = True)
 def _cached_robot_model():
@@ -81,8 +89,12 @@ def _plugin_sources(clock: FakeClock) -> dict:
     """按插件的默认配置构造 qpos / color / depth 三个假 state."""
     return {
         "qpos_state": _arm_values(),
-        "color_state": cache_value(make_color_msg(), color_config()),
-        "depth_state": cache_value(make_depth_msg(), depth_config()),
+        "color_state": cache_value(
+            make_color_msg(COLOR_SOURCE_SHAPE), color_config(),
+        ),
+        "depth_state": cache_value(
+            make_depth_msg(DEPTH_SOURCE_SHAPE), depth_config(),
+        ),
     }
 
 
@@ -116,8 +128,8 @@ def test_registration_defers_urdf_load(monkeypatch) -> None:
     [
         ("qpos", "qpos_state", None, np.float32),
         ("eef_pose", "qpos_state", (4, 4), np.float32),
-        ("color", "color_state", COLOR_SHAPE, np.uint8),
-        ("depth", "depth_state", (3, 4, 1), np.uint16),
+        ("color", "color_state", COLOR_OBS_SHAPE, np.uint8),
+        ("depth", "depth_state", DEPTH_OBS_SHAPE, np.uint16),
     ],
 )
 def test_observation_builds_with_fake_state(

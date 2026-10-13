@@ -14,4 +14,8 @@ tianyi_whole_tele:
     # 待写积压告警阈值（字节）
     config.record.queue_warn_bytes: 268435456
 
+    # 循环耗时打点：true 时每 cycle 打印 infer/wait/action/step/write/total
+    # 以及 slack(进入 wait 时距 deadline 的余量)、post(deadline 之后 runtime 内部开销)
+    config.debug_timing: false
+
     config.policy.policy_type: tele

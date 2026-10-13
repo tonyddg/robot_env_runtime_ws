@@ -180,6 +180,13 @@ def tianyi_arm(
     tele_arm_qpos_obs_name = config.tele_arm_qpos_obs_name
     tele_state_name = tele_arm_qpos_obs_name + "_state"
 
+    # 调试日志统一包装（logger 为空时静默；用固定调用点避免 rclpy severity 限制）
+    log_fn = (
+        (lambda message: logger.info(message, throttle_duration_sec = 1.0))
+        if logger is not None
+        else None
+    )
+
     arm_interpolate_controller_name = config.arm_controller_name
     tianyi_body_manual_reset_name = config.body_manual_reset_name
 
@@ -258,12 +265,12 @@ def tianyi_arm(
     robot = registe_image_obs(
         robot, color_config,
         image_obs_name = config.image_color_obs_name,
-        log_fn = lambda message: logger.info(message, throttle_duration_sec = 1.0) if logger is not None else None
+        log_fn = log_fn
     )
     robot = registe_image_obs(
         robot, depth_config,
         image_obs_name = config.image_depth_obs_name,
-        log_fn = lambda message: logger.info(message, throttle_duration_sec = 1.0) if logger is not None else None
+        log_fn = log_fn
     )
 
     # 末端位姿

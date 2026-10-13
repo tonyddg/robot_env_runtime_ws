@@ -18,6 +18,7 @@ Episode 采集循环（参考 ``robot_env/policy/record.py``，改用 robot_env_
 """
 
 import json
+import statistics
 import sys
 import time
 from dataclasses import asdict, is_dataclass
@@ -42,6 +43,149 @@ ACCEPT_INPUT = set(("t", "y", "1"))
 ConfirmFn = Callable[[str], Optional[bool]]
 
 ON_UNAVAILABLE_CHOICES = ("keep", "discard", "stop")
+
+# 循环耗时打点的阶段顺序
+_CYCLE_PHASES = ("infer", "wait", "action", "step", "write", "total")
+
+# slack / post 的合理性上限（ms）：超过说明 info 里的时间戳与循环时钟不同源
+# （例如测试注入的 FakeClock），此时不打印这两个字段，避免误导
+_TIMING_SANITY_MS = 60_000.0
+
+
+class CycleTiming:
+    """
+    采集 / 遥操循环的耗时打点（``debug_timing=True`` 时启用）.
+
+    每个 cycle 打一行 ``[cycle-timing] ...``，episode（或循环）结束时再打一行
+    median / max 汇总，用于定位 ``wait_for_step()`` 迟到（StepOverrunError）
+    到底是哪一段吃掉了控制周期：
+
+    - ``infer``：``policy.infer_async()`` 提交耗时；
+    - ``wait``：``env.wait_for_step()`` 阻塞耗时（等 deadline + 抓状态 + 校验）；
+    - ``action``：``future.get_action()``；
+    - ``step``：``env.step()`` 派发命令 + 构建 observation；
+    - ``write``：``writer.append()``（异步模式下主要是快照拷贝）；
+    - ``total``：一个循环体总共花了多少（与 ``period`` 对比）；
+    - ``slack``：进入 ``wait_for_step`` 时距 deadline 还剩多少 ms（负数 = 已经
+      迟到，正是 ``StepOverrunError`` 的判据）；
+    - ``post``：deadline 之后 runtime 内部（抓状态 / 校验 / Managed 检查）还花了多少 ms。
+
+    ``slack`` / ``post`` 依赖 runtime 的单调时钟（生产环境 ``MonotonicClock``）；
+    使用 FakeClock 的测试里这两个数没有意义，但不影响其余字段。
+    """
+
+    def __init__(
+        self, logger: Any = None, *, enabled: bool = True, tag: str = "",
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.tag = str(tag or "")
+        self._logger = logger
+        self._count = 0
+        self._samples: dict = {}
+
+    def record(
+        self,
+        cycle_index: Any,
+        durations: Mapping[str, float],
+        info: Optional[Mapping[str, Any]] = None,
+        *,
+        wait_entered_at: Optional[float] = None,
+        wait_returned_at: Optional[float] = None,
+    ) -> None:
+        """记录一个 cycle 的各阶段耗时（秒）."""
+        if not self.enabled:
+            return
+        self._count += 1
+        for name, value in durations.items():
+            self._samples.setdefault(name, []).append(float(value))
+        self._log(
+            self._format_cycle(
+                cycle_index, durations, info, wait_entered_at, wait_returned_at,
+            )
+        )
+
+    def log_setup(
+        self,
+        *,
+        reset_sec: Optional[float] = None,
+        policy_reset_sec: Optional[float] = None,
+        padding_append_sec: Optional[float] = None,
+    ) -> None:
+        """记录循环开始前的一次性开销（reset / padding 行写入）."""
+        if not self.enabled:
+            return
+        parts = []
+        if reset_sec is not None:
+            parts.append(f"reset={reset_sec * 1000:.1f}ms")
+        if policy_reset_sec is not None:
+            parts.append(f"policy.reset={policy_reset_sec * 1000:.1f}ms")
+        if padding_append_sec is not None:
+            parts.append(f"padding_append={padding_append_sec * 1000:.1f}ms")
+        if parts:
+            self._log(f"[cycle-timing]{self._tag()} setup: " + " ".join(parts))
+
+    def log_summary(self) -> None:
+        """打印 median / max 汇总（没有样本时静默）."""
+        if not self.enabled or self._count == 0:
+            return
+        parts = []
+        for name in _CYCLE_PHASES:
+            values = self._samples.get(name)
+            if not values:
+                continue
+            parts.append(
+                f"{name} med={statistics.median(values) * 1000:.1f} "
+                f"max={max(values) * 1000:.1f}"
+            )
+        self._log(
+            f"[cycle-timing]{self._tag()} summary n={self._count} [ms]: "
+            + " | ".join(parts)
+        )
+
+    # -- 内部 --------------------------------------------------------------
+
+    def _tag(self) -> str:
+        return f" {self.tag}" if self.tag else ""
+
+    def _log(self, message: str) -> None:
+        if self._logger is not None:
+            _log(self._logger, "info", message)
+        else:
+            print(message)
+
+    def _format_cycle(
+        self,
+        cycle_index: Any,
+        durations: Mapping[str, float],
+        info: Optional[Mapping[str, Any]],
+        wait_entered_at: Optional[float],
+        wait_returned_at: Optional[float],
+    ) -> str:
+        parts = [
+            f"{name}={durations[name] * 1000:.1f}"
+            for name in _CYCLE_PHASES
+            if name in durations
+        ]
+        cycle = (info or {}).get("cycle") or {}
+        tail = ""
+        period = cycle.get("control_period")
+        deadline = cycle.get("deadline")
+        captured = cycle.get("snapshot_captured_at")
+        if period is not None:
+            tail += f" period={float(period) * 1000:.1f}"
+        if deadline is not None and wait_entered_at is not None:
+            slack_ms = (float(deadline) - float(wait_entered_at)) * 1000.0
+            if abs(slack_ms) <= _TIMING_SANITY_MS:
+                tail += f" slack={slack_ms:+.1f}"
+        if captured is not None and wait_returned_at is not None:
+            post_ms = (float(wait_returned_at) - float(captured)) * 1000.0
+            if abs(post_ms) <= _TIMING_SANITY_MS:
+                tail += f" post={post_ms:+.1f}"
+        return (
+            f"[cycle-timing]{self._tag()} cycle {cycle_index} [ms]: "
+            + " ".join(parts)
+            + tail
+        )
 
 
 class ConfirmUnavailableError(RuntimeError):
@@ -159,6 +303,7 @@ def collect_once(
     async_write: bool = True,
     flush_interval_sec: float = DEFAULT_FLUSH_INTERVAL_SEC,
     queue_warn_bytes: int = DEFAULT_QUEUE_WARN_BYTES,
+    debug_timing: bool = False,
     logger: Any = None,
 ) -> bool:
     """
@@ -167,6 +312,10 @@ def collect_once(
     ``async_write=True``（默认）时使用 :class:`AsyncEpisodeWriter`：控制周期里
     只做 obs / action 快照入队，建表 / 预分配 / 写入 / flush 都在后台线程完成；
     ``async_write=False`` 复现旧的同步写入行为（用于对照 / 调试）。
+
+    ``debug_timing=True`` 时每个 cycle 打印一行各阶段耗时（infer / wait /
+    action / step / write / total，另附 ``slack`` 与 ``post``），并在 episode 结束时
+    打印 median / max 汇总；没有 logger 时直接打印到 stdout。
 
     ``ask_before_save=True`` 时会在本轮结束后询问是否保存：
 
@@ -213,14 +362,18 @@ def collect_once(
     fault_message: Optional[str] = None
     exception_type: Optional[str] = None
     exception_message: Optional[str] = None
+    timing = CycleTiming(logger, enabled = debug_timing, tag = f"episode {episode_index}")
 
     # pending_padding = True
     first_obs = None
     recorded_steps = 0
 
     try:
+        _setup_start = time.perf_counter()
         observations = env.reset()
+        _reset_done = time.perf_counter()
         policy.reset(observations)
+        _policy_reset_done = time.perf_counter()
         first_obs = observations
 
         _start_time = time.perf_counter()
@@ -228,15 +381,25 @@ def collect_once(
             first_obs, np.zeros(env.action_dim, dtype = np.float32), None, padding = True
         )
         _use_time = time.perf_counter() - _start_time
+        timing.log_setup(
+            reset_sec = _reset_done - _setup_start,
+            policy_reset_sec = _policy_reset_done - _reset_done,
+            padding_append_sec = _use_time,
+        )
         _info_throttled(
             env, f"episode {episode_index} 初次采集完成, 用时 {_use_time * 1000:.3f}ms"
         )
 
         while not policy.done() and env.ok():
+            _cycle_start = time.perf_counter()
             future = policy.infer_async(observations)
+            _infer_done = time.perf_counter()
             env.wait_for_step(future)
+            _wait_done = time.perf_counter()
             action = np.array(future.get_action(), copy = True)
+            _action_done = time.perf_counter()
             observations, info = env.step(action)
+            _step_done = time.perf_counter()
 
             # if pending_padding:
             #     # 配对语义要求第 0 行是首帧 obs + 零动作；这里才写是为了让 padding 行的
@@ -250,6 +413,22 @@ def collect_once(
             writer.append(observations, action, info)
             recorded_steps += 1
             _use_time = time.perf_counter() - _start_time
+            _write_done = time.perf_counter()
+
+            timing.record(
+                (info.get("cycle") or {}).get("index", recorded_steps),
+                {
+                    "infer": _infer_done - _cycle_start,
+                    "wait": _wait_done - _infer_done,
+                    "action": _action_done - _wait_done,
+                    "step": _step_done - _action_done,
+                    "write": _write_done - _step_done,
+                    "total": _write_done - _cycle_start,
+                },
+                info = info,
+                wait_entered_at = _infer_done,
+                wait_returned_at = _wait_done,
+            )
             _info_throttled(
                 env, f"episode {episode_index} 采集 step 完成, 用时 {_use_time * 1000:.3f}ms"
             )
@@ -277,6 +456,8 @@ def collect_once(
             f"episode {episode_index} 采集异常结束: "
             f"{type(exc).__name__}: {exc}",
         )
+
+    timing.log_summary()
 
     if recorded_steps == 0:
         _log(logger, "warn", "未采集到有效数据, 跳过保存")
@@ -352,6 +533,7 @@ def collect_multi(
     async_write: bool = True,
     flush_interval_sec: float = DEFAULT_FLUSH_INTERVAL_SEC,
     queue_warn_bytes: int = DEFAULT_QUEUE_WARN_BYTES,
+    debug_timing: bool = False,
     logger: Any = None,
 ) -> int:
     """
@@ -384,6 +566,7 @@ def collect_multi(
                 async_write = async_write,
                 flush_interval_sec = flush_interval_sec,
                 queue_warn_bytes = queue_warn_bytes,
+                debug_timing = debug_timing,
                 logger = logger,
             )
         except ConfirmUnavailableError as exc:

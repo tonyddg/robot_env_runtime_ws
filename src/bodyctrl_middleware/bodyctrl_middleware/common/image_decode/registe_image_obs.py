@@ -70,6 +70,27 @@ class ImageProcessConfig(BaseModel):
         224, ge = 0, read_only = True, description = "目标图片高度",
     )
 
+    @model_validator(mode = "after")
+    def check_config(self):
+        """把裁空 / 缩放目标为 0 这类配置错误尽早暴露（否则 cv2 会给出难懂的报错）."""
+        if self.is_clip_image and (
+            self.clip_rx <= self.clip_lx or self.clip_ry <= self.clip_ly
+        ):
+            raise ValueError(
+                "is_clip_image=True 但裁剪区为空: "
+                f"clip_lx={self.clip_lx}, clip_rx={self.clip_rx}, "
+                f"clip_ly={self.clip_ly}, clip_ry={self.clip_ry}"
+            )
+        if self.is_resize_image and (
+            self.resize_target_x <= 0 or self.resize_target_y <= 0
+        ):
+            raise ValueError(
+                "is_resize_image=True 但目标尺寸为 0: "
+                f"resize_target_x={self.resize_target_x}, "
+                f"resize_target_y={self.resize_target_y}"
+            )
+        return self
+
 def _image_process(arr: np.ndarray, config: ImageProcessConfig, dtype: Any = None):
     # 将 ndim 为 2, 3 的图片统一为 3, 其他 ndim 则抛出异常
     if arr.ndim == 2:
@@ -92,6 +113,9 @@ def _image_process(arr: np.ndarray, config: ImageProcessConfig, dtype: Any = Non
             # 默认缩小图片, 用于深度图
             interpolation = cv2.INTER_NEAREST
         )
+        if res.ndim == 2:
+            # cv2.resize 对 (H, W, 1) 的单通道输入会丢掉通道维，补回来
+            res = np.expand_dims(res, axis = -1)
 
     return np.array(res, dtype = dtype)
 
