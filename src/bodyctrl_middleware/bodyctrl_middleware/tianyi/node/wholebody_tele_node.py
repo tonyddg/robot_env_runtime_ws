@@ -117,7 +117,10 @@ class RecordConfig(BaseModel):
         False, read_only = True,
         description = "询问前是否调用 env.stop()（等待确认期间机器人保持 STOPPED）",
     )
-
+    compress_method: str = RosField(
+        "gzip", read_only = True,
+        description = "对于采集到的数据, 写入 h5py 时的压缩方式: none / gzip / lzf",
+    )
 
 class Config(BaseModel):
     profile_path: str = RosField(
@@ -135,9 +138,9 @@ class Config(BaseModel):
 
 
 def make_policy(config: Config, executor: RosExecutorHost):
+    import json
 
     if config.policy.policy_kwargs != "":
-        import json
         extern_policy_kwargs = json.loads(config.policy.policy_kwargs)
     else:
         extern_policy_kwargs = {}
@@ -163,7 +166,7 @@ def make_policy(config: Config, executor: RosExecutorHost):
             # True 遥操继续, 观测值为 1, 函数返回 False 不结束遥操
             is_tele_done_fn = lambda obs: obs.get("stop_tele", 1) != 1,
             logger = executor.node.get_logger()
-        )
+        ), {}
 
     elif config.policy.policy_type == "replay":
         policy_kwargs = dict(
@@ -180,12 +183,20 @@ def make_policy(config: Config, executor: RosExecutorHost):
         import h5py
         with h5py.File(episode_path, "r") as f:
             action_chunk = np.array(f["action"][1:], copy = True) # type: ignore
+            init_qpos = np.array(f["observation"]["qpos"]["data"][0], copy = True) # type: ignore
+            # 读取 meta 信息, 以便在 reset 时传入初始关节位置和被控电机 id
+            meta_objs = json.loads(f.attrs["meta"]) # type: ignore
+            
+            reset_kwargs = dict(
+                body_manual_reset_target_pos_list = init_qpos,
+                body_manual_reset_motor_name_list = list(meta_objs["plugin_config"]["arm"]["arm_motor_list"])
+            )
 
         return ReplayPolicy(
             action_chunk, 
             policy_kwargs["action_scale"],  # type: ignore
             logger = executor.node.get_logger()
-        )
+        ), reset_kwargs
 
     else:
         raise ValueError(f"未知 policy_type {config.policy.policy_type}")
@@ -258,7 +269,7 @@ def main(argv = None):
     )
 
     try:
-        policy = make_policy(
+        policy, reset_kwargs = make_policy(
             config, executor
         )
 
@@ -309,6 +320,7 @@ def main(argv = None):
                 ask_before_save = config.record.ask_before_save,
                 ask_before_next_episode = config.record.ask_before_next_episode,
                 confirm = confirm,
+                compression = config.record.compress_method,
                 on_unavailable = config.record.confirm_on_unavailable,
                 stop_before_confirm = config.record.stop_before_confirm,
                 flush_policy = config.record.flush_policy,
@@ -317,6 +329,8 @@ def main(argv = None):
                 buffer_warn_bytes = config.record.buffer_warn_bytes,
                 debug_timing = config.debug_timing,
                 logger = executor.node.get_logger(),
+
+                reset_kwargs = reset_kwargs,
             )
         else:
             _run_tele_loop(env, policy, executor.node.get_logger(), config.debug_timing)
