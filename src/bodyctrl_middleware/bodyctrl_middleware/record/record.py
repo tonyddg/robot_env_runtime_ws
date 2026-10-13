@@ -302,6 +302,8 @@ def collect_once(
     buffer_warn_bytes: int = DEFAULT_BUFFER_WARN_BYTES,
     debug_timing: bool = False,
     logger: Any = None,
+    # 调用方可以通过 reset_kwargs 注入额外参数给 env.reset()
+    reset_kwargs: Optional[dict[str, Any]] = None
 ) -> bool:
     """
     采集一轮 episode 并落盘；返回是否真的保存了文件.
@@ -359,7 +361,7 @@ def collect_once(
 
     try:
         _setup_start = time.perf_counter()
-        observations = env.reset()
+        observations = env.reset(**(reset_kwargs or {}))
         _reset_done = time.perf_counter()
         policy.reset(observations)
         _policy_reset_done = time.perf_counter()
@@ -543,6 +545,8 @@ def collect_multi(
     buffer_warn_bytes: int = DEFAULT_BUFFER_WARN_BYTES,
     debug_timing: bool = False,
     logger: Any = None,
+    # 调用方可以通过 reset_kwargs 注入额外参数给 env.reset()
+    reset_kwargs: Optional[dict[str, Any]] = None
 ) -> int:
     """
     连续采集多个 episode，返回成功保存的数量.
@@ -577,6 +581,7 @@ def collect_multi(
                 buffer_warn_bytes = buffer_warn_bytes,
                 debug_timing = debug_timing,
                 logger = logger,
+                reset_kwargs = reset_kwargs
             )
         except ConfirmUnavailableError as exc:
             if exc.saved:
@@ -601,6 +606,7 @@ def collect_multi(
             logger = logger,
         )
         if not should_continue:
+            env.reset(**(reset_kwargs or {}))  # 正常数据采集时进行复位
             break
 
     _log(logger, "info", f"数据采集结束, 共保存 {saved} 条 episode")
