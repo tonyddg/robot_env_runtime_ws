@@ -15,6 +15,9 @@
   限频告警一次，峰值写进 episode attrs（``queue_high_water_bytes``）；
 * ``finalize()`` 阻塞到队列排空，并把 worker 内的异常以 :class:`AsyncWriterError`
   抛回调用线程；``abort()`` 立即丢弃剩余队列并保留 ``.partial`` 现场。
+* ``wait_idle()`` 提供同步点：返回时此前入队的行都已落盘，用来把建表 /
+  预分配 / 首次 flush 挡在控制循环之前（``collect_once`` 在 padding 行之后调用，
+  并随后重锚 cycle deadline）。
 """
 
 from __future__ import annotations
@@ -44,6 +47,15 @@ class AsyncWriterError(RuntimeError):
 
 class _Wake:
     """唤醒阻塞在队列上的 worker（abort 用）."""
+
+
+class _Sync:
+    """同步点：worker 处理到这里时把之前的行全部落盘，然后释放等待者."""
+
+    __slots__ = ("event",)
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
 
 
 class _Row:
@@ -274,6 +286,38 @@ class AsyncEpisodeWriter:
             # worker 因异常退出时没来得及 abort，这里兜底关闭文件
             self._writer.abort()
 
+    def wait_idle(self, timeout: Optional[float] = None) -> bool:
+        """
+        阻塞到 worker 处理完"当前已入队"的全部行并 flush.
+
+        典型用法：``append(padding_row)`` 之后调用，把建表 / 预分配 / 首次落盘
+        完全挡在控制循环之前（``collect_once`` 就是这么用的，并在返回后重锚
+        cycle 时钟）。调用之后新 append 的行不保证已经写完。
+
+        - worker 内部失败 → 抛 :class:`AsyncWriterError`（``__cause__`` 保留原异常）；
+        - ``timeout`` 秒内没等到 → 返回 ``False``（worker 仍在忙）；
+        - 正常排空 → 返回 ``True``。
+        """
+        self._raise_if_not_running()
+
+        marker = _Sync()
+        self._queue.put(marker)
+
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        while not marker.event.is_set():
+            if self._finished.is_set():
+                break
+            if deadline is None:
+                marker.event.wait(0.05)
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                marker.event.wait(min(0.05, remaining))
+
+        self._raise_if_error()
+        return marker.event.is_set()
+
     # -- 状态 --------------------------------------------------------------
 
     @property
@@ -348,6 +392,14 @@ class AsyncEpisodeWriter:
                     writer.abort()
                     self._writer_aborted = True
                     return
+
+                if isinstance(item, _Sync):
+                    # 把此前入队的行全部落盘，再放行等待者（预热同步点）
+                    writer.flush()
+                    rows_since_flush = 0
+                    last_flush = time.perf_counter()
+                    item.event.set()
+                    continue
 
                 if isinstance(item, _Finalize):
                     writer.finalize(

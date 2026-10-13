@@ -110,6 +110,7 @@ class CycleTiming:
         reset_sec: Optional[float] = None,
         policy_reset_sec: Optional[float] = None,
         padding_append_sec: Optional[float] = None,
+        prewarm_sec: Optional[float] = None,
     ) -> None:
         """记录循环开始前的一次性开销（reset / padding 行写入）."""
         if not self.enabled:
@@ -121,6 +122,8 @@ class CycleTiming:
             parts.append(f"policy.reset={policy_reset_sec * 1000:.1f}ms")
         if padding_append_sec is not None:
             parts.append(f"padding_append={padding_append_sec * 1000:.1f}ms")
+        if prewarm_sec is not None:
+            parts.append(f"prewarm={prewarm_sec * 1000:.1f}ms")
         if parts:
             self._log(f"[cycle-timing]{self._tag()} setup: " + " ".join(parts))
 
@@ -317,6 +320,10 @@ def collect_once(
     action / step / write / total，另附 ``slack`` 与 ``post``），并在 episode 结束时
     打印 median / max 汇总；没有 logger 时直接打印到 stdout。
 
+    异步 writer 会在进入控制循环之前先等 worker 把 padding 行（建表 / 预分配 /
+    首次落盘）写完（setup 行里的 ``prewarm``），随后调用 ``env.rebase_cycle_deadline()``
+    重锚第一个周期的 deadline，保证预热不会挤占第一个控制周期的预算。
+
     ``ask_before_save=True`` 时会在本轮结束后询问是否保存：
 
     - ``confirm`` 为空 → 本地 ``input()``（只在终端直接运行录制节点时可用）；
@@ -381,14 +388,30 @@ def collect_once(
             first_obs, np.zeros(env.action_dim, dtype = np.float32), None, padding = True
         )
         _use_time = time.perf_counter() - _start_time
+
+        # 把 writer 的建表 / 预分配 / 首次落盘完全挡在控制循环之前：
+        # 异步 writer 会在此等 worker 处理完 padding 行（同步 writer 在 append 内已完成）。
+        prewarm_sec: Optional[float] = None
+        wait_idle = getattr(writer, "wait_idle", None)
+        if callable(wait_idle):
+            _prewarm_start = time.perf_counter()
+            wait_idle()
+            prewarm_sec = time.perf_counter() - _prewarm_start
+
         timing.log_setup(
             reset_sec = _reset_done - _setup_start,
             policy_reset_sec = _policy_reset_done - _reset_done,
             padding_append_sec = _use_time,
+            prewarm_sec = prewarm_sec,
         )
         _info_throttled(
             env, f"episode {episode_index} 初次采集完成, 用时 {_use_time * 1000:.3f}ms"
         )
+
+        # 预热与 setup 打点都不应计入第一个控制周期：进循环前重新锚定 deadline_0
+        rebase_deadline = getattr(env, "rebase_cycle_deadline", None)
+        if callable(rebase_deadline):
+            rebase_deadline()
 
         while not policy.done() and env.ok():
             _cycle_start = time.perf_counter()

@@ -88,7 +88,7 @@ class CycleScheduler:
         """进入 ``wait_for_step()`` 时的快速检查（是否已明显错过 deadline）."""
         if not self._started or self._deadline is None:
             raise InvalidTransitionError("reset() must be called before wait_for_step()")
-        
+
         lateness = self.lateness()
 
         if self._cycle_index == 0:

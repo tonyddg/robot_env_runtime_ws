@@ -66,13 +66,25 @@ def test_scheduler_rejects_wait_before_start() -> None:
 
 
 def test_entry_overrun_raises_step_overrun() -> None:
-    """进入 wait_for_step 时已明显错过 deadline → StepOverrunError."""
+    """进入 wait_for_step 时已明显错过 deadline → StepOverrunError（第一个 cycle 豁免）."""
+    clock = FakeClock()
+    scheduler = CycleScheduler(clock, control_period=0.1, overrun_tolerance=0.02)
+    scheduler.start()
+    scheduler.begin_cycle_wait()      # cycle 0 允许滞后
+    scheduler.advance()               # → cycle 1，deadline_1 = 0.2
+    clock.advance(0.25)
+    with pytest.raises(StepOverrunError):
+        scheduler.begin_cycle_wait()
+
+
+def test_first_cycle_entry_is_allowed_to_be_late() -> None:
+    """第一次 cycle（reset 之后的预热 / 首帧）允许滞后，不抛 StepOverrunError."""
     clock = FakeClock()
     scheduler = CycleScheduler(clock, control_period=0.1, overrun_tolerance=0.02)
     scheduler.start()
     clock.advance(0.15)
-    with pytest.raises(StepOverrunError):
-        scheduler.begin_cycle_wait()
+    scheduler.begin_cycle_wait()
+    assert scheduler.cycle_index == 0
 
 
 def test_late_future_raises_policy_inference_timeout() -> None:

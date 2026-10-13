@@ -251,6 +251,28 @@ class RobotEnv:
         )
         return observations
 
+    def rebase_cycle_deadline(self) -> None:
+        """
+        以当前时刻重新锚定第一个控制周期的绝对 deadline（``now + control_period``）.
+
+        用于 ``reset()`` 之后、第一次 ``step()`` 之前的"预热"工作（例如 episode
+        writer 建表 / 预分配 / 首次落盘）：预热完成后调用一次，第一个控制周期就能
+        拿到完整的 control_period，而不会把整条 deadline 网格整体顺延。
+
+        仅在 reset 之后、第一个 cycle 尚未 dispatch（``cycle_index == 0``）时可用，
+        其它时机抛 :class:`InvalidTransitionError`（不 latch fault）。
+        """
+        self._raise_if_closed()
+        if not self._scheduler.started:
+            raise InvalidTransitionError(
+                "reset() must be called before rebase_cycle_deadline()"
+            )
+        if self._scheduler.cycle_index != 0:
+            raise InvalidTransitionError(
+                "rebase_cycle_deadline() must be called before the first step()"
+            )
+        self._scheduler.start()
+
     def wait_for_step(self, future: InferenceFuture) -> None:
         """结束上一控制区间：等待绝对 deadline + 周期边界校验."""
         self._raise_if_unusable()

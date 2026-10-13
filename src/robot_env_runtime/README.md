@@ -702,6 +702,11 @@ stop barrier → ControlStatus.STOPPED
 
 reset 之后第一次 `wait_for_step()` 拥有完整的一个控制周期。
 
+如果 reset 之后还有"预热"工作（例如 episode writer 建表 / 预分配 / 首次落盘），
+可以在预热完成后调用一次 `env.rebase_cycle_deadline()`：它以当前时刻重新锚定第一个
+周期的 deadline（`deadline_0 = now + control_period`），避免整条 deadline 网格整体顺延；
+仅限 reset 之后、第一次 `step()` 之前调用，其它时机抛 `InvalidTransitionError`。
+
 ---
 
 ## 12. Control Node 契约与节点侧状态机助手

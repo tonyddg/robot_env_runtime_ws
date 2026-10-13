@@ -253,6 +253,48 @@ def test_finalize_twice_raises(tmp_path) -> None:
         writer.finalize("policy_done", keep = True)
 
 
+def test_wait_idle_waits_for_padding_row_and_preallocation(tmp_path) -> None:
+    """wait_idle 返回时 padding 行已落盘、数据集与 512 行预分配已完成."""
+    writer = AsyncEpisodeWriter(
+        tmp_path / "episode.h5py", batch_size = 32, flush_interval_sec = 30.0,
+    )
+    writer.append(make_obs(0), ZERO, None, padding = True)
+    assert writer.wait_idle(timeout = 10.0) is True
+    with h5py.File(writer.partial_path, "r") as handle:
+        assert int(handle.attrs["committed_steps"]) == 1
+        assert "observation/qpos" in handle
+        assert handle["action"].shape[0] >= 512
+    writer.finalize("policy_done", keep = True)
+
+
+def test_wait_idle_returns_false_on_timeout(tmp_path, monkeypatch) -> None:
+    """worker 卡在 flush 时 wait_idle 超时返回 False（不阻塞调用方）."""
+    blocking = _BlockingFlush(monkeypatch)
+    writer = AsyncEpisodeWriter(tmp_path / "episode.h5py", batch_size = 1)
+    writer.append(make_obs(0), ZERO, None, padding = True)
+    assert blocking.entered.wait(10.0)
+    try:
+        assert writer.wait_idle(timeout = 0.05) is False
+    finally:
+        blocking.release.set()
+    writer.finalize("policy_done", keep = True)
+
+
+def test_wait_idle_raises_on_worker_error(tmp_path, monkeypatch) -> None:
+    """worker 失败时 wait_idle 直接抛错（预热阶段就能发现磁盘问题）."""
+
+    def broken_flush(writer) -> None:
+        raise OSError("disk full")
+
+    writer = AsyncEpisodeWriter(tmp_path / "episode.h5py", batch_size = 1)
+    monkeypatch.setattr(EpisodeH5Writer, "flush", broken_flush)
+    writer.append(make_obs(0), ZERO, None, padding = True)
+    with pytest.raises(AsyncWriterError) as raised:
+        writer.wait_idle(timeout = 5.0)
+    assert isinstance(raised.value.__cause__, OSError)
+    writer.abort()
+
+
 @pytest.mark.parametrize(
     "kwargs", [{"flush_interval_sec": 0.0}, {"queue_warn_bytes": -1}],
 )

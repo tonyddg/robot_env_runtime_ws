@@ -133,6 +133,36 @@ def test_illegal_transitions_raise_explicit_errors() -> None:
         env.step(future.get_action())
 
 
+def test_rebase_cycle_deadline_after_prewarm() -> None:
+    """预热后重锚：第一个周期的 deadline 从重锚时刻重新起算（不整体顺延）."""
+    clock = FakeClock()
+    env = simple_env(clock=clock)
+    env.reset()
+    deadline_before = clock.now() + 0.1          # reset() 里锚定的 deadline_0
+
+    clock.advance(0.03)                          # 模拟 reset 之后 30ms 的预热
+    env.rebase_cycle_deadline()
+    assert env.cycle_index == 0
+
+    future = FakeInferenceFuture(done=True, action=ACTION)
+    env.wait_for_step(future)
+    assert clock.now() == pytest.approx(deadline_before + 0.03)   # 等到新的 deadline_0
+    _, info = env.step(future.get_action())
+    assert info["cycle"]["deadline"] == pytest.approx(deadline_before + 0.13)
+
+
+def test_rebase_cycle_deadline_rejected_after_first_step() -> None:
+    """第一个 cycle dispatch 之后不能再重锚（deadline 网格已推进）."""
+    clock = FakeClock()
+    env = simple_env(clock=clock)
+    env.reset()
+    future = FakeInferenceFuture(done=True, action=ACTION)
+    env.wait_for_step(future)
+    env.step(future.get_action())
+    with pytest.raises(InvalidTransitionError):
+        env.rebase_cycle_deadline()
+
+
 def test_policy_inference_timeout_latches_fault_and_stops() -> None:
     """Future 未按时完成 → PolicyInferenceTimeoutError + fault latch + stop."""
     clock = FakeClock()

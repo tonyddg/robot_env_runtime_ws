@@ -118,3 +118,29 @@ def test_run_tele_loop_silent_without_debug() -> None:
     logger = _Logger()
     _run_tele_loop(FakeEnv(), FakePolicy(steps = 2), logger, False)
     assert logger.messages == []
+
+
+def test_collect_once_prewarms_writer_and_rebases_clock(tmp_path) -> None:
+    """进循环前先等 writer 预热完成，并调用 env.rebase_cycle_deadline() 重锚时钟."""
+    logger = _Logger()
+
+    class _Env(FakeEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rebases = 0
+
+        def rebase_cycle_deadline(self) -> None:
+            self.rebases += 1
+
+    env = _Env()
+    saved = collect_once(
+        env, FakePolicy(steps = 2), 0, tmp_path,
+        debug_timing = True, logger = logger,
+    )
+    assert saved is True
+    assert env.rebases == 1
+
+    lines = [message for message in logger.messages if "[cycle-timing]" in message]
+    setup_line = next(message for message in lines if "setup:" in message)
+    assert "prewarm=" in setup_line
+    assert "[ms]:" not in setup_line
