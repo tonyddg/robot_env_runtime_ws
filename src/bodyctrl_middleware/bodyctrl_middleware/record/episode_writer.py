@@ -574,7 +574,7 @@ class EpisodeH5Writer:
         if sample.ndim < 2 or sample.nbytes <= 1024:
             return {}
         if mode == "gzip":
-            return dict(compression = "gzip", compression_opts = 1, shuffle = True)
+            return dict(compression = "gzip", compression_opts = 4, shuffle = True)
         if mode == "lzf":
             return dict(compression = "lzf", shuffle = True)
         return {}
