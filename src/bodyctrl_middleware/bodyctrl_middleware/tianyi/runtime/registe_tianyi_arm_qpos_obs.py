@@ -69,7 +69,8 @@ def registe_tianyi_arm_qpos_obs(
 
     tianyi_arm_qpos_obs_name: str = "tianyi_arm_qpos_bimanual_obs",
     tianyi_arm_qpos_state_name: Optional[str] = None,
-    warn_after: float = 0.2,
+    warn_after: float = 0.05,
+    error_after: float = 0.1,
 ):
     '''
     注册天轶机器人手臂关节状态
@@ -104,6 +105,7 @@ def registe_tianyi_arm_qpos_obs(
                 dtype = "float32", shape = (adapter.num_motors,), semantic = f"arm qpos with motor {motor_id_to_idx}"
             ),
             warn_after = warn_after,
+            error_after = error_after,
         )
 
     robot_plugin.state(

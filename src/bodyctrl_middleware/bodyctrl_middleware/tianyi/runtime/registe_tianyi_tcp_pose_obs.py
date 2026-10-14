@@ -37,7 +37,9 @@ def registe_tianyi_tcp_pose_obs(
     default_motor_qpos: Optional[list[float]] = None,
 
     tianyi_tcp_pose_obs_name: str = "tcp_pose",
-    warn_after: float = 0.2,
+
+    warn_after: float = 0.05,
+    error_after: float = 0.1,
 
     # 打印调试信息, 建议传入 node.get_logger().info
     log_fn: Optional[Callable[..., None]] = None
@@ -129,7 +131,9 @@ def registe_tianyi_tcp_pose_obs(
                 semantic = f"SE(3) world tcp pose for {tcp_frame}" if odom_state_name is not None 
                 else f"SE(3) base tcp pose for {tcp_frame}"
             ),
+
             warn_after = warn_after,
+            error_after = error_after,
         )
 
     robot_plugin.observation(

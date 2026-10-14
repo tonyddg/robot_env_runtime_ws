@@ -158,7 +158,10 @@ class ImageStateAdapterConfig(BaseModel):
     )
 
     warn_after: float = RosField(
-        0.1, read_only = True, description = "图像消息容许延迟",
+        0.05, read_only = True, description = "图像消息容许延迟",
+    )
+    error_after: float = RosField(
+        0.1, read_only = True, description = "图像消息最大延迟",
     )
 
     @model_validator(mode = "after")

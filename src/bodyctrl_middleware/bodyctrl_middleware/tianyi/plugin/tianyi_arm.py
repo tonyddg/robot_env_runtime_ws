@@ -100,10 +100,6 @@ class TianyiArmConfig(BaseModel):
         )
     )
 
-    image_warn_after: float = RosField(
-        0.1, ge = 0, read_only = True,
-        description = "允许相机观测观测延迟"
-    )
     image_decode_mode: Literal["sync", "async", "cache"] = RosField(
        "cache", read_only = True, 
        description = "仅在使用 is_compress_image 为 True 时生效"
@@ -157,6 +153,10 @@ class TianyiArmConfig(BaseModel):
         0.05, ge = 0, read_only = True,
         description = "允许的观测延迟"
     )
+    error_after: float = RosField(
+        0.1, ge = 0, read_only = True,
+        description = "最大的观测延迟"
+    )
 
 def tianyi_arm(
     config: Optional[TianyiArmConfig] = None,
@@ -196,7 +196,9 @@ def tianyi_arm(
         motor_id_to_idx = tuple(config.arm_motor_list),
         tianyi_arm_qpos_obs_name = tianyi_arm_qpos_obs_name,
         tianyi_arm_qpos_state_name = tianyi_arm_qpos_state_name,
-        warn_after = config.warn_after
+
+        warn_after = config.warn_after,
+        error_after = config.error_after
     )
 
     if config.is_enable_tele:
@@ -218,7 +220,8 @@ def tianyi_arm(
         warning_tracking_error = config.arm_warning_tracking_error,
         max_tracking_error = config.arm_max_tracking_error,
 
-        state_max_age_sec = config.warn_after * 1.2,
+        status_max_age_sec = config.error_after,
+        state_max_age_sec = config.error_after,
 
         rel_qpos_source = config.arm_rel_qpos_source,
     )
@@ -251,14 +254,20 @@ def tianyi_arm(
         image_topic = config.image_color_topic_name,
         image_dtype = "uint8", image_channel = 3, 
         compress_decoder_type = "normal_compress_color_reduce2" if config.image_color_reduce_decode else "normal_compress_color",
-        warn_after = config.image_warn_after,
+        
+        warn_after = config.warn_after,
+        error_after = config.error_after,
+
         decode_mode = config.image_decode_mode,
         image_process_config = config.image_color_obs_process
     )
     depth_config = ImageStateAdapterConfig(
         image_topic = config.image_depth_topic_name,
         image_dtype = "uint16", image_channel = 1, compress_decoder_type = "orbbec_compress_depth",
-        warn_after = config.image_warn_after,
+        
+        warn_after = config.warn_after,
+        error_after = config.error_after,
+
         decode_mode = config.image_decode_mode,
         image_process_config = config.image_depth_obs_process
     )
@@ -294,6 +303,8 @@ def tianyi_arm(
         tianyi_tcp_pose_obs_name = config.fk_eef_pose_obs_name,
 
         warn_after = config.warn_after,
+        error_after = config.error_after,
+
         log_fn = log_fn
     )
 

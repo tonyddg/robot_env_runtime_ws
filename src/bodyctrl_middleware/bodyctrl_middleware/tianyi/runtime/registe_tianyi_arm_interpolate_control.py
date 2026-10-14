@@ -160,6 +160,10 @@ class TianyiArmInterpolateControlDeltaControllerAdapter(RosControllerAdapter):
 
         return msg
 
+    def null_action(self, states: StateView, ctx: CommandContext):
+        # 空动作不发送
+        return None
+
     def on_sent(self, record: CommandRecord) -> None:
         """命令真正发送成功后，才把期望基准推进到这条命令的目标位置."""
 
