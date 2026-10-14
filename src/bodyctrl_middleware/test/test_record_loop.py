@@ -37,6 +37,9 @@ def test_collect_once_pairs_rows_like_reference(tmp_path) -> None:
         assert int(handle.attrs["num_steps"]) == 4
         assert int(handle.attrs["padding_rows"]) == 1
         assert handle.attrs["termination_reason"] == "policy_done"
+        # 严格模式（无 hold）下 soft_fail 统计照常写出且为 0，下游读取无需分支
+        assert int(handle.attrs["soft_fail_count"]) == 0
+        assert json.loads(handle.attrs["soft_fail_cycle_indexes"]) == []
 
         # 行 0 = 首帧 obs + 零动作；行 k = step k 的 obs/action
         assert qpos[:, 0].tolist() == pytest.approx([0.0, 1.0, 2.0, 3.0])
@@ -47,8 +50,40 @@ def test_collect_once_pairs_rows_like_reference(tmp_path) -> None:
         assert np.isnan(sent_at[0])
         assert sent_at[1:].tolist() == pytest.approx([10.102, 10.202, 10.302])
 
-    # 策略实际看到的是 reset 后的 obs 与逐行推进的 obs（最后一帧 obs 不会再进推理）
-    assert [float(obs[0]) for obs in policy.seen_obs] == pytest.approx([0.0, 1.0, 2.0])
+    # 策略看到 reset 后的 obs 与逐行推进的 obs；每个正常周期结束后预取下一帧，
+    # 因此最后一帧 obs 的推理已提交但其动作不会下发（与 hold 模式的循环形状一致）
+    assert [float(obs[0]) for obs in policy.seen_obs] == pytest.approx([0.0, 1.0, 2.0, 3.0])
+
+
+def test_collect_once_hold_cycles_skip_rows(tmp_path) -> None:
+    """hold 周期派发空动作但不落数据行：(obs, action) 配对保持，统计进 attrs."""
+    env = FakeEnv(hold_cycles = (2,))
+    policy = FakePolicy(steps = 3)
+    assert collect_once(env, policy, 0, tmp_path) is True
+    assert env.hold_steps == 1
+
+    with h5py.File(tmp_path / "episode_0000.h5py", "r") as handle:
+        assert int(handle.attrs["num_steps"]) == 4          # padding + 3 个真实 step
+        assert int(handle.attrs["soft_fail_count"]) == 1
+        assert json.loads(handle.attrs["soft_fail_cycle_indexes"]) == [2]
+        qpos = np.asarray(handle["observation/qpos/data"])
+        action = np.asarray(handle["action"])
+        # 行 0 是 padding；真实 step 的 obs 序号来自 fake env 的 cycle index
+        # （hold 周期占一个 cycle 但不落行），action 仍是连续的 3 个策略动作
+        assert qpos[:, 0].tolist() == pytest.approx([0.0, 1.0, 3.0, 4.0])
+        assert action[:, 0].tolist() == pytest.approx([0.0, 0.1, 0.2, 0.3])
+
+
+def test_collect_once_hold_cycle_indexes_are_capped(tmp_path) -> None:
+    """连续 hold 周期的 cycle index 只保留前若干个（attrs 不无限增长）."""
+    env = FakeEnv(hold_cycles = tuple(range(1, 71)))
+    policy = FakePolicy(steps = 1)
+    assert collect_once(env, policy, 0, tmp_path) is True
+
+    with h5py.File(tmp_path / "episode_0000.h5py", "r") as handle:
+        assert int(handle.attrs["soft_fail_count"]) == 70
+        assert json.loads(handle.attrs["soft_fail_cycle_indexes"]) == list(range(1, 65))
+        assert int(handle.attrs["num_steps"]) == 2          # padding + 1 个真实 step
 
 
 def test_collect_once_keeps_episode_on_fault(tmp_path) -> None:

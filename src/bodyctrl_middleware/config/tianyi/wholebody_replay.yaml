@@ -36,5 +36,9 @@ runtime:
   state_ready_timeout: 10.0
   service_timeout: 2.0
   observation_poll_period: 0.02
-  observation_warn_after: 0.2
-  observation_error_after: 0.6
+  observation_warn_after: 0.05
+  observation_error_after: 0.1
+
+  on_wait_failure: "hold"
+  hold_limit: 10
+  hold_on_step_overrun: false

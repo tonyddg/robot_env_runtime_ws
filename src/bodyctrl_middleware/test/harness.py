@@ -96,7 +96,12 @@ class FakeFuture:
 
 
 class FakePolicy:
-    """固定步数的假 policy：第 k 次推理返回 0.1 * k 的动作."""
+    """固定步数的假 policy：第 k 次推理返回 0.1 * k 的动作.
+
+    循环形状是"先提交 future、每个正常周期结束后预取下一个"（与 hold 模式循环一致），
+    因此 ``done()`` 在第 ``steps`` 个动作被消费、下一次推理已提交后才为真；最后一次
+    预取的结果不会被 step 消费（与真实 policy 的预取语义一致）。
+    """
 
     def __init__(self, steps: int = 3, *, tele_config_list: Any = None) -> None:
         self.steps = int(steps)
@@ -109,7 +114,7 @@ class FakePolicy:
         self.seen_obs = []
 
     def done(self) -> bool:
-        return self.infer_count >= self.steps
+        return self.infer_count > self.steps
 
     def infer_async(self, obs: dict) -> FakeFuture:
         self.seen_obs.append(np.array(obs["qpos"], copy = True))
@@ -119,28 +124,45 @@ class FakePolicy:
 
 
 class FakeEnv:
-    """按参考配对语义返回 ``(step 之后的 obs, info)`` 的假 runtime."""
+    """按参考配对语义返回 ``(step 之后的 obs, info)`` 的假 runtime.
+
+    ``hold_cycles`` 里的序号（1 起）模拟 ``on_wait_failure="hold"`` 的软失败周期：
+    ``wait_for_step()`` 返回 ``False``；``step(None)`` 派发空动作（``hold_steps``
+    计数）并复用上一次成功周期的 obs（``make_obs`` 不再前进）。
+    """
 
     def __init__(
         self,
         *,
         fail_after: Optional[int] = None,
         raise_after: Optional[int] = None,
+        hold_cycles: Sequence[int] = (),
         base_time: float = 10.0,
     ) -> None:
         self.action_dim = ACTION_DIM
         self.fault = None
+        self.cycle_index = 0
+        self.hold_count = 0
+        self.last_wait_failure = None
+        self.hold_steps = 0
         self._fail_after = fail_after
         self._raise_after = raise_after
+        self._hold_cycles = {int(index) for index in hold_cycles}
         self._base_time = base_time
         self._step = 0
+        self._last_obs = make_obs(0)
         self.resets = 0
         self.stopped = False
         self.stop_calls = 0
 
     def reset(self) -> dict:
         self._step = 0
+        self.cycle_index = 0
+        self.hold_count = 0
+        self.last_wait_failure = None
+        self.hold_steps = 0
         self.stopped = False
+        self._last_obs = make_obs(0)
         self.resets += 1
         return make_obs(0)
 
@@ -152,18 +174,47 @@ class FakeEnv:
         self.stopped = True
         self.stop_calls += 1
 
-    def wait_for_step(self, future: FakeFuture) -> None:
+    def wait_for_step(self, future: FakeFuture) -> bool:
         self._step += 1
+        self.cycle_index = self._step
         if self._raise_after is not None and self._step == self._raise_after:
             raise RuntimeError("wait_for_step failed")
+        if self._step in self._hold_cycles:
+            self.hold_count += 1
+            self.last_wait_failure = SimpleNamespace(
+                reason = "policy_inference_timeout",
+                message = "policy did not finish in time",
+                consecutive = self.hold_count,
+                cycle_index = self._step,
+            )
+            return False
+        self.hold_count = 0
+        self.last_wait_failure = None
+        return True
 
-    def step(self, action: np.ndarray) -> tuple[dict, dict]:
+    def step(self, action: Optional[np.ndarray]) -> tuple[dict, dict]:
+        if action is None:
+            # hold 周期：不推进 obs（runtime 复用上一次成功周期缓存的观测）
+            self.hold_steps += 1
+            failure = self.last_wait_failure
+            return self._last_obs, {
+                "cycle": {"index": self._step},
+                "hold": {
+                    "reason": None if failure is None else failure.reason,
+                    "message": None if failure is None else failure.message,
+                    "consecutive": self.hold_count,
+                    "cycle_index": self._step,
+                    "validation_skipped": True,
+                    "controllers": {},
+                },
+            }
         if self._fail_after is not None and self._step >= self._fail_after:
             self.fault = SimpleNamespace(
                 kind = "policy_inference_timeout",
                 message = "policy did not finish in time",
             )
-        return make_obs(self._step), make_info(self._step, base_time = self._base_time)
+        self._last_obs = make_obs(self._step)
+        return self._last_obs, make_info(self._step, base_time = self._base_time)
 
 
 @dataclass

@@ -66,6 +66,21 @@ class RosControllerAdapter(ABC):
         """快速校验上一条真正发送过的命令（默认 OK；reset 后第一次为 None）."""
         return ControllerCheck.ok()
 
+    def null_action(self, states: StateView, ctx: CommandContext) -> Any | None:
+        """
+        "空动作"：软失败（hold）周期要发给本子系统的命令（默认 None = 不发布）.
+
+        policy 推理超时或状态不新鲜时，runtime 不会执行策略动作，而是调用这里：
+
+        - 返回消息 → controller 直接 publish（例如手臂"保持当前位置"、底盘零速 Twist）；
+        - 返回 None → 本周期不发任何命令（控制节点按自己的插值 / 保持策略继续）。
+
+        ``ctx`` 仍然带 runtime 分配的 ``command_id`` / 最新 ``control_epoch``；
+        ``states`` 是软失败边界上的最后已知状态（可能已经不新鲜，仍可用于"保持当前位置"）。
+        本路径不会 latch fault，实现里做轻量处理即可。
+        """
+        return None
+
     def open(self) -> None:
         """创建 Adapter 需要的额外资源（默认空操作）."""
 

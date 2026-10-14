@@ -27,6 +27,7 @@ from robot_env_runtime.core.errors import (
     ControllerPreflightError,
     InvalidTransitionError,
     ObservationError,
+    PolicyInferenceTimeoutError,
     RequiredStateMissingError,
     RequiredStateStaleError,
     ResetParameterError,
@@ -34,6 +35,7 @@ from robot_env_runtime.core.errors import (
     RuntimeClosedError,
     RuntimeFaultedError,
     RuntimeStoppedError,
+    StepOverrunError,
 )
 from robot_env_runtime.core.observations import ObservationManager
 from robot_env_runtime.core.safety import FaultLatch
@@ -45,11 +47,15 @@ from robot_env_runtime.core.types import (
     ControllerCheck,
     CycleState,
     ExecutorHost,
+    HoldReason,
     InferenceFuture,
+    NullActionReport,
+    NullActionStatus,
     ResetContext,
     RuntimeFault,
     RuntimeSettings,
     ServiceCaller,
+    WaitFailure,
 )
 
 
@@ -95,6 +101,12 @@ class RobotEnv:
         self._validation_checks: dict[str, ControllerCheck] = {}
         self._dispatch_checks: dict[str, ControllerCheck] = {}
         self._observation_info: dict[str, Any] = {}
+        self._soft_failed = False
+        self._hold_count = 0
+        self._last_wait_failure: WaitFailure | None = None
+        self._validation_skipped = False
+        self._hold_reports: dict[str, NullActionReport] = {}
+        self._last_observations: dict[str, Any] = {}
         self._open_resources()
 
     # -- 构造 --------------------------------------------------------------
@@ -188,6 +200,16 @@ class RobotEnv:
         return self._faults.fault
 
     @property
+    def last_wait_failure(self) -> WaitFailure | None:
+        """返回最近一次 ``wait_for_step()`` 软失败的描述（没有失败过时为 None）."""
+        return self._last_wait_failure
+
+    @property
+    def hold_count(self) -> int:
+        """返回当前连续软失败次数（成功周期或 reset 后清零）."""
+        return self._hold_count
+
+    @property
     def description(self) -> str:
         """返回 runtime 描述（用于日志）."""
         return self._description
@@ -209,6 +231,11 @@ class RobotEnv:
         self._validation_checks = {}
         self._dispatch_checks = {}
         self._observation_info = {}
+        self._soft_failed = False
+        self._hold_count = 0
+        self._last_wait_failure = None
+        self._validation_skipped = False
+        self._hold_reports = {}
         self._snapshot = None
         self._scheduler.reset()
         try:
@@ -244,6 +271,7 @@ class RobotEnv:
             raise
         self._snapshot = snapshot
         self._observation_info = observation_info
+        self._last_observations = observations
         self._state = CycleState.WAIT_REQUIRED
         self._log_info(
             f"reset completed: observations={list(observations)} "
@@ -273,8 +301,15 @@ class RobotEnv:
             )
         self._scheduler.start()
 
-    def wait_for_step(self, future: InferenceFuture) -> None:
-        """结束上一控制区间：等待绝对 deadline + 周期边界校验."""
+    def wait_for_step(self, future: InferenceFuture) -> bool:
+        """
+        结束上一控制区间：等待绝对 deadline + 周期边界校验.
+
+        返回 ``True`` 表示边界正常（调用方接着 ``step(action)``）；返回 ``False`` 表示
+        **软失败**（仅 ``runtime.on_wait_failure="hold"`` 时出现：policy 推理超时 /
+        required 状态缺失或过期 / 可选的 step overrun），此时调用方必须改调
+        ``step(None)`` 让各 controller 派发自己的空动作，并继续等待同一个 future。
+        """
         self._raise_if_unusable()
         if not self._scheduler.started:
             raise InvalidTransitionError("reset() must be called before wait_for_step()")
@@ -297,15 +332,27 @@ class RobotEnv:
                 self._settings.control_period,
             )
         except Exception as exc:
+            reason = self._hold_reason(exc)
+            if reason is not None and self._soft_fail(exc, reason):
+                return False
             self._fail(exc, cycle_index=self._scheduler.cycle_index)
             raise
+        self._soft_failed = False
+        self._hold_count = 0
+        self._validation_skipped = False
         self._snapshot = snapshot
         self._validation_checks = checks
         self._scheduler.advance()
         self._state = CycleState.READY_FOR_STEP
+        return True
 
     def step(self, action: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-        """派发一个控制区间的命令，并用 boundary snapshot 构造 observation."""
+        """
+        派发一个控制区间的命令，并用 boundary snapshot 构造 observation.
+
+        ``action=None`` 只在软失败（hold）周期合法：本周期不执行策略动作，而是让各
+        controller 派发 adapter 定义的空动作；observation 复用上一次成功周期的结果。
+        """
         self._raise_if_unusable()
         if not self._scheduler.started:
             raise InvalidTransitionError("reset() must be called before step()")
@@ -313,6 +360,18 @@ class RobotEnv:
             raise InvalidTransitionError(
                 "step() called while WAIT_REQUIRED; call wait_for_step() first"
             )
+        if self._soft_failed and action is not None:
+            raise InvalidTransitionError(
+                "step(action) is not allowed on a hold cycle: wait_for_step() returned "
+                "False, call step(None) instead"
+            )
+        if not self._soft_failed and action is None:
+            raise InvalidTransitionError(
+                "step(None) is only allowed on a hold cycle (wait_for_step() returned "
+                "False); pass the policy action otherwise"
+            )
+        if self._soft_failed:
+            return self._step_hold()
         snapshot = self._snapshot
         if snapshot is None:  # pragma: no cover - 状态机保证不会发生
             raise InvalidTransitionError("no boundary snapshot captured")
@@ -339,6 +398,7 @@ class RobotEnv:
             raise
         self._dispatch_checks = dict(result.checks)
         self._observation_info = observation_info
+        self._last_observations = observations
         self._state = CycleState.WAIT_REQUIRED
         return observations, self._build_info(result)
 
@@ -439,6 +499,94 @@ class RobotEnv:
                 controller.stop(snapshot)
             except Exception as exc:
                 self._log_warn(f"controller {name!r} stop failed: {exc}")
+
+    # -- 内部：hold（软失败）模式 ------------------------------------------
+
+    def _hold_reason(self, exc: Exception) -> str | None:
+        """判断异常在 hold 模式下是否属于软失败（返回原因字符串，否则 None）."""
+        if self._settings.on_wait_failure != "hold":
+            return None
+        if isinstance(exc, PolicyInferenceTimeoutError):
+            return HoldReason.POLICY_INFERENCE_TIMEOUT.value
+        if isinstance(exc, RequiredStateMissingError):
+            return HoldReason.STATE_MISSING.value
+        if isinstance(exc, RequiredStateStaleError):
+            return HoldReason.STATE_STALE.value
+        if isinstance(exc, StepOverrunError) and self._settings.hold_on_step_overrun:
+            return HoldReason.STEP_OVERRUN.value
+        return None
+
+    def _soft_fail(self, exc: Exception, reason: str) -> bool:
+        """
+        Hold 模式下的软失败处理（不 latch fault、不抛错）.
+
+        返回 True 表示本周期已按软失败处理（调用方应把 False 返回给上层）；返回 False
+        表示连续软失败达到 ``hold_limit``，调用方应改走正常 fault 路径。
+        """
+        self._hold_count += 1
+        limit = self._settings.hold_limit
+        if self._hold_count >= limit:
+            self._merge_details(
+                exc,
+                {"reason": reason, "consecutive": self._hold_count, "hold_limit": limit},
+            )
+            self._log_warn(
+                f"hold 模式连续软失败达到上限 {limit}（{reason}），改为按故障处理: {exc}"
+            )
+            return False
+        skipped = 0
+        if reason == HoldReason.STEP_OVERRUN.value:
+            # deadline 网格已落后于现实：跳过被错过的整周期，保持绝对对齐
+            skipped = self._scheduler.advance_to_next(self._clock.now())
+        else:
+            self._scheduler.advance()
+        self._soft_failed = True
+        self._validation_skipped = True
+        self._validation_checks = {}
+        self._snapshot = self._state_store.capture()
+        self._last_wait_failure = WaitFailure(
+            reason=reason,
+            message=str(exc),
+            consecutive=self._hold_count,
+            cycle_index=self._scheduler.cycle_index,
+        )
+        self._state = CycleState.READY_FOR_STEP
+        skipped_text = f"，跳过 {skipped} 个已错过周期" if skipped else ""
+        self._log_warn(
+            f"hold 模式软失败（{reason}，连续 {self._hold_count}/{limit}{skipped_text}），"
+            f"本周期派发空动作: {exc}"
+        )
+        return True
+
+    def _step_hold(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        """
+        软失败周期：派发各 controller 的空动作，并复用上一次成功周期的 observation.
+
+        本路径绝不 latch fault：空动作派发的失败只写进 info 诊断。
+        """
+        snapshot = self._snapshot
+        if snapshot is None:  # pragma: no cover - 软失败一定先捕获过快照
+            snapshot = self._state_store.capture()
+        reports = self._dispatcher.dispatch_null(
+            snapshot,
+            self._scheduler.cycle_index,
+            self._settings.control_period,
+        )
+        for name, report in reports.items():
+            if report.record is not None:
+                # 让下一次边界的 validate 以"保持命令"为基准
+                self._records[name] = report.record
+        self._hold_reports = dict(reports)
+        self._soft_failed = False
+        self._state = CycleState.WAIT_REQUIRED
+        return dict(self._last_observations), self._build_hold_info(reports)
+
+    @staticmethod
+    def _merge_details(exc: BaseException, extra: Mapping[str, Any]) -> None:
+        """把额外信息并入异常的 details（用于 fault / 日志诊断）."""
+        details = getattr(exc, "details", None)
+        if isinstance(details, dict):
+            details.update(extra)
 
     # -- 内部：reset 辅助 --------------------------------------------------
 
@@ -629,31 +777,9 @@ class RobotEnv:
 
     def _build_info(self, result: DispatchResult) -> dict[str, Any]:
         """构造 step() 返回的诊断 info（只含纯 Python / NumPy 数据）."""
-        snapshot = self._snapshot
-        states: dict[str, Any] = {}
-        if snapshot is not None:
-            for name in snapshot.names():
-                sample = snapshot.sample(name)
-                if sample is None:  # pragma: no cover - names() 来自 samples
-                    continue
-                states[name] = {
-                    "age": snapshot.age(name),
-                    "sequence": sample.sequence,
-                    "received_at": sample.received_at,
-                    "ready_at": sample.ready_at,
-                    "source_stamp": sample.source_stamp,
-                    "decode_sec": max(0.0, sample.ready_at - sample.received_at),
-                }
         return {
-            "cycle": {
-                "index": self._scheduler.cycle_index,
-                "control_period": self._settings.control_period,
-                "deadline": self._scheduler.deadline,
-                "lateness": self._scheduler.lateness(),
-                "snapshot_captured_at": None if snapshot is None else snapshot.captured_at,
-                "cycle_state": self._state.value,
-            },
-            "states": states,
+            "cycle": self._cycle_info(self._snapshot),
+            "states": self._states_info(self._snapshot),
             "observations": dict(self._observation_info),
             "controllers": {
                 "validation": {
@@ -670,7 +796,70 @@ class RobotEnv:
             },
             "warnings": list(result.warnings),
             "fault": None,
+            "hold": None,
         }
+
+    def _build_hold_info(self, reports: Mapping[str, NullActionReport]) -> dict[str, Any]:
+        """构造软失败周期的诊断 info（形状与 ``_build_info`` 一致，``hold`` 段非空）."""
+        failure = self._last_wait_failure
+        null_actions = {name: report.as_dict() for name, report in reports.items()}
+        warnings = [
+            f"controller {name!r} null action {report.status.value}: {report.message}"
+            for name, report in reports.items()
+            if report.status is not NullActionStatus.PUBLISHED
+        ]
+        return {
+            "cycle": self._cycle_info(self._snapshot),
+            "states": self._states_info(self._snapshot),
+            "observations": {},
+            "controllers": {
+                "validation": {},
+                "preflight": {},
+                "commands": {},
+                "null_actions": null_actions,
+            },
+            "warnings": warnings,
+            "fault": None,
+            "hold": {
+                "reason": None if failure is None else failure.reason,
+                "message": None if failure is None else failure.message,
+                "consecutive": self._hold_count,
+                "cycle_index": self._scheduler.cycle_index,
+                "validation_skipped": self._validation_skipped,
+                "observations_reused": True,
+                "controllers": null_actions,
+            },
+        }
+
+    def _cycle_info(self, snapshot: StateSnapshot | None) -> dict[str, Any]:
+        """构造 info 的 ``cycle`` 段."""
+        return {
+            "index": self._scheduler.cycle_index,
+            "control_period": self._settings.control_period,
+            "deadline": self._scheduler.deadline,
+            "lateness": self._scheduler.lateness(),
+            "snapshot_captured_at": None if snapshot is None else snapshot.captured_at,
+            "cycle_state": self._state.value,
+        }
+
+    def _states_info(self, snapshot: StateSnapshot | None) -> dict[str, Any]:
+        """构造 info 的 ``states`` 段（各 source 的 age / 时间戳 / 解码耗时）."""
+        states: dict[str, Any] = {}
+        if snapshot is None:
+            return states
+        for name in snapshot.names():
+            sample = snapshot.sample(name)
+            if sample is None:  # pragma: no cover - names() 来自 samples
+                continue
+            states[name] = {
+                "age": snapshot.age(name),
+                "sequence": sample.sequence,
+                "received_at": sample.received_at,
+                "ready_at": sample.ready_at,
+                "source_stamp": sample.source_stamp,
+                "decode_sec": max(0.0, sample.ready_at - sample.received_at),
+            }
+        return states
 
     def _require_future(self, future: Any) -> None:
         """校验 future 至少实现 ``done()``."""

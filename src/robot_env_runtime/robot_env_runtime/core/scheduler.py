@@ -121,3 +121,20 @@ class CycleScheduler:
             raise InvalidTransitionError("scheduler has not started")
         self._cycle_index += 1
         self._deadline += self._period
+
+    def advance_to_next(self, now: float) -> int:
+        """
+        跳过已经错过的 boundary，直到下一个仍在未来的绝对 deadline（返回跳过数）.
+
+        只用于 hold 模式下的 step overrun 软失败：此时 deadline 网格已经落后于现实，
+        逐个周期推进会让每个后续周期立刻再次超时；跳过整周期既恢复可用性，又保持
+        ``deadline_n = deadline_0 + n * period`` 的绝对对齐（不产生漂移）。
+        """
+        if not self._started or self._deadline is None:
+            raise InvalidTransitionError("scheduler has not started")
+        skipped = 0
+        while self._deadline <= now:
+            self._cycle_index += 1
+            self._deadline += self._period
+            skipped += 1
+        return skipped

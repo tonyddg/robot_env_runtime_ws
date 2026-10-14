@@ -21,6 +21,8 @@ from robot_env_runtime.core.types import (
     CommandContext,
     CommandRecord,
     ControllerCheck,
+    NullActionReport,
+    NullActionStatus,
     PreparedCommand,
 )
 from robot_env_runtime.extension.controller import Controller
@@ -297,6 +299,86 @@ class RosPublisherController(Controller):
         states = StateView(snapshot, self._state_inputs)
         ctx = CommandContext(cycle_index=-1, control_period=self._control_period)
         return self._protocol.preflight(self._name, states, ctx)
+
+    def send_null_action(
+        self,
+        snapshot: StateSnapshot | None = None,
+        cycle_index: int = -1,
+        control_period: float = 0.0,
+    ) -> NullActionReport:
+        """
+        软失败（hold）周期：派发 adapter 定义的"空动作"（保持 / 零速 / 不发布）.
+
+        刻意**不执行 prepare/preflight 门禁**：本周期已经处于降级状态（policy 超时或
+        状态不新鲜），因此任何失败都只记录在返回的报告里，绝不 latch fault。
+        """
+        period = self._control_period if control_period == 0.0 else control_period
+        states = self._view(snapshot)
+        try:
+            context = self._protocol.allocate_context(
+                self._name, cycle_index, period, states
+            )
+        except Exception as exc:
+            return NullActionReport(
+                controller=self._name,
+                status=NullActionStatus.FAILED,
+                message=f"allocate_context failed: {exc}",
+            )
+        try:
+            message = self._adapter.null_action(states, context)
+        except Exception as exc:
+            return NullActionReport(
+                controller=self._name,
+                status=NullActionStatus.FAILED,
+                message=f"adapter.null_action() failed: {exc}",
+            )
+        if message is None:
+            return NullActionReport(
+                controller=self._name,
+                status=NullActionStatus.SKIPPED,
+                message="adapter returned no null action (no command published)",
+            )
+        if self._publisher is None:
+            return NullActionReport(
+                controller=self._name,
+                status=NullActionStatus.FAILED,
+                message=f"publisher for {self._topic!r} is not open",
+            )
+        try:
+            self._publisher.publish(message)
+        except Exception as exc:
+            return NullActionReport(
+                controller=self._name,
+                status=NullActionStatus.FAILED,
+                message=f"failed to publish null action on {self._topic!r}: {exc}",
+            )
+        record = CommandRecord(
+            controller=self._name,
+            action=np.zeros(self._adapter.input_dim, dtype=np.float64),
+            payload=message,
+            ctx=context,
+            sent_at=self._clock.now(),
+            cycle_index=context.cycle_index,
+            metadata={
+                "topic": self._topic,
+                "message_type": type(message).__name__,
+                "subscribers": self._subscriber_count(),
+                "null_action": True,
+            },
+        )
+        self._last_record = record
+        hook_error: str | None = None
+        try:
+            self._adapter.on_sent(record)
+        except Exception as exc:
+            hook_error = f"{type(exc).__name__}: {exc}"
+        return NullActionReport(
+            controller=self._name,
+            status=NullActionStatus.PUBLISHED,
+            message=f"null action dispatched on {self._topic}",
+            record=record,
+            hook_error=hook_error,
+        )
 
     def close(self) -> None:
         """销毁 publisher 并关闭 protocol / adapter（幂等）."""

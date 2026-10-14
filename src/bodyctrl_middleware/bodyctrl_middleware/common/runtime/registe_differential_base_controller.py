@@ -58,6 +58,10 @@ class DifferentialBaseVelocityAdapter(RosControllerAdapter):
         """返回零速度 Twist（由 RosPublisherController publish）."""
         return Twist()
 
+    def null_action(self, states: StateView, ctx: CommandContext) -> Twist:
+        """hold 模式空动作：零速度 Twist（速度型底盘不能靠"不发布"停车）."""
+        return Twist()
+
 def registe_differential_base_controller(
     robot_plugin: RobotPlugin,
     config: Optional[DifferentialBaseVelocityAdapterConfig] = None,

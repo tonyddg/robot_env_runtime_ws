@@ -18,7 +18,13 @@ from robot_env_runtime.core.errors import (
     RobotRuntimeError,
 )
 from robot_env_runtime.core.snapshot import StateSnapshot
-from robot_env_runtime.core.types import CommandRecord, ControllerCheck, PreparedCommand
+from robot_env_runtime.core.types import (
+    CommandRecord,
+    ControllerCheck,
+    NullActionReport,
+    NullActionStatus,
+    PreparedCommand,
+)
 
 if TYPE_CHECKING:
     from robot_env_runtime.extension.controller import Controller
@@ -206,6 +212,32 @@ class Dispatcher:
         return DispatchResult(records=records, checks=checks, warnings=warnings)
 
     # -- 内部阶段 ----------------------------------------------------------
+
+    def dispatch_null(
+        self,
+        snapshot: StateSnapshot,
+        cycle_index: int,
+        control_period: float,
+    ) -> dict[str, NullActionReport]:
+        """
+        软失败（hold）周期的空动作派发.
+
+        与 :meth:`dispatch` 不同：不做 prepare/preflight 门禁、不抛错、不 latch fault，
+        每个 controller 的结果以 :class:`NullActionReport` 形式返回给调用方。
+        """
+        reports: dict[str, NullActionReport] = {}
+        for name, controller in self._controllers.items():
+            try:
+                reports[name] = controller.send_null_action(
+                    snapshot, cycle_index, control_period
+                )
+            except Exception as exc:
+                reports[name] = NullActionReport(
+                    controller=name,
+                    status=NullActionStatus.FAILED,
+                    message=f"send_null_action() raised: {exc}",
+                )
+        return reports
 
     def _prepare(
         self,

@@ -41,7 +41,10 @@ ConfirmFn = Callable[[str], Optional[bool]]
 ON_UNAVAILABLE_CHOICES = ("keep", "discard", "stop")
 
 # 循环耗时打点的阶段顺序
-_CYCLE_PHASES = ("infer", "wait", "action", "step", "write", "total")
+_CYCLE_PHASES = ("infer", "wait", "action", "step", "write", "hold", "total")
+
+# hold 周期的 cycle index 只保留前若干个（用于 episode attrs 诊断，避免无限增长）
+_MAX_SOFT_FAIL_CYCLES = 64
 
 # slack / post 的合理性上限（ms）：超过说明 info 里的时间戳与循环时钟不同源
 # （例如测试注入的 FakeClock），此时不打印这两个字段，避免误导
@@ -56,11 +59,12 @@ class CycleTiming:
     median / max 汇总，用于定位 ``wait_for_step()`` 迟到（StepOverrunError）
     到底是哪一段吃掉了控制周期：
 
-    - ``infer``：``policy.infer_async()`` 提交耗时；
+    - ``infer``：``policy.infer_async()`` 提交耗时（为**下一个**周期启动推理）；
     - ``wait``：``env.wait_for_step()`` 阻塞耗时（等 deadline + 抓状态 + 校验）；
     - ``action``：``future.get_action()``；
     - ``step``：``env.step()`` 派发命令 + 构建 observation；
     - ``write``：``writer.append()``（异步模式下主要是快照拷贝）；
+    - ``hold``：软失败（hold）周期里 ``env.step(None)`` 派发空动作的耗时；
     - ``total``：一个循环体总共花了多少（与 ``period`` 对比）；
     - ``slack``：进入 ``wait_for_step`` 时距 deadline 还剩多少 ms（负数 = 已经
       迟到，正是 ``StepOverrunError`` 的判据）；
@@ -314,8 +318,13 @@ def collect_once(
     是旧的边攒边写行为（长 episode / 内存受限时使用）。
 
     ``debug_timing=True`` 时每个 cycle 打印一行各阶段耗时（infer / wait /
-    action / step / write / total，另附 ``slack`` 与 ``post``），并在 episode 结束时
-    打印 median / max 汇总；没有 logger 时直接打印到 stdout。
+    action / step / write / hold / total，另附 ``slack`` 与 ``post``），并在
+    episode 结束时打印 median / max 汇总；没有 logger 时直接打印到 stdout。
+
+    runtime 打开 ``on_wait_failure="hold"`` 时，``wait_for_step()`` 会以返回值
+    报告软失败（policy 超时 / 状态不新鲜）：这类周期调用 ``env.step(None)`` 派发
+    adapter 空动作，**不写入数据行**（保持 (obs, action) 配对语义），只在 episode
+    attrs 里累计 ``soft_fail_count`` 与 ``soft_fail_cycle_indexes``。
 
     进入控制循环之前会调用 ``env.rebase_cycle_deadline()``（若 runtime 支持）重锚
     第一个周期的 deadline，把 reset 尾部与 setup 打点的开销排除在第一个周期之外。
@@ -358,6 +367,8 @@ def collect_once(
     # pending_padding = True
     first_obs = None
     recorded_steps = 0
+    soft_fail_count = 0
+    soft_fail_cycles: list[int] = []
 
     try:
         _setup_start = time.perf_counter()
@@ -388,6 +399,7 @@ def collect_once(
             rebase_deadline()
 
         reached_max_steps = False
+        future = policy.infer_async(observations)
         while not policy.done() and env.ok():
             if max_steps > 0 and recorded_steps >= max_steps:
                 # 到点正常收尾（finalize 模式下 max_steps 就是内存上限的兜底）
@@ -395,10 +407,31 @@ def collect_once(
                 break
 
             _cycle_start = time.perf_counter()
-            future = policy.infer_async(observations)
-            _infer_done = time.perf_counter()
-            env.wait_for_step(future)
+            ready = env.wait_for_step(future)
             _wait_done = time.perf_counter()
+            if not ready:
+                # hold 周期：派发空动作、不落盘，并继续等待同一个 future
+                env.step(None)
+                _hold_done = time.perf_counter()
+                soft_fail_count += 1
+                if len(soft_fail_cycles) < _MAX_SOFT_FAIL_CYCLES:
+                    soft_fail_cycles.append(int(getattr(env, "cycle_index", 0)))
+                timing.record(
+                    getattr(env, "cycle_index", recorded_steps),
+                    {
+                        "wait": _wait_done - _cycle_start,
+                        "hold": _hold_done - _wait_done,
+                        "total": _hold_done - _cycle_start,
+                    },
+                    info = _hold_info(env),
+                    wait_entered_at = _cycle_start,
+                    wait_returned_at = _wait_done,
+                )
+                _info_throttled(
+                    env,
+                    f"episode {episode_index} hold 周期累计 {soft_fail_count} 次",
+                )
+                continue
             action = np.array(future.get_action(), copy = True)
             _action_done = time.perf_counter()
             observations, info = env.step(action)
@@ -418,18 +451,22 @@ def collect_once(
             _use_time = time.perf_counter() - _start_time
             _write_done = time.perf_counter()
 
+            # 为下一周期启动推理（infer 耗时记在本周期末尾）
+            future = policy.infer_async(observations)
+            _infer_done = time.perf_counter()
+
             timing.record(
                 (info.get("cycle") or {}).get("index", recorded_steps),
                 {
-                    "infer": _infer_done - _cycle_start,
-                    "wait": _wait_done - _infer_done,
+                    "wait": _wait_done - _cycle_start,
                     "action": _action_done - _wait_done,
                     "step": _step_done - _action_done,
                     "write": _write_done - _step_done,
-                    "total": _write_done - _cycle_start,
+                    "infer": _infer_done - _write_done,
+                    "total": _infer_done - _cycle_start,
                 },
                 info = info,
-                wait_entered_at = _infer_done,
+                wait_entered_at = _cycle_start,
                 wait_returned_at = _wait_done,
             )
             _info_throttled(
@@ -474,6 +511,7 @@ def collect_once(
             writer, termination_reason, keep = False,
             fault_kind = fault_kind, fault_message = fault_message,
             exception_type = exception_type, exception_message = exception_message,
+            extra_attrs = _soft_fail_attrs(soft_fail_count, soft_fail_cycles),
             logger = logger,
         )
         return False
@@ -496,6 +534,7 @@ def collect_once(
             writer, termination_reason, keep = False,
             fault_kind = fault_kind, fault_message = fault_message,
             exception_type = exception_type, exception_message = exception_message,
+            extra_attrs = _soft_fail_attrs(soft_fail_count, soft_fail_cycles),
             logger = logger,
         )
         return False
@@ -504,6 +543,7 @@ def collect_once(
         writer, termination_reason, keep = True,
         fault_kind = fault_kind, fault_message = fault_message,
         exception_type = exception_type, exception_message = exception_message,
+        extra_attrs = _soft_fail_attrs(soft_fail_count, soft_fail_cycles),
         logger = logger,
     ):
         return False
@@ -692,6 +732,25 @@ def _stop_env(env: Any, logger: Any) -> None:
 # -- 其它内部辅助 ----------------------------------------------------------
 
 
+def _hold_info(env: Any) -> dict:
+    """构造 hold 周期传给 CycleTiming 的最小 info（含 runtime 的软失败诊断）."""
+    failure = getattr(env, "last_wait_failure", None)
+    return {
+        "hold": {
+            "reason": None if failure is None else failure.reason,
+            "consecutive": int(getattr(env, "hold_count", 0)),
+        }
+    }
+
+
+def _soft_fail_attrs(count: int, cycles: list[int]) -> dict:
+    """hold 周期统计（写进 episode attrs，便于下游识别轨迹里的时间缺口）."""
+    return {
+        "soft_fail_count": int(count),
+        "soft_fail_cycle_indexes": list(cycles),
+    }
+
+
 def _finalize(
     writer: EpisodeH5Writer,
     termination_reason: str,
@@ -701,6 +760,7 @@ def _finalize(
     fault_message: Optional[str],
     exception_type: Optional[str],
     exception_message: Optional[str],
+    extra_attrs: Optional[Mapping[str, Any]] = None,
     logger: Any,
 ) -> bool:
     """收尾写文件；失败时明确记录并返回 False（不让采集循环直接崩掉）."""
@@ -712,6 +772,7 @@ def _finalize(
             fault_message = fault_message,
             exception_type = exception_type,
             exception_message = exception_message,
+            extra_attrs = extra_attrs,
         )
     except Exception as exc:
         _log(

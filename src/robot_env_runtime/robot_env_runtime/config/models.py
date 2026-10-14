@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from robot_env_runtime.core.types import RuntimeSettings
@@ -18,6 +20,9 @@ class RuntimeSettingsModel(BaseModel):
     observation_poll_period: float = Field(default=0.02, gt=0.0)
     observation_warn_after: float | None = Field(default=None, gt=0.0)
     observation_error_after: float | None = Field(default=None, gt=0.0)
+    on_wait_failure: Literal["fault", "hold"] = Field(default="fault")
+    hold_limit: int = Field(default=10, ge=1)
+    hold_on_step_overrun: bool = Field(default=False)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -41,6 +46,9 @@ class RuntimeSettingsModel(BaseModel):
             observation_poll_period=self.observation_poll_period,
             observation_warn_after=self.observation_warn_after,
             observation_error_after=self.observation_error_after,
+            on_wait_failure=self.on_wait_failure,
+            hold_limit=self.hold_limit,
+            hold_on_step_overrun=self.hold_on_step_overrun,
         )
 
 

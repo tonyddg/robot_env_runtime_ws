@@ -105,7 +105,11 @@ class Config(BaseModel):
 
 
 def _run_tele_loop(env: RobotEnv, policy: Any, logger: Any, debug_timing: bool) -> None:
-    """不采集数据时的遥操循环（``debug_timing=True`` 时打印各阶段耗时）."""
+    """不采集数据时的遥操循环（``debug_timing=True`` 时打印各阶段耗时）.
+
+    hold 模式软失败（``wait_for_step()`` 返回 False）时不执行策略动作：本周期用
+    ``env.step(None)`` 派发空动作，并继续等待同一个 future（不重新推理）。
+    """
     timing = CycleTiming(logger, enabled = debug_timing, tag = "tele loop")
 
     _setup_start = time.perf_counter()
@@ -117,25 +121,45 @@ def _run_tele_loop(env: RobotEnv, policy: Any, logger: Any, debug_timing: bool) 
         policy_reset_sec = time.perf_counter() - _reset_done,
     )
 
+    future = policy.infer_async(observations)
     while not policy.done() and env.ok():
         _cycle_start = time.perf_counter()
+        ready = env.wait_for_step(future)
+        _wait_done = time.perf_counter()
+        if not ready:
+            # hold 周期：派发空动作，继续等待同一个 future
+            env.step(None)
+            _hold_done = time.perf_counter()
+            timing.record(
+                getattr(env, "cycle_index", 0),
+                {
+                    "wait": _wait_done - _cycle_start,
+                    "hold": _hold_done - _wait_done,
+                    "total": _hold_done - _cycle_start,
+                },
+                wait_entered_at = _cycle_start,
+                wait_returned_at = _wait_done,
+            )
+            continue
+
+        action = future.get_action()
+        _action_done = time.perf_counter()
+        observations, info = env.step(action)
+        _step_done = time.perf_counter()
         future = policy.infer_async(observations)
         _infer_done = time.perf_counter()
-        env.wait_for_step(future)
-        _wait_done = time.perf_counter()
-        observations, info = env.step(future.get_action())
-        _step_done = time.perf_counter()
 
         timing.record(
             (info.get("cycle") or {}).get("index", 0),
             {
-                "infer": _infer_done - _cycle_start,
-                "wait": _wait_done - _infer_done,
-                "step": _step_done - _wait_done,
-                "total": _step_done - _cycle_start,
+                "wait": _wait_done - _cycle_start,
+                "action": _action_done - _wait_done,
+                "step": _step_done - _action_done,
+                "infer": _infer_done - _step_done,
+                "total": _infer_done - _cycle_start,
             },
             info = info,
-            wait_entered_at = _infer_done,
+            wait_entered_at = _cycle_start,
             wait_returned_at = _wait_done,
         )
 

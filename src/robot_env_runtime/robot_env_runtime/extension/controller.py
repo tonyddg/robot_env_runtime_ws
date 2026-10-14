@@ -10,7 +10,13 @@ from numpy.typing import NDArray
 
 from robot_env_runtime.core.snapshot import StateSnapshot
 from robot_env_runtime.core.state_view import StateInput
-from robot_env_runtime.core.types import CommandRecord, ControllerCheck, PreparedCommand
+from robot_env_runtime.core.types import (
+    CommandRecord,
+    ControllerCheck,
+    NullActionReport,
+    NullActionStatus,
+    PreparedCommand,
+)
 
 
 class Controller(ABC):
@@ -69,6 +75,24 @@ class Controller(ABC):
 
     def reset(self, snapshot: StateSnapshot | None = None) -> None:
         """Reset 生命周期钩子（默认空操作）."""
+
+    def send_null_action(
+        self,
+        snapshot: StateSnapshot | None = None,
+        cycle_index: int = -1,
+        control_period: float = 0.0,
+    ) -> NullActionReport:
+        """
+        软失败（hold）周期派发"空动作"（默认：什么都不发）.
+
+        与 prepare/preflight/send 不同，本路径刻意不 latch fault：任何失败都通过返回值
+        报告给 runtime 的诊断 info。
+        """
+        return NullActionReport(
+            controller=self.name,
+            status=NullActionStatus.SKIPPED,
+            message=f"controller {self.name!r} does not implement null actions",
+        )
 
     def check_reset_ready(self, snapshot: StateSnapshot) -> ControllerCheck:
         """

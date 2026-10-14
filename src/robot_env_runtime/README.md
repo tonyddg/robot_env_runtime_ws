@@ -106,8 +106,80 @@ deadline_n = deadline_0 + n * control_period
 两种错误刻意分开：`PolicyInferenceTimeoutError` 表示 **policy 没有按时完成**；
 `StepOverrunError` 表示 **调用 wait_for_step 时 runtime 已经错过 deadline**。
 
+（步骤 2 / 4 / 5 里的这几类错误在 `on_wait_failure="hold"` 时可能降级为软失败，
+见下面「软失败（hold）模式」小节。）
+
 `Clock` 可注入：生产用 `MonotonicClock`，测试用 `FakeClock`（timing 测试完全不依赖
 真实 `time.sleep()`）。
+
+### 软失败（hold）模式（`on_wait_failure="hold"`，默认关闭）
+
+严格模式（默认 `on_wait_failure="fault"`）下 `wait_for_step()` 一旦失败就 latch
+fault 并抛异常。hold 模式把"本周期拿不到可用动作"的下面几类情况降级为**软失败**：
+
+| 触发 | 异常 | `reason` |
+| --- | --- | --- |
+| policy 未在 deadline 前完成 | `PolicyInferenceTimeoutError` | `policy_inference_timeout` |
+| controller 依赖的 required state 缺失 | `RequiredStateMissingError` | `state_missing` |
+| controller 依赖的 required state 过期 | `RequiredStateStaleError` | `state_stale` |
+| 进入 wait 时已明显错过 deadline（仅 `hold_on_step_overrun=true`） | `StepOverrunError` | `step_overrun` |
+
+软失败时 `wait_for_step()` **不抛错、不 latch fault**，而是返回 `False`：本周期
+不执行策略动作，改由各 controller 的 adapter 派发自己定义的**空动作**（保持 /
+零速 / 不发布）。`validate` 跳过（`validation_skipped=True`），snapshot 与
+cycle / deadline 照常推进（无累计 drift），`env.ok()` 保持 `True`。
+
+```python
+future = policy.infer_async(observations)
+while not policy.done() and env.ok():
+    if not env.wait_for_step(future):        # False = 软失败（严格模式恒为 True）
+        env.step(None)                       # 派发 adapter 空动作；obs/info 可忽略
+        continue                             # 不重新 infer，继续等同一个 future
+    observations, info = env.step(future.get_action())
+    future = policy.infer_async(observations)
+```
+
+`step(None)` 的行为：
+
+* 逐个 controller 调 `RosControllerAdapter.null_action(states, ctx)`：返回消息则
+  直接 `publish`（记 `CommandRecord`，`metadata["null_action"]=True`），返回 `None`
+  表示本周期不发布；managed 仍分配新 `command_id` 并带最新 `control_epoch`；
+* **不重建 observation**：返回上一次成功周期缓存的 obs；
+* 不经过 prepare / preflight 门禁，空动作本身的失败只写诊断、不 fault；
+* 返回的 `info["hold"]` 记录 `reason / message / consecutive / cycle_index /
+  validation_skipped / controllers`（正常周期为 `None`）；`env.last_wait_failure`
+  给出最近一次 `WaitFailure`。
+
+连续软失败达到 `hold_limit`（默认 10）次时兜底：抛出本次 governing 异常并照常
+latch fault + best-effort stop（异常 `details` 带 `consecutive` / `hold_limit`）。
+executor 失败、`validate` ERROR、publish / partial dispatch、managed FAULTED、
+reset 失败、observation 过期等**不**在软失败范围内。
+
+空动作的"保持"语义由 adapter 负责：`None` 表示本周期不发布新命令（Control Node
+按自己的插值 / 保持策略继续）；需要显式零速 / 保持的子系统必须返回消息：
+
+```python
+class ArmAdapter(RosControllerAdapter):
+    def null_action(self, states, ctx):
+        return make_hold_target(states.value("arm"), ctx)   # 保持当前位置
+
+
+class BaseAdapter(RosControllerAdapter):
+    def null_action(self, states, ctx):
+        return Twist()                                      # 零速（等价 stop 命令）
+```
+
+Profile：
+
+```yaml
+runtime:
+  control_period: 0.1
+  on_wait_failure: hold         # fault（默认）| hold
+  hold_limit: 10                # 连续软失败达到该次数改为 fault（>= 1）
+  hold_on_step_overrun: false   # 是否把 StepOverrunError 也计入软失败
+```
+
+严格模式（默认）行为与不开 hold 时完全一致：首次失败即 latch fault + 抛异常。
 
 ---
 
@@ -167,9 +239,11 @@ info
 ├── controllers
 │   ├── validation dict[controller, dict]   上一个 cycle 边界对"上一条已发送命令"的检查
 │   ├── preflight  dict[controller, dict]   本次 dispatch 之前的准入检查
-│   └── commands   dict[controller, dict]   本次真正发送出去的命令
+│   ├── commands   dict[controller, dict]   本次真正发送出去的命令
+│   └── null_actions dict[controller, dict] 空动作报告（仅软失败周期出现）
 ├── warnings       list[str]                本次 dispatch 的 preflight WARNING 文本
-└── fault          None                     历史字段，恒为 None（见 5.2.8）
+├── fault          None                     历史字段，恒为 None（见 5.2.8）
+└── hold           dict | None              软失败周期诊断；正常周期恒为 None
 ```
 
 一次真实 cycle（managed controller + 一个观测，FakeClock 下的数值）：
@@ -481,6 +555,7 @@ runtime:
   overrun_tolerance: 0.01
   observation_warn_after: 0.2
   observation_error_after: 0.6
+  on_wait_failure: fault        # 可选；hold = 软失败模式（见 §3 同名小节）
 ```
 
 编译期会检查：unknown plugin / state / observation / controller / reset、重复名字、

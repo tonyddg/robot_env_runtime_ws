@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
+
+import pytest
+
 from bodyctrl_middleware.record import CycleTiming, collect_once
 from harness import FakeEnv, FakePolicy
 
@@ -144,3 +148,37 @@ def test_collect_once_rebases_cycle_clock_before_loop(tmp_path) -> None:
     setup_line = next(message for message in lines if "setup:" in message)
     assert "[ms]:" not in setup_line
     assert "padding_append=" in setup_line
+
+
+def test_collect_once_debug_timing_marks_hold_cycles(tmp_path) -> None:
+    """hold 周期打点带 hold= 阶段（只打一行），正常周期不带."""
+    logger = _Logger()
+    saved = collect_once(
+        FakeEnv(hold_cycles = (1,)), FakePolicy(steps = 2), 0, tmp_path,
+        debug_timing = True, logger = logger,
+    )
+    assert saved is True
+    lines = [m for m in logger.messages if "[ms]:" in m and "cycle " in m]
+    assert len(lines) == 3
+    assert lines[0].startswith("[cycle-timing] episode 0 cycle 1")
+    assert "hold=" in lines[0] and "wait=" in lines[0]
+    assert all("hold=" not in line for line in lines[1:])
+    assert any("summary n=3" in message for message in logger.messages)
+
+
+@pytest.mark.parametrize("module_name", ["wholebody_tele_node", "bimanual_tele_node"])
+def test_run_tele_loop_hold_shape(module_name: str) -> None:
+    """遥操循环在 hold 周期派发空动作并继续等同一个 future（不重新推理）."""
+    module = importlib.import_module(f"bodyctrl_middleware.tianyi.node.{module_name}")
+
+    logger = _Logger()
+    env = FakeEnv(hold_cycles = (1, 2))
+    policy = FakePolicy(steps = 2)
+    module._run_tele_loop(env, policy, logger, True)
+
+    assert env.hold_steps == 2
+    assert policy.infer_count == 3      # 2 个真实动作 + 1 次被丢弃的预取
+    lines = [m for m in logger.messages if "[ms]:" in m and "cycle " in m]
+    assert len(lines) == 4              # 2 个 hold 周期 + 2 个正常周期
+    assert sum("hold=" in line for line in lines) == 2
+    assert any("summary n=4" in message for message in logger.messages)

@@ -176,6 +176,9 @@ class RuntimeSettings:
     observation_poll_period: float = 0.02
     observation_warn_after: float | None = None
     observation_error_after: float | None = None
+    on_wait_failure: str = "fault"
+    hold_limit: int = 10
+    hold_on_step_overrun: bool = False
 
     def __post_init__(self) -> None:
         """校验数值合法性."""
@@ -191,6 +194,71 @@ class RuntimeSettings:
         error = self.observation_error_after
         if warn is not None and error is not None and warn > error:
             raise ConfigError("runtime.observation_warn_after must not exceed error_after")
+        if self.on_wait_failure not in ("fault", "hold"):
+            raise ConfigError(
+                "runtime.on_wait_failure must be 'fault' or 'hold', got "
+                f"{self.on_wait_failure!r}"
+            )
+        if int(self.hold_limit) < 1:
+            raise ConfigError("runtime.hold_limit must be >= 1")
+
+
+class HoldReason(str, Enum):
+    """软失败（hold）周期的原因."""
+
+    POLICY_INFERENCE_TIMEOUT = "policy_inference_timeout"
+    STATE_MISSING = "state_missing"
+    STATE_STALE = "state_stale"
+    STEP_OVERRUN = "step_overrun"
+
+
+class NullActionStatus(str, Enum):
+    """空动作派发结果."""
+
+    PUBLISHED = "published"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class WaitFailure:
+    """一次 ``wait_for_step()`` 软失败的描述（供日志 / info 使用）."""
+
+    reason: str
+    message: str
+    consecutive: int
+    cycle_index: int
+
+    def as_dict(self) -> dict[str, Any]:
+        """返回用于 info 的纯 Python 描述."""
+        return {
+            "reason": self.reason,
+            "message": self.message,
+            "consecutive": self.consecutive,
+            "cycle_index": self.cycle_index,
+        }
+
+
+@dataclass(frozen=True)
+class NullActionReport:
+    """一次 controller 空动作派发的结果（软失败周期，绝不 fault）."""
+
+    controller: str
+    status: NullActionStatus
+    message: str = ""
+    record: CommandRecord | None = None
+    hook_error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """返回用于 info 的纯 Python 描述."""
+        record = self.record
+        return {
+            "status": self.status.value,
+            "message": self.message,
+            "hook_error": self.hook_error,
+            "command_id": None if record is None else record.ctx.command_id,
+            "control_epoch": None if record is None else record.ctx.control_epoch,
+        }
 
 
 @dataclass(frozen=True)
