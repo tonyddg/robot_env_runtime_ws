@@ -74,9 +74,10 @@ class TianyiArmConfig(BaseModel):
         True, read_only = True, # 原始分辨率 640x480 reduce 为 320x240
         description = "是否使用 reduce 2 解码模式提高解码速度"
     )
+    # 采集时不调整尺寸
     image_color_obs_process: ImageProcessConfig = RosField(
         default_factory = lambda: ImageProcessConfig(
-            is_clip_image = True, # 裁剪 320x240 中心 224 x 224 的区域
+            is_clip_image = False, # 裁剪 320x240 中心 224 x 224 的区域
             clip_lx = 48, clip_rx = 272,
             clip_ly = 8, clip_ry = 232,
         )
@@ -90,12 +91,13 @@ class TianyiArmConfig(BaseModel):
         "depth", read_only = True,
         description = "深度图片观测名"
     )
+    # 注意, 默认 orbbec 的深度图与 RGB 对齐, 采集时不调整尺寸
     image_depth_obs_process: ImageProcessConfig = RosField(
         default_factory = lambda: ImageProcessConfig(
-            is_clip_image = True, # 裁剪 480x270 中心 256 x 256 的区域
+            is_clip_image = False, # 裁剪 480x270 中心 256 x 256 的区域
             clip_lx = 112, clip_rx = 368,
             clip_ly = 7, clip_ry = 263,
-            is_resize_image = True, # 缩小到 128x128
+            is_resize_image = False, # 缩小到 128x128
             resize_target_x = 128, resize_target_y = 128
         )
     )
@@ -272,7 +274,7 @@ def tianyi_arm(
         image_topic = config.image_depth_topic_name,
         image_dtype = "uint16", image_channel = 1, compress_decoder_type = "orbbec_compress_depth",
         is_compress_image = config.image_is_compress,
-        
+
         warn_after = config.warn_after,
         error_after = config.error_after,
 
