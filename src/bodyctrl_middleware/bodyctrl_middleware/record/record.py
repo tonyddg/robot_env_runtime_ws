@@ -377,20 +377,13 @@ def collect_once(
         policy.reset(observations)
         _policy_reset_done = time.perf_counter()
         first_obs = observations
-
-        _start_time = time.perf_counter()
         writer.append(
             first_obs, np.zeros(env.action_dim, dtype = np.float32), None, padding = True
         )
-        _use_time = time.perf_counter() - _start_time
 
         timing.log_setup(
             reset_sec = _reset_done - _setup_start,
             policy_reset_sec = _policy_reset_done - _reset_done,
-            padding_append_sec = _use_time,
-        )
-        _info_throttled(
-            env, f"episode {episode_index} 初次采集完成, 用时 {_use_time * 1000:.3f}ms"
         )
 
         # 预热与 setup 打点都不应计入第一个控制周期：进循环前重新锚定 deadline_0
@@ -437,18 +430,8 @@ def collect_once(
             observations, info = env.step(action)
             _step_done = time.perf_counter()
 
-            # if pending_padding:
-            #     # 配对语义要求第 0 行是首帧 obs + 零动作；这里才写是为了让 padding 行的
-            #     # dtype / shape 与第一条真实 action 完全一致。
-            #     writer.append(
-            #         first_obs, np.zeros_like(action), None, padding = True
-            #     )
-            #     pending_padding = False
-
-            _start_time = time.perf_counter()
             writer.append(observations, action, info)
             recorded_steps += 1
-            _use_time = time.perf_counter() - _start_time
             _write_done = time.perf_counter()
 
             # 为下一周期启动推理（infer 耗时记在本周期末尾）
@@ -468,9 +451,6 @@ def collect_once(
                 info = info,
                 wait_entered_at = _cycle_start,
                 wait_returned_at = _wait_done,
-            )
-            _info_throttled(
-                env, f"episode {episode_index} 采集 step 完成, 用时 {_use_time * 1000:.3f}ms"
             )
 
         if reached_max_steps:

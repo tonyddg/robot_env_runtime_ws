@@ -134,7 +134,8 @@ class TianyiArmConfig(BaseModel):
         description = "正运动学计算中获取的末端连杆名称"
     )
     fk_odom_state_name: str = RosField(
-        "", read_only = True,
+        # 使用默认的底盘状态名, 需要根据实际修改
+        "odom_state", read_only = True,
         description = "里程计 state 名称, 空字符串认为底盘固定"
     )
     fk_eef_pose_obs_name: str = RosField(
@@ -180,13 +181,14 @@ def tianyi_arm(
     tele_arm_qpos_obs_name = config.tele_arm_qpos_obs_name
     tele_state_name = tele_arm_qpos_obs_name + "_state"
 
-    # 调试日志统一包装（logger 为空时静默；用固定调用点避免 rclpy severity 限制）
-    log_fn = (
-        (lambda message: logger.info(message, throttle_duration_sec = 1.0))
-        if logger is not None
-        else None
-    )
-
+    # 调试日志统一包装（logger 为空时静默）
+    # make_log_fn = lambda: (lambda message: logger.info(message, throttle_duration_sec = 1.0)) if logger is not None else None
+    def make_log_fn():
+        if logger is None:
+            return None
+        else:
+            return lambda message: logger.info(message, throttle_duration_sec = 1.0) # type: ignore
+    
     arm_interpolate_controller_name = config.arm_controller_name
     tianyi_body_manual_reset_name = config.body_manual_reset_name
 
@@ -274,12 +276,12 @@ def tianyi_arm(
     robot = registe_image_obs(
         robot, color_config,
         image_obs_name = config.image_color_obs_name,
-        log_fn = log_fn
+        log_fn = make_log_fn()
     )
     robot = registe_image_obs(
         robot, depth_config,
         image_obs_name = config.image_depth_obs_name,
-        log_fn = log_fn
+        log_fn = make_log_fn()
     )
 
     # 末端位姿
@@ -305,7 +307,7 @@ def tianyi_arm(
         warn_after = config.warn_after,
         error_after = config.error_after,
 
-        log_fn = log_fn
+        log_fn = make_log_fn()
     )
 
     # 遥操终止信号
