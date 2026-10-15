@@ -3,7 +3,11 @@ tianyi_whole_tele:
     config.profile_path: "config/tianyi/wholebody_replay.yaml"
 
     config.arm.is_enable_tele: false
+
     config.arm.image_decode_mode: "async"
+    config.arm.image_is_compress: false
+    config.arm.image_depth_topic_name: "camera/depth/image_raw"
+    config.arm.image_color_topic_name: "camera/color/image_raw"
 
     config.record.enable: true
     config.record.ask_before_save: true
@@ -26,5 +30,5 @@ tianyi_whole_tele:
     config.policy.policy_type: replay
     config.policy.policy_kwargs: |-
       {
-        "episode_path": "/home/nvidia/robot_env_runtime_ws/output/trajectory_1791889197/episode_0000.h5py"
+        "episode_path": "/home/nvidia/robot_env_runtime_ws/output/trajectory_1792069251/episode_0003.h5py"
       }
