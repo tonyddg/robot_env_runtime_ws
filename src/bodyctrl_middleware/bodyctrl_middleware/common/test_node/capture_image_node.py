@@ -13,13 +13,31 @@ from bodyctrl_middleware.utility.pydantic_ros2_params import (
 )
 from bodyctrl_middleware.common.image_decode.registe_image_obs import (
     _msg_to_buffer, ImageStateAdapterConfig, _decode_to_image, 
-    RawImageStateAdapter, CompressedImageStateAdapter
+    RawImageStateAdapter, CompressedImageStateAdapter,
+    ImageProcessConfig
 )
 
 class Config(BaseModel):
-    config: ImageStateAdapterConfig = RosField(default_factory = lambda: ImageStateAdapterConfig())
+    config: ImageStateAdapterConfig = RosField(default_factory = lambda: ImageStateAdapterConfig(
+        # image_topic = "camera/depth/image_raw/compressedDepth",
+        # is_compress_image = True,
+
+        image_topic = "camera/depth/image_raw",
+        is_compress_image = False,
+
+        image_dtype = "uint16", image_channel = 1, compress_decoder_type = "orbbec_compress_depth",
+        decode_mode = "async",
+        
+        image_process_config = ImageProcessConfig(
+            is_clip_image = False, # 裁剪 480x270 中心 256 x 256 的区域
+            clip_lx = 112, clip_rx = 368,
+            clip_ly = 7, clip_ry = 263,
+            is_resize_image = False, # 缩小到 128x128
+            resize_target_x = 128, resize_target_y = 128
+        )
+    ))
     save_path: str = RosField(
-        "/ros2_ws/output/capture.png", read_only = True,
+        "/home/nvidia/robot_env_runtime_ws/output/capture.png", read_only = True,
         description = "捕获图片保存路径",
     )
 
@@ -61,6 +79,7 @@ def main():
             if node.receive_image is not None:
                 node.get_logger().info("捕获到图片进行保存")
                 cv2.imwrite(node.config.save_path, node.receive_image)
+                break
 
     except KeyboardInterrupt:
         node.get_logger().info("退出图片捕获")

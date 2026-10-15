@@ -262,7 +262,7 @@ class RawImageStateAdapter(RosStateAdapter):
             _use_time = time.perf_counter() - _start_time
             self.log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms, 原始图像尺寸 {raw_image.shape} 解码图像尺寸 {image.shape}")
 
-        return decode_image(msg)
+        return image
 
     def source_stamp(self, msg: CompressedImage) -> float | None:
         """返回 header.stamp（epoch 秒）."""
