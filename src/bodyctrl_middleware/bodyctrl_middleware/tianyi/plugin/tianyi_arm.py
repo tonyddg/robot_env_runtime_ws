@@ -64,7 +64,7 @@ class TianyiArmConfig(BaseModel):
     # 相机观测
     image_color_topic_name: str = RosField(
         "camera/color/image_raw/compressed", read_only = True,
-        description = "压缩 RGB 图片话题"
+        description = "RGB 图片话题"
     )
     image_color_obs_name: str = RosField(
         "color", read_only = True,
@@ -84,7 +84,7 @@ class TianyiArmConfig(BaseModel):
 
     image_depth_topic_name: str = RosField(
         "camera/depth/image_raw/compressedDepth", read_only = True,
-        description = "压缩深度图片话题"
+        description = "深度图片话题"
     )
     image_depth_obs_name: str = RosField(
         "depth", read_only = True,
@@ -100,6 +100,10 @@ class TianyiArmConfig(BaseModel):
         )
     )
 
+    image_is_compress: bool = RosField(
+        True, read_only = True,
+        description = "是否使用压缩图片话题"
+    )
     image_decode_mode: Literal["sync", "async", "cache"] = RosField(
        "cache", read_only = True, 
        description = "仅在使用 is_compress_image 为 True 时生效"
@@ -255,6 +259,7 @@ def tianyi_arm(
     color_config = ImageStateAdapterConfig(
         image_topic = config.image_color_topic_name,
         image_dtype = "uint8", image_channel = 3, 
+        is_compress_image = config.image_is_compress,
         compress_decoder_type = "normal_compress_color_reduce2" if config.image_color_reduce_decode else "normal_compress_color",
         
         warn_after = config.warn_after,
@@ -266,6 +271,7 @@ def tianyi_arm(
     depth_config = ImageStateAdapterConfig(
         image_topic = config.image_depth_topic_name,
         image_dtype = "uint16", image_channel = 1, compress_decoder_type = "orbbec_compress_depth",
+        is_compress_image = config.image_is_compress,
         
         warn_after = config.warn_after,
         error_after = config.error_after,
