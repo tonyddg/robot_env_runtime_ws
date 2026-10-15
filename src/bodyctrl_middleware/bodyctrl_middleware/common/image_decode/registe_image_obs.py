@@ -117,7 +117,11 @@ def _image_process(arr: np.ndarray, config: ImageProcessConfig, dtype: Any = Non
             # cv2.resize 对 (H, W, 1) 的单通道输入会丢掉通道维，补回来
             res = np.expand_dims(res, axis = -1)
 
-    return np.array(res, dtype = dtype)
+    if dtype is not None:
+        if res.dtype != dtype:
+            raise RuntimeError(f"生成图片 dtype {res.dtype} 与目标 dtype {dtype} 不符合")
+    # 避免复制
+    return np.array(res, copy = False)
 
 class ImageStateAdapterConfig(BaseModel):
     image_topic: str = RosField(
@@ -175,24 +179,39 @@ class ImageStateAdapterConfig(BaseModel):
 
         return self
 
-def _decode_to_image(config: ImageStateAdapterConfig, buffer: np.ndarray, fmt: str):
+def _decode_to_image(
+        config: ImageStateAdapterConfig, buffer: np.ndarray, fmt: str,
+        # 打印调试信息
+        log_fn: Optional[Callable[[str], None]] = None
+    ):
+    _start_time = time.perf_counter()
+
     image_dtype = np.dtype(config.image_dtype)
     raw_image = DECODER_DICT[config.compress_decoder_type](fmt, buffer)
     image = _image_process(raw_image, config.image_process_config, image_dtype)
+
+    if log_fn is not None:
+        _use_time = time.perf_counter() - _start_time
+        log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms, 原始图像尺寸 {raw_image.shape} 解码图像尺寸 {image.shape}")
+
     return image
 
 class CompressedImageStateAdapter(RosStateAdapter):
     def __init__(
         self,
         # 需要获取的关节 id 列表, 也即观测结果对应的元素代指的关节 id
-        config: ImageStateAdapterConfig
+        config: ImageStateAdapterConfig,
+
+        # 打印调试信息
+        log_fn: Optional[Callable[[str], None]] = None
     ):
         self.config = config
+        self.log_fn = log_fn
 
     def decode(self, msg: CompressedImage) -> np.ndarray:
         buffer = _msg_to_buffer(msg)
         fmt = (getattr(msg, "format", "") or "").lower()
-        return _decode_to_image(self.config, buffer, fmt)
+        return _decode_to_image(self.config, buffer, fmt, self.log_fn)
 
     def source_stamp(self, msg: CompressedImage) -> float | None:
         """返回 header.stamp（epoch 秒）."""
@@ -224,11 +243,25 @@ class RawImageStateAdapter(RosStateAdapter):
     def __init__(
         self,
         # 需要获取的关节 id 列表, 也即观测结果对应的元素代指的关节 id
-        config: ImageStateAdapterConfig
+        config: ImageStateAdapterConfig,
+
+        # 打印调试信息
+        log_fn: Optional[Callable[[str], None]] = None
     ):
         self.config = config
+        self.log_fn = log_fn
 
     def decode(self, msg: Image) -> np.ndarray:
+        _start_time = time.perf_counter()
+
+        image_dtype = np.dtype(self.config.image_dtype)
+        raw_image = decode_image(msg)
+        image = _image_process(raw_image, self.config.image_process_config, image_dtype)
+
+        if self.log_fn is not None:
+            _use_time = time.perf_counter() - _start_time
+            self.log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms, 原始图像尺寸 {raw_image.shape} 解码图像尺寸 {image.shape}")
+
         return decode_image(msg)
 
     def source_stamp(self, msg: CompressedImage) -> float | None:
@@ -254,15 +287,13 @@ def registe_image_obs(
         config = ImageStateAdapterConfig()
     if image_state_name is None:
         image_state_name = image_obs_name + "_state"
-    if log_fn is None:
-        log_fn = lambda message: None
 
     def state_factory(ctx: ComponentContext) -> Any:
         if config.is_compress_image:
             if config.decode_mode == "cache":
                 adapter = CompressedImageCacheStateAdapter(config)
             else:
-                adapter = CompressedImageStateAdapter(config)
+                adapter = CompressedImageStateAdapter(config, log_fn)
             msg_type = CompressedImage
         else:
             adapter = RawImageStateAdapter(config)
@@ -300,11 +331,7 @@ def registe_image_obs(
         if config.decode_mode == "cache" and config.is_compress_image:
             def _state_to_obs(state: tuple[str, np.ndarray]):
                 fmt, buffer = state
-
-                _start_time = time.perf_counter()
-                res = _decode_to_image(config, buffer, fmt)
-                _use_time = time.perf_counter() - _start_time
-                log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms")
+                res = _decode_to_image(config, buffer, fmt, log_fn)
                 return res
             kwargs["transform"] = lambda view: _state_to_obs(view.value(image_state_name)) # type: ignore
 
