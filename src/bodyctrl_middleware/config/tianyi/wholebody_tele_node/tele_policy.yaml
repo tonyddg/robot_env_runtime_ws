@@ -3,6 +3,9 @@ tianyi_whole_tele:
     config.profile_path: "config/tianyi/wholebody_tele.yaml"
 
     config.arm.image_decode_mode: "async"
+    config.arm.image_is_compress: false
+    config.arm.image_depth_topic_name: "camera/depth/image_raw"
+    config.arm.image_color_topic_name: "camera/color/image_raw"
 
     config.record.enable: true
     config.record.ask_before_save: true
