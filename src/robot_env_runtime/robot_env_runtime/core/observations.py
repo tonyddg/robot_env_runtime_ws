@@ -20,9 +20,12 @@ class ObservationManager:
     """
     协调 observation 生成与新鲜度策略.
 
-    正常 ``step()`` 路径：绝不为了等待 camera 而阻塞控制周期；age 超过
-    ``error_after`` 才抛 :class:`ObservationTimeoutError`。reset 路径使用
-    :meth:`is_fresh` 等 required observation 第一次变为 ready / fresh。
+    新鲜度在 **cycle boundary**（``wait_for_step()`` 调用 :meth:`check`）与
+    ``step()``（:meth:`build`）两处用同一套判据校验：绝不为了等待 camera 而阻塞
+    控制周期；age 超过 ``error_after`` 抛 :class:`ObservationTimeoutError`。
+    boundary 先检查让"观测不新鲜"在派发任何命令之前就被拦下（hold 模式下可降级
+    为软失败）。reset 路径使用 :meth:`is_fresh` 等 required observation 第一次
+    变为 ready / fresh。
     """
 
     def __init__(
@@ -59,6 +62,71 @@ class ObservationManager:
             self._error_after if error_after is None else error_after,
         )
 
+    def check(self, snapshot: StateSnapshot) -> None:
+        """
+        在 cycle boundary 校验每个 observation 的存在性与新鲜度（不构建值）.
+
+        判据与 :meth:`build` 完全一致：required 且无样本 →
+        :class:`RequiredStateMissingError`；``age > error_after`` →
+        :class:`ObservationTimeoutError`（optional 缺失不报错）。runtime 在
+        ``wait_for_step()`` 里调用，使观测问题在命令派发前暴露。
+        """
+        for name, observation in self._observations.items():
+            sample = snapshot.sample(observation.source)
+            _, error_after = self.thresholds(name)
+            if sample is None:
+                if observation.required:
+                    raise self._missing_error(name, observation)
+                continue
+            age = sample.age(snapshot.captured_at)
+            if error_after is not None and age > error_after:
+                raise self._stale_error(
+                    name, observation.source, sample, age, error_after,
+                )
+
+    def _missing_error(
+        self, name: str, observation: "Observation",
+    ) -> RequiredStateMissingError:
+        """构造"required observation 缺失"异常（check 与 build 共用）."""
+        return RequiredStateMissingError(
+            f"observation {name!r} has no sample for source {observation.source!r}",
+            details={"observation": name, "source": observation.source},
+        )
+
+    @staticmethod
+    def _stale_error(
+        name: str,
+        source: str,
+        sample: Any,
+        age: float,
+        error_after: float,
+    ) -> ObservationTimeoutError:
+        """
+        构造"observation 过期"异常（check 与 build 共用）.
+
+        details 附带 age 的分解（basis / received_at / ready_at / source_stamp /
+        decode_sec），便于现场定位延迟出在相机链路还是节点处理。
+        """
+        basis = "source_stamp" if sample.source_stamp is not None else "received_at"
+        decode_sec = max(0.0, float(sample.ready_at) - float(sample.received_at))
+        return ObservationTimeoutError(
+            f"observation {name!r} is stale: age={age:.4f}s exceeds "
+            f"error_after={error_after}s (source={source!r}, "
+            f"sequence={sample.sequence}, basis={basis})",
+            details={
+                "observation": name,
+                "source": source,
+                "age": age,
+                "error_after": error_after,
+                "sequence": sample.sequence,
+                "basis": basis,
+                "received_at": sample.received_at,
+                "ready_at": sample.ready_at,
+                "source_stamp": sample.source_stamp,
+                "decode_sec": decode_sec,
+            },
+        )
+
     def build(self, snapshot: StateSnapshot) -> tuple[dict[str, Any], dict[str, Any]]:
         """从 snapshot 生成 ``(obs, info)``（非阻塞）."""
         values: dict[str, Any] = {}
@@ -69,10 +137,7 @@ class ObservationManager:
             warn_after, error_after = self.thresholds(name)
             if sample is None:
                 if observation.required:
-                    raise RequiredStateMissingError(
-                        f"observation {name!r} has no sample for source {source!r}",
-                        details={"observation": name, "source": source},
-                    )
+                    raise self._missing_error(name, observation)
                 values[name] = None
                 info[name] = {
                     "present": False,
@@ -88,17 +153,8 @@ class ObservationManager:
                 continue
             age = sample.age(snapshot.captured_at)
             if error_after is not None and age > error_after:
-                raise ObservationTimeoutError(
-                    f"observation {name!r} is stale: age={age:.4f}s exceeds "
-                    f"error_after={error_after}s (source={source!r}, "
-                    f"sequence={sample.sequence})",
-                    details={
-                        "observation": name,
-                        "source": source,
-                        "age": age,
-                        "error_after": error_after,
-                        "sequence": sample.sequence,
-                    },
+                raise self._stale_error(
+                    name, source, sample, age, error_after,
                 )
             state_input = StateInput(
                 source=source,

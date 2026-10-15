@@ -27,6 +27,7 @@ from robot_env_runtime.core.errors import (
     ControllerPreflightError,
     InvalidTransitionError,
     ObservationError,
+    ObservationTimeoutError,
     PolicyInferenceTimeoutError,
     RequiredStateMissingError,
     RequiredStateStaleError,
@@ -107,6 +108,8 @@ class RobotEnv:
         self._validation_skipped = False
         self._hold_reports: dict[str, NullActionReport] = {}
         self._last_observations: dict[str, Any] = {}
+        self._last_dispatch_sec: float | None = None
+        self._last_observation_sec: float | None = None
         self._open_resources()
 
     # -- 构造 --------------------------------------------------------------
@@ -236,6 +239,8 @@ class RobotEnv:
         self._last_wait_failure = None
         self._validation_skipped = False
         self._hold_reports = {}
+        self._last_dispatch_sec = None
+        self._last_observation_sec = None
         self._snapshot = None
         self._scheduler.reset()
         try:
@@ -307,8 +312,13 @@ class RobotEnv:
 
         返回 ``True`` 表示边界正常（调用方接着 ``step(action)``）；返回 ``False`` 表示
         **软失败**（仅 ``runtime.on_wait_failure="hold"`` 时出现：policy 推理超时 /
-        required 状态缺失或过期 / 可选的 step overrun），此时调用方必须改调
-        ``step(None)`` 让各 controller 派发自己的空动作，并继续等待同一个 future。
+        required 状态缺失或过期 / observation 过期 / 可选的 step overrun），此时调用方
+        必须改调 ``step(None)`` 让各 controller 派发自己的空动作，并继续等待同一个
+        future。
+
+        边界校验包括 controller 声明的 required state 与全部 observation 的
+        ``error_after`` 新鲜度（与 ``step()`` 内的构建判据一致）：观测问题在**派发
+        任何命令之前**暴露，不会被 step 内二次判断。
         """
         self._raise_if_unusable()
         if not self._scheduler.started:
@@ -325,6 +335,7 @@ class RobotEnv:
             self._executor.raise_if_failed()
             snapshot = self._state_store.capture()
             self._check_required_states(snapshot)
+            self._observation_manager.check(snapshot)
             checks = self._dispatcher.validate_previous(
                 snapshot,
                 self._records,
@@ -380,6 +391,7 @@ class RobotEnv:
         except ActionRoutingError:
             # policy 侧编程错误：未发送任何命令，不 latch fault，允许重试。
             raise
+        dispatch_started_at = self._clock.now()
         try:
             result = self._dispatcher.dispatch(
                 routed,
@@ -390,12 +402,15 @@ class RobotEnv:
         except Exception as exc:
             self._fail(exc, cycle_index=self._scheduler.cycle_index)
             raise
+        dispatch_finished_at = self._clock.now()
+        self._last_dispatch_sec = dispatch_finished_at - dispatch_started_at
         self._records = dict(result.records)
         try:
             observations, observation_info = self._observation_manager.build(snapshot)
         except Exception as exc:
             self._fail(exc, cycle_index=self._scheduler.cycle_index)
             raise
+        self._last_observation_sec = self._clock.now() - dispatch_finished_at
         self._dispatch_checks = dict(result.checks)
         self._observation_info = observation_info
         self._last_observations = observations
@@ -512,6 +527,8 @@ class RobotEnv:
             return HoldReason.STATE_MISSING.value
         if isinstance(exc, RequiredStateStaleError):
             return HoldReason.STATE_STALE.value
+        if isinstance(exc, ObservationTimeoutError):
+            return HoldReason.OBSERVATION_STALE.value
         if isinstance(exc, StepOverrunError) and self._settings.hold_on_step_overrun:
             return HoldReason.STEP_OVERRUN.value
         return None
@@ -567,11 +584,15 @@ class RobotEnv:
         snapshot = self._snapshot
         if snapshot is None:  # pragma: no cover - 软失败一定先捕获过快照
             snapshot = self._state_store.capture()
+        dispatch_started_at = self._clock.now()
         reports = self._dispatcher.dispatch_null(
             snapshot,
             self._scheduler.cycle_index,
             self._settings.control_period,
         )
+        self._last_dispatch_sec = self._clock.now() - dispatch_started_at
+        # hold 周期复用上一次成功周期的 observation，不重建（因此为 0）
+        self._last_observation_sec = 0.0
         for name, report in reports.items():
             if report.record is not None:
                 # 让下一次边界的 validate 以"保持命令"为基准
@@ -840,6 +861,8 @@ class RobotEnv:
             "lateness": self._scheduler.lateness(),
             "snapshot_captured_at": None if snapshot is None else snapshot.captured_at,
             "cycle_state": self._state.value,
+            "dispatch_sec": self._last_dispatch_sec,
+            "observation_sec": self._last_observation_sec,
         }
 
     def _states_info(self, snapshot: StateSnapshot | None) -> dict[str, Any]:

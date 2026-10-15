@@ -100,6 +100,7 @@ deadline_n = deadline_0 + n * control_period
 3. `clock.wait_until(deadline_n)`
 4. future 仍未完成 → `PolicyInferenceTimeoutError`
 5. 再查 executor → capture `StateSnapshot_n` → 检查 required 状态新鲜度
+   → 检查全部 observation 的存在性与 `error_after` 新鲜度
 6. 调用每个 controller 的 `validate(snapshot_n, previous CommandRecord)`
 7. 通过后进入 `READY_FOR_STEP`，并推进 `deadline_{n+1} = deadline_n + period`
 
@@ -122,6 +123,7 @@ fault 并抛异常。hold 模式把"本周期拿不到可用动作"的下面几�
 | policy 未在 deadline 前完成 | `PolicyInferenceTimeoutError` | `policy_inference_timeout` |
 | controller 依赖的 required state 缺失 | `RequiredStateMissingError` | `state_missing` |
 | controller 依赖的 required state 过期 | `RequiredStateStaleError` | `state_stale` |
+| observation 的 age 超过 `error_after` | `ObservationTimeoutError` | `observation_stale` |
 | 进入 wait 时已明显错过 deadline（仅 `hold_on_step_overrun=true`） | `StepOverrunError` | `step_overrun` |
 
 软失败时 `wait_for_step()` **不抛错、不 latch fault**，而是返回 `False`：本周期
@@ -153,7 +155,12 @@ while not policy.done() and env.ok():
 连续软失败达到 `hold_limit`（默认 10）次时兜底：抛出本次 governing 异常并照常
 latch fault + best-effort stop（异常 `details` 带 `consecutive` / `hold_limit`）。
 executor 失败、`validate` ERROR、publish / partial dispatch、managed FAULTED、
-reset 失败、observation 过期等**不**在软失败范围内。
+reset 失败等**不**在软失败范围内；observation 过期**属于**软失败范围。
+
+观测新鲜度在 **boundary 与 `step()` 用同一套判据**：boundary 先检查，所以严格
+模式下过期观测也会在**派发任何命令之前** fault（`ObservationTimeoutError` 的
+details 带 `basis / received_at / ready_at / source_stamp / decode_sec`，便于定位
+延迟在相机链路还是节点处理）。
 
 空动作的"保持"语义由 adapter 负责：`None` 表示本周期不发布新命令（Control Node
 按自己的插值 / 保持策略继续）；需要显式零速 / 保持的子系统必须返回消息：
@@ -216,6 +223,10 @@ age 优先使用 `source_stamp`，拿不到时退化为 `received_at`；不会�
 否则 heavy decode 会把旧图像伪装成新数据。正常 `step()` 不会为了等 camera 而阻塞
 控制周期；只有 `reset()` 会阻塞等待 required observation 第一次 ready / fresh。
 
+这道门在 **boundary（`wait_for_step()`）与 `step()` 用同一套判据**校验两次：
+boundary 先检查，保证观测问题在**派发命令之前**暴露（严格模式 → fault；
+`on_wait_failure="hold"` → 软失败，见 §3）；`step()` 构建时的检查是兜底。
+
 这条时间线（含 `decode_sec`）会原样出现在 `step()` 返回的 `info` 里：完整字段说明、
 时间戳推导与稳定性约定见 **§5**。
 
@@ -256,6 +267,8 @@ info
     "lateness": -0.10,              # 现在 - deadline（step 之后采样，通常是负值）
     "snapshot_captured_at": 0.32,   # 本次 cycle 的 boundary snapshot 时刻
     "cycle_state": "WAIT_REQUIRED",
+    "dispatch_sec": 0.0012,         # dispatch（prepare+preflight+send）耗时
+    "observation_sec": 0.0040,      # 构建 observation 耗时
   },
   "states": {
     "arm":         {"age": 0.030, "sequence": 13, "received_at": 0.310,
@@ -299,6 +312,8 @@ info
 | `lateness` | `float` | `clock.now() - deadline`。因为是在 `step()` 之后采样，正常是负值；`lateness + control_period` ≈ 从 cycle 边界到构造 info 的耗时（≈ `step()` 开销）。同一个量在 `wait_for_step()` 入口用于判定 `StepOverrunError`（那时 deadline 还没被推进） |
 | `snapshot_captured_at` | `float \| None` | 本 cycle 的 boundary `StateSnapshot` 捕获时刻；本 cycle 的 validate / prepare / preflight / observation 全部消费这个快照 |
 | `cycle_state` | `str` | 构造 info 时的 cycle 状态，正常为 `WAIT_REQUIRED`（`FAULTED` / `STOPPED` / `CLOSED` 不会走到这里） |
+| `dispatch_sec` | `float \| None` | 本 cycle `dispatch`（prepare + preflight + send）的耗时；hold 周期为 `dispatch_null` 耗时 |
+| `observation_sec` | `float \| None` | 本 cycle 构建 observation 的耗时；hold 周期复用缓存 obs，恒为 `0.0` |
 
 #### 5.2.2 `states`（每个被依赖的 StateSource 一项，键 = profile 里的 source 名）
 

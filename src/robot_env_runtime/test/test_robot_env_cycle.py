@@ -235,11 +235,12 @@ def test_observation_timeout_latches_fault_and_stops() -> None:
     stops_before = controller.stop_count
     source.push((0.0, 0.0, 0.0), aged=0.5)
     future = FakeInferenceFuture(done=True, action=ACTION)
-    env.wait_for_step(future)
+    # 观测过期在 cycle boundary（wait_for_step）就被拦下：不会先发命令再 fault
     with pytest.raises(ObservationTimeoutError):
-        env.step(future.get_action())
+        env.wait_for_step(future)
     assert env.ok() is False
     assert env.fault.kind == FAULT_OBSERVATION_TIMEOUT
+    assert controller.sent == []
     assert controller.stop_count == stops_before + 1
 
 

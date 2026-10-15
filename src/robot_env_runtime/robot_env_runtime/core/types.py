@@ -209,6 +209,7 @@ class HoldReason(str, Enum):
     POLICY_INFERENCE_TIMEOUT = "policy_inference_timeout"
     STATE_MISSING = "state_missing"
     STATE_STALE = "state_stale"
+    OBSERVATION_STALE = "observation_stale"
     STEP_OVERRUN = "step_overrun"
 
 

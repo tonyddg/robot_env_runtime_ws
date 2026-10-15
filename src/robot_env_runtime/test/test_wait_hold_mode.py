@@ -12,15 +12,18 @@ from robot_env_runtime.core.dispatcher import ActionRoute
 from robot_env_runtime.core.errors import (
     ConfigError,
     InvalidTransitionError,
+    ObservationTimeoutError,
     PolicyInferenceTimeoutError,
     StepOverrunError,
 )
 from robot_env_runtime.core.safety import (
     FAULT_POLICY_INFERENCE_TIMEOUT,
     FAULT_CYCLE_OVERRUN,
+    FAULT_OBSERVATION_TIMEOUT,
 )
 from robot_env_runtime.core.state_view import StateInput
 from robot_env_runtime.core.types import CommandContext, RuntimeSettings
+from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.ros2.controller_adapter import RosControllerAdapter
 from robot_env_runtime.extension.ros2.protocol import LegacyProtocol
 from robot_env_runtime.extension.ros2.publisher_controller import RosPublisherController
@@ -145,6 +148,42 @@ def _fake_env(clock: FakeClock, controller: FakeController, settings=None):
         sources={"arm": FakeStateSource("arm", clock=clock, value=(0.0,))},
         settings=settings or make_settings(on_wait_failure="hold", hold_limit=3),
     )
+
+
+def _observed_env(clock: FakeClock, *, settings: RuntimeSettings | None = None):
+    """带一个可调过期 observation 的最小 runtime（controller 状态始终新鲜）."""
+    node = FakeRosNode()
+    controller = RosPublisherController(
+        "arm",
+        node=node,
+        clock=clock,
+        topic="/example/command",
+        msg_type=_Payload,
+        adapter=_HoldAdapter(),
+        protocol=LegacyProtocol(),
+        control_period=0.1,
+    )
+    color = FakeStateSource("color", clock=clock, value=(1.0,), aged=0.0)
+    observation = TransformObservation(
+        "color",
+        source="color",
+        transform=lambda view: np.asarray(view.value("color"), dtype=np.float32),
+        spec=ObservationSpec(dtype="float32", shape=(1,), semantic="image"),
+        warn_after=0.05,
+        error_after=0.1,
+    )
+    env = build_env(
+        clock=clock,
+        controllers={"arm": controller},
+        routes=[ActionRoute("arm", "arm", (0,), (1.0,))],
+        sources={
+            "arm": FakeStateSource("arm", clock=clock, value=(0.0,)),
+            "color": color,
+        },
+        observations={"color": observation},
+        settings=settings or make_settings(on_wait_failure="hold", hold_limit=3),
+    )
+    return env, controller, node, color
 
 
 def test_hold_timeout_returns_flag_and_dispatches_null_action() -> None:
@@ -284,6 +323,81 @@ def test_hold_on_stale_state_and_validation_skipped() -> None:
         assert info["hold"]["validation_skipped"] is True
         assert controller.validated == []          # 软失败边界不跑 validate
         assert info["controllers"]["null_actions"]["arm"]["status"] == "skipped"
+    finally:
+        env.close()
+
+
+def test_hold_on_stale_observation_soft_fails_at_boundary() -> None:
+    """Observation 过期在 boundary 拦下并走 hold：不发策略命令；恢复后继续同一 future."""
+    clock = FakeClock()
+    env, _, node, color = _observed_env(clock)
+    try:
+        observations = env.reset()
+        color.push((2.0,), aged=0.2)                # age > error_after=0.1
+
+        future = FakeInferenceFuture(done=True, action=_ACTION)
+        assert env.wait_for_step(future) is False
+        assert env.ok() is True
+        assert env.fault is None
+        failure = env.last_wait_failure
+        assert failure is not None and failure.reason == "observation_stale"
+
+        hold_obs, info = env.step(None)
+        assert hold_obs == observations             # 复用上一次成功周期的 obs
+        assert info["hold"]["reason"] == "observation_stale"
+        assert info["hold"]["validation_skipped"] is True
+        published = node.published("/example/command")
+        assert len(published) == 1 and published[0].hold is True
+
+        # 相机恢复：沿用同一个 future 走正常路径（策略命令照常发出）
+        color.push((3.0,), aged=0.0)
+        assert env.wait_for_step(future) is True
+        _, info2 = env.step(future.get_action())
+        assert info2["hold"] is None
+        published = node.published("/example/command")
+        assert len(published) == 2 and published[1].hold is False
+    finally:
+        env.close()
+
+
+def test_hold_limit_counts_stale_observation_failures() -> None:
+    """连续 observation 过期达到 hold_limit → 抛 ObservationTimeoutError + latch fault."""
+    clock = FakeClock()
+    env, _, _, color = _observed_env(clock)         # hold_limit=3
+    try:
+        env.reset()
+        color.push((2.0,), aged=0.2)
+        future = FakeInferenceFuture(done=True, action=_ACTION)
+        assert env.wait_for_step(future) is False
+        env.step(None)
+        assert env.wait_for_step(future) is False
+        env.step(None)
+        with pytest.raises(ObservationTimeoutError) as excinfo:
+            env.wait_for_step(future)
+        assert excinfo.value.details["consecutive"] == 3
+        assert excinfo.value.details["hold_limit"] == 3
+        assert env.ok() is False
+        assert env.fault is not None
+    finally:
+        env.close()
+
+
+def test_strict_mode_stale_observation_raises_before_dispatch() -> None:
+    """严格模式：observation 过期在 wait_for_step 抛 + latch fault，且未发任何命令."""
+    clock = FakeClock()
+    env, _, node, color = _observed_env(
+        clock, settings=make_settings(on_wait_failure="fault"),
+    )
+    try:
+        env.reset()
+        color.push((2.0,), aged=0.2)
+        published_before = len(node.published("/example/command"))
+        future = FakeInferenceFuture(done=True, action=_ACTION)
+        with pytest.raises(ObservationTimeoutError):
+            env.wait_for_step(future)
+        assert env.ok() is False
+        assert env.fault is not None and env.fault.kind == FAULT_OBSERVATION_TIMEOUT
+        assert len(node.published("/example/command")) == published_before
     finally:
         env.close()
 

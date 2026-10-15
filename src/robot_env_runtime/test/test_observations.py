@@ -80,6 +80,42 @@ def test_missing_required_source_raises() -> None:
         manager.build(empty)
 
 
+def test_check_enforces_same_thresholds_as_build() -> None:
+    """check() 与 build() 判据一致：过期抛错，且 details 带 age 分解."""
+    clock = FakeClock(start=10.0)
+    source = FakeStateSource("arm", clock=clock, value=(0.0, 0.0, 0.0), aged=0.4)
+    manager = ObservationManager({"arm_qpos": _observation()}, clock)
+    snapshot = StateStore({"arm": source}, clock).capture()
+
+    with pytest.raises(ObservationTimeoutError) as excinfo:
+        manager.check(snapshot)
+    details = excinfo.value.details
+    assert details["basis"] == "received_at"
+    assert details["age"] == pytest.approx(0.4, abs=1e-6)
+    assert details["error_after"] == pytest.approx(0.3)
+    assert "decode_sec" in details
+
+    fresh = FakeStateSource("arm", clock=clock, value=(0.0, 0.0, 0.0), aged=0.0)
+    manager.check(StateStore({"arm": fresh}, clock).capture())   # 新鲜样本不抛
+
+
+def test_check_missing_required_source_and_optional() -> None:
+    """check()：required 缺失抛 RequiredStateMissingError，optional 缺失放过."""
+    clock = FakeClock()
+    empty = StateStore({}, clock).capture()
+    with pytest.raises(RequiredStateMissingError):
+        ObservationManager({"arm_qpos": _observation()}, clock).check(empty)
+
+    optional = TransformObservation(
+        "arm_qpos",
+        source="arm",
+        transform=lambda view: np.asarray(view.value("arm"), dtype=np.float32),
+        spec=ObservationSpec(dtype="float32", shape=(3,), semantic="joint_position"),
+        required=False,
+    )
+    ObservationManager({"arm_qpos": optional}, clock).check(empty)
+
+
 def test_info_reports_data_stamp_and_basis() -> None:
     """Info 里 obs 的 stamp = 实际使用的数据时间戳，basis 说明用的是哪个基准."""
     clock = FakeClock(start=2.0)
