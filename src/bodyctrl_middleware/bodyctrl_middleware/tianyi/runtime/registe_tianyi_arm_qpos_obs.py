@@ -11,6 +11,7 @@ from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
 from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
+from robot_env_runtime.ros2.qos import make_qos
 
 class TianyiArmStateAdapter(RosStateAdapter):
     """
@@ -69,6 +70,10 @@ def registe_tianyi_arm_qpos_obs(
 
     tianyi_arm_qpos_obs_name: str = "tianyi_arm_qpos_bimanual_obs",
     tianyi_arm_qpos_state_name: Optional[str] = None,
+
+    # 仅保存最新的状态, 订阅队列深度为 1, 避免高频话题拖慢整体速度
+    qos_depth: int = 1,
+
     warn_after: float = 0.05,
     error_after: float = 0.1,
 ):
@@ -91,6 +96,8 @@ def registe_tianyi_arm_qpos_obs(
             msg_type = MotorStatusMsg,
             adapter = adapter,
             logger = ctx.logger,
+
+            qos = make_qos(depth = qos_depth)
         )
 
     def tianyi_arm_qpos_obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
