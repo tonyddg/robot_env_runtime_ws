@@ -18,69 +18,79 @@ class _Logger:
         self.messages.append(message)
 
 
-def test_record_formats_phases_and_extras() -> None:
-    """单 cycle 行包含各阶段耗时、period、slack、post."""
+def test_window_summary_after_interval() -> None:
+    """间隔内不输出（逐 cycle 打印已取消）；到点输出一行滚动汇总."""
     logger = _Logger()
-    timing = CycleTiming(logger, tag = "episode 0")
+    now = [100.0]
+    timing = CycleTiming(logger, tag = "episode 0", now = lambda: now[0])
+    info = {"cycle": {"deadline": 1.1, "index": 7}}
+    for _ in range(3):
+        timing.record(
+            7,
+            {"infer": 0.001, "wait": 0.095, "step": 0.009, "total": 0.106},
+            info = info,
+            wait_entered_at = 1.0,
+        )
+    assert logger.messages == []
+
+    now[0] += 10.1
     timing.record(
         7,
-        {
-            "infer": 0.001, "wait": 0.095, "action": 0.0004,
-            "step": 0.009, "write": 0.0005, "total": 0.106,
-        },
-        info = {"cycle": {
-            "control_period": 0.1, "deadline": 1.1,
-            "snapshot_captured_at": 1.05, "index": 7,
-        }},
+        {"infer": 0.001, "wait": 0.01, "step": 0.009, "total": 0.02},
+        info = info,
         wait_entered_at = 1.0,
-        wait_returned_at = 1.052,
     )
     assert len(logger.messages) == 1
     line = logger.messages[0]
-    assert "[cycle-timing] episode 0 cycle 7 [ms]" in line
-    assert "infer=1.0" in line and "wait=95.0" in line and "total=106.0" in line
-    assert "period=100.0" in line
-    assert "slack=+100.0" in line     # deadline(1.1) - 进入 wait(1.0)
-    assert "post=+2.0" in line        # 返回(1.052) - 抓状态(1.05)
+    assert "[cycle-timing] episode 0 summary n=4 window=10s [ms]" in line
+    assert "infer med=" in line and "wait med=" in line and "step med=" in line
+    assert "total med=" in line and "max=" in line
+    assert "slack min=+100.0" in line     # deadline(1.1) - 进入 wait(1.0)
+    assert "action" not in line and "write" not in line
 
 
 def test_summary_and_switch() -> None:
-    """汇总行给 median/max；enabled=False 时完全静默."""
+    """log_summary() 打累计 median/max；enabled=False 时完全静默."""
     logger = _Logger()
-    timing = CycleTiming(logger)
+    now = [0.0]
+    timing = CycleTiming(logger, summary_interval = 1.0, now = lambda: now[0])
     timing.log_summary()
     assert logger.messages == []
 
     timing.record(1, {"wait": 0.01, "total": 0.02})
+    now[0] += 1.0
     timing.record(2, {"wait": 0.03, "total": 0.05})
-    timing.log_setup(reset_sec = 0.2, padding_append_sec = 0.1)
+    assert len(logger.messages) == 1
+    assert "summary n=2 window=1s" in logger.messages[0]
+
+    timing.record(3, {"wait": 0.03, "total": 0.05})
+    timing.log_setup(reset_sec = 0.2)
     timing.log_summary()
 
     assert "setup:" in logger.messages[-2]
     summary = logger.messages[-1]
-    assert "summary n=2" in summary
-    assert "wait med=20.0 max=30.0" in summary
-    assert "total med=35.0 max=50.0" in summary
+    assert "summary n=3 [ms]" in summary        # 累计（非窗口）
+    assert "wait med=30.0 max=30.0" in summary
+    assert "total med=50.0 max=50.0" in summary
 
     off = CycleTiming(logger, enabled = False)
-    off.record(3, {"wait": 1.0})
+    off.record(4, {"wait": 1.0})
     off.log_setup(reset_sec = 1.0)
     off.log_summary()
-    assert len(logger.messages) == 4   # 两次 cycle + setup + summary，off 无输出
+    assert len(logger.messages) == 3   # 窗口 + setup + 累计，off 无输出
 
 
 def test_stdout_fallback_without_logger(capsys) -> None:
     """没有 logger 时直接打印到 stdout（方便脚本 / 裸环境）。"""
-    timing = CycleTiming(None)
+    timing = CycleTiming(None, summary_interval = 0.0)
     timing.record(1, {"wait": 0.01, "total": 0.02})
-    timing.log_summary()
     out = capsys.readouterr().out
-    assert "[cycle-timing] cycle 1 [ms]" in out
-    assert "summary n=1" in out
+    assert "[cycle-timing] summary n=1 window=0s [ms]" in out
+    assert "wait med=10.0" in out
 
 
-def test_collect_once_debug_timing_prints_cycles(tmp_path) -> None:
-    """collect_once(debug_timing=True) 打印 setup、每 cycle 与汇总."""
+def test_collect_once_debug_timing_prints_summary(tmp_path) -> None:
+    """collect_once(debug_timing=True) 只打 setup + 累计汇总，不再逐 cycle 打印."""
     logger = _Logger()
     saved = collect_once(
         FakeEnv(), FakePolicy(steps = 3), 0, tmp_path,
@@ -88,9 +98,11 @@ def test_collect_once_debug_timing_prints_cycles(tmp_path) -> None:
     )
     assert saved is True
     lines = [message for message in logger.messages if "[cycle-timing]" in message]
+    assert len(lines) == 2
     assert any("setup:" in message for message in lines)
-    assert sum("[ms]:" in message and "cycle " in message for message in lines) == 3
-    assert any("summary n=3" in message for message in lines)
+    summary = next(message for message in lines if "summary" in message)
+    assert "summary n=3 [ms]" in summary
+    assert "cycle " not in summary
 
 
 def test_collect_once_debug_timing_off_is_silent(tmp_path) -> None:
@@ -111,8 +123,9 @@ def test_run_tele_loop_prints_timing() -> None:
 
     lines = [message for message in logger.messages if "[cycle-timing]" in message]
     assert any("setup:" in message for message in lines)
-    assert sum("[ms]:" in message and "cycle " in message for message in lines) == 2
-    assert any("summary n=2" in message for message in lines)
+    summary = next(message for message in lines if "summary" in message)
+    assert "summary n=2 [ms]" in summary
+    assert "cycle " not in summary
 
 
 def test_run_tele_loop_silent_without_debug() -> None:
@@ -147,23 +160,20 @@ def test_collect_once_rebases_cycle_clock_before_loop(tmp_path) -> None:
     lines = [message for message in logger.messages if "[cycle-timing]" in message]
     setup_line = next(message for message in lines if "setup:" in message)
     assert "[ms]:" not in setup_line
-    assert "padding_append=" in setup_line
+    assert "reset=" in setup_line
 
 
 def test_collect_once_debug_timing_marks_hold_cycles(tmp_path) -> None:
-    """hold 周期打点带 hold= 阶段（只打一行），正常周期不带."""
+    """hold 周期计入汇总的 holds 计数（不再逐 cycle 打 hold= 行）."""
     logger = _Logger()
     saved = collect_once(
         FakeEnv(hold_cycles = (1,)), FakePolicy(steps = 2), 0, tmp_path,
         debug_timing = True, logger = logger,
     )
     assert saved is True
-    lines = [m for m in logger.messages if "[ms]:" in m and "cycle " in m]
-    assert len(lines) == 3
-    assert lines[0].startswith("[cycle-timing] episode 0 cycle 1")
-    assert "hold=" in lines[0] and "wait=" in lines[0]
-    assert all("hold=" not in line for line in lines[1:])
-    assert any("summary n=3" in message for message in logger.messages)
+    summary = next(m for m in logger.messages if "summary" in m)
+    assert "summary n=3 [ms]" in summary
+    assert "holds=1" in summary
 
 
 @pytest.mark.parametrize("module_name", ["wholebody_tele_node", "bimanual_tele_node"])
@@ -178,7 +188,6 @@ def test_run_tele_loop_hold_shape(module_name: str) -> None:
 
     assert env.hold_steps == 2
     assert policy.infer_count == 3      # 2 个真实动作 + 1 次被丢弃的预取
-    lines = [m for m in logger.messages if "[ms]:" in m and "cycle " in m]
-    assert len(lines) == 4              # 2 个 hold 周期 + 2 个正常周期
-    assert sum("hold=" in line for line in lines) == 2
-    assert any("summary n=4" in message for message in logger.messages)
+    summary = next(m for m in logger.messages if "summary" in m)
+    assert "summary n=4 [ms]" in summary      # 2 个 hold 周期 + 2 个正常周期
+    assert "holds=2" in summary

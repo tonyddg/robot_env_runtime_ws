@@ -21,8 +21,8 @@ tianyi_whole_tele:
     config.record.buffer_warn_bytes: 268435456
     config.record.compress_method: "gzip"
 
-    # 循环耗时打点：true 时每 cycle 打印 infer/wait/action/step/write/total
-    # 以及 slack(进入 wait 时距 deadline 的余量)、post(deadline 之后 runtime 内部开销)
+    # 循环耗时打点：true 时每 10s 打印一行汇总（infer/wait/step/hold/total 的
+    # median/max + holds 计数 + slack min），不再逐 cycle 打印
     config.debug_timing: true
 
     config.policy.policy_type: tele

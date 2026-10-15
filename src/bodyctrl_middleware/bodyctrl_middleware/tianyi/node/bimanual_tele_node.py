@@ -6,6 +6,7 @@ import time
 
 from pydantic import BaseModel
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
+from bodyctrl_middleware.utility.runtime_tuning import apply_steady_state_tuning
 from bodyctrl_middleware.tianyi.plugin.tianyi_arm_only import tianyi_arm_only, TianyiArmOnlyConfig
 from bodyctrl_middleware.policy.tele_policy import TelePolicy, TeleConfig
 from bodyctrl_middleware.record import (
@@ -98,14 +99,14 @@ class Config(BaseModel):
     )
     debug_timing: bool = RosField(
         False, read_only = True,
-        description = "是否打印循环各阶段耗时(infer/wait/step/write + slack/post), 采集与遥操循环通用",
+        description = "是否每 10s 打印循环耗时汇总(infer/wait/step/hold/total + slack min), 采集与遥操循环通用",
     )
     plugin: TianyiArmOnlyConfig = RosField(default_factory = lambda: TianyiArmOnlyConfig)
     record: RecordConfig = RosField(default_factory = lambda: RecordConfig)
 
 
 def _run_tele_loop(env: RobotEnv, policy: Any, logger: Any, debug_timing: bool) -> None:
-    """不采集数据时的遥操循环（``debug_timing=True`` 时打印各阶段耗时）.
+    """不采集数据时的遥操循环（``debug_timing=True`` 时每 10s 打印耗时汇总）.
 
     hold 模式软失败（``wait_for_step()`` 返回 False）时不执行策略动作：本周期用
     ``env.step(None)`` 派发空动作，并继续等待同一个 future（不重新推理）。
@@ -143,7 +144,6 @@ def _run_tele_loop(env: RobotEnv, policy: Any, logger: Any, debug_timing: bool) 
             continue
 
         action = future.get_action()
-        _action_done = time.perf_counter()
         observations, info = env.step(action)
         _step_done = time.perf_counter()
         future = policy.infer_async(observations)
@@ -153,8 +153,7 @@ def _run_tele_loop(env: RobotEnv, policy: Any, logger: Any, debug_timing: bool) 
             (info.get("cycle") or {}).get("index", 0),
             {
                 "wait": _wait_done - _cycle_start,
-                "action": _action_done - _wait_done,
-                "step": _step_done - _action_done,
+                "step": _step_done - _wait_done,
                 "infer": _infer_done - _step_done,
                 "total": _infer_done - _cycle_start,
             },
@@ -200,6 +199,15 @@ def main(argv = None):
             0.3,  # 与实际 scale 对应
         )],
         logger = executor.node.get_logger()
+    )
+
+    # 启动期对象（imports / config / env / policy）都已构建：冻结 GC 扫描集合并降低
+    # GIL 让出粒度，减少控制循环里的 GC / 线程切换停顿（见 runtime_tuning 模块文档）
+    tuning = apply_steady_state_tuning()
+    executor.node.get_logger().info(
+        f"稳态调优: gc.freeze={tuning['gc_frozen']} "
+        f"gc_threshold={tuning['gc_threshold']} "
+        f"switch_interval={tuning['switch_interval_sec']:.4f}s"
     )
 
     try:

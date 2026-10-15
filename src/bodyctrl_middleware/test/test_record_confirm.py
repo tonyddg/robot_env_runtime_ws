@@ -138,7 +138,8 @@ def test_stop_before_confirm_and_multi_episode(tmp_path) -> None:
     )
     assert saved == 2
     assert env.stop_calls == 2
-    assert env.resets == 2
+    # 每轮 collect_once 各 reset 1 次；用户选择不再继续后 collect_multi 还会复位 1 次
+    assert env.resets == 3
     assert len(list(tmp_path.glob("trajectory_*/episode_*.h5py"))) == 2
 
 

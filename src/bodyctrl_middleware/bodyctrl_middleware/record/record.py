@@ -40,48 +40,66 @@ ConfirmFn = Callable[[str], Optional[bool]]
 
 ON_UNAVAILABLE_CHOICES = ("keep", "discard", "stop")
 
-# 循环耗时打点的阶段顺序
-_CYCLE_PHASES = ("infer", "wait", "action", "step", "write", "hold", "total")
+# 循环耗时打点的阶段顺序（action / write 恒为微秒级，已取消）
+_CYCLE_PHASES = ("infer", "wait", "step", "hold", "total")
 
 # hold 周期的 cycle index 只保留前若干个（用于 episode attrs 诊断，避免无限增长）
 _MAX_SOFT_FAIL_CYCLES = 64
 
-# slack / post 的合理性上限（ms）：超过说明 info 里的时间戳与循环时钟不同源
-# （例如测试注入的 FakeClock），此时不打印这两个字段，避免误导
+# slack 的合理性上限（ms）：超过说明 info 里的时间戳与循环时钟不同源
+# （例如测试注入的 FakeClock），此时不统计该项，避免误导
 _TIMING_SANITY_MS = 60_000.0
+
+# 滚动汇总的输出间隔（秒）：稳态运行时每 N 秒一行，不再逐 cycle 打印
+_SUMMARY_INTERVAL_SEC = 10.0
 
 
 class CycleTiming:
     """
     采集 / 遥操循环的耗时打点（``debug_timing=True`` 时启用）.
 
-    每个 cycle 打一行 ``[cycle-timing] ...``，episode（或循环）结束时再打一行
-    median / max 汇总，用于定位 ``wait_for_step()`` 迟到（StepOverrunError）
-    到底是哪一段吃掉了控制周期：
+    **不逐 cycle 打印**（逐 cycle IO 本身会污染控制周期）：每个 cycle 只累加统计量，
+    每 ``summary_interval`` 秒（默认 10s）打一行滚动汇总，episode / 循环结束时再打
+    一行累计汇总。用于定位 ``wait_for_step()`` 迟到（StepOverrunError）与循环超时
+    到底是哪一段吃掉了周期：
 
     - ``infer``：``policy.infer_async()`` 提交耗时（为**下一个**周期启动推理）；
     - ``wait``：``env.wait_for_step()`` 阻塞耗时（等 deadline + 抓状态 + 校验）；
-    - ``action``：``future.get_action()``；
-    - ``step``：``env.step()`` 派发命令 + 构建 observation；
-    - ``write``：``writer.append()``（异步模式下主要是快照拷贝）；
+    - ``step``：``future.get_action()`` + ``env.step()`` 派发命令 / 构建 observation；
     - ``hold``：软失败（hold）周期里 ``env.step(None)`` 派发空动作的耗时；
     - ``total``：一个循环体总共花了多少（与 ``period`` 对比）；
     - ``slack``：进入 ``wait_for_step`` 时距 deadline 还剩多少 ms（负数 = 已经
-      迟到，正是 ``StepOverrunError`` 的判据）；
-    - ``post``：deadline 之后 runtime 内部（抓状态 / 校验 / Managed 检查）还花了多少 ms。
+      迟到，正是 ``StepOverrunError`` 的判据），汇总里只保留窗口内的最小值；
+    - ``holds``：窗口内软失败（hold）周期的数量。
 
-    ``slack`` / ``post`` 依赖 runtime 的单调时钟（生产环境 ``MonotonicClock``）；
-    使用 FakeClock 的测试里这两个数没有意义，但不影响其余字段。
+    ``slack`` 依赖 runtime 的单调时钟（生产环境 ``MonotonicClock``）；使用 FakeClock
+    的测试里没有意义，会被上限过滤掉，不影响其余字段。
     """
 
     def __init__(
-        self, logger: Any = None, *, enabled: bool = True, tag: str = "",
+        self,
+        logger: Any = None,
+        *,
+        enabled: bool = True,
+        tag: str = "",
+        summary_interval: float = _SUMMARY_INTERVAL_SEC,
+        now: Optional[Callable[[], float]] = None,
     ) -> None:
+        """配置汇总间隔与时钟（``now`` 可注入，便于测试）。"""
         self.enabled = bool(enabled)
         self.tag = str(tag or "")
         self._logger = logger
+        self._summary_interval = float(summary_interval)
+        self._now = time.perf_counter if now is None else now
         self._count = 0
         self._samples: dict = {}
+        self._hold_count = 0
+        self._slack_min: Optional[float] = None
+        self._window_count = 0
+        self._window_samples: dict = {}
+        self._window_hold = 0
+        self._window_slack_min: Optional[float] = None
+        self._window_started_at = self._now()
 
     def record(
         self,
@@ -92,17 +110,35 @@ class CycleTiming:
         wait_entered_at: Optional[float] = None,
         wait_returned_at: Optional[float] = None,
     ) -> None:
-        """记录一个 cycle 的各阶段耗时（秒）."""
+        """记录一个 cycle 的各阶段耗时（秒）；按 ``summary_interval`` 输出滚动汇总."""
         if not self.enabled:
             return
         self._count += 1
+        self._window_count += 1
         for name, value in durations.items():
-            self._samples.setdefault(name, []).append(float(value))
-        self._log(
-            self._format_cycle(
-                cycle_index, durations, info, wait_entered_at, wait_returned_at,
+            value = float(value)
+            self._samples.setdefault(name, []).append(value)
+            self._window_samples.setdefault(name, []).append(value)
+        if "hold" in durations:
+            self._hold_count += 1
+            self._window_hold += 1
+        slack_ms = self._slack_ms(info, wait_entered_at)
+        if slack_ms is not None:
+            self._slack_min = slack_ms if self._slack_min is None else min(
+                self._slack_min, slack_ms
             )
-        )
+            self._window_slack_min = slack_ms if self._window_slack_min is None else min(
+                self._window_slack_min, slack_ms
+            )
+        if self._now() - self._window_started_at >= self._summary_interval:
+            self._emit_summary(
+                count = self._window_count,
+                samples = self._window_samples,
+                hold_count = self._window_hold,
+                slack_min_ms = self._window_slack_min,
+                window = True,
+            )
+            self._reset_window()
 
     def log_setup(
         self,
@@ -125,21 +161,15 @@ class CycleTiming:
             self._log(f"[cycle-timing]{self._tag()} setup: " + " ".join(parts))
 
     def log_summary(self) -> None:
-        """打印 median / max 汇总（没有样本时静默）."""
+        """打印累计 median / max 汇总（没有样本时静默）."""
         if not self.enabled or self._count == 0:
             return
-        parts = []
-        for name in _CYCLE_PHASES:
-            values = self._samples.get(name)
-            if not values:
-                continue
-            parts.append(
-                f"{name} med={statistics.median(values) * 1000:.1f} "
-                f"max={max(values) * 1000:.1f}"
-            )
-        self._log(
-            f"[cycle-timing]{self._tag()} summary n={self._count} [ms]: "
-            + " | ".join(parts)
+        self._emit_summary(
+            count = self._count,
+            samples = self._samples,
+            hold_count = self._hold_count,
+            slack_min_ms = self._slack_min,
+            window = False,
         )
 
     # -- 内部 --------------------------------------------------------------
@@ -153,38 +183,56 @@ class CycleTiming:
         else:
             print(message)
 
-    def _format_cycle(
+    def _reset_window(self) -> None:
+        """清空滚动窗口，重新开始计时."""
+        self._window_count = 0
+        self._window_samples = {}
+        self._window_hold = 0
+        self._window_slack_min = None
+        self._window_started_at = self._now()
+
+    @staticmethod
+    def _slack_ms(
+        info: Optional[Mapping[str, Any]], wait_entered_at: Optional[float],
+    ) -> Optional[float]:
+        """计算进入 ``wait_for_step`` 时距 deadline 的余量（ms）；不可用时返回 None."""
+        if info is None or wait_entered_at is None:
+            return None
+        deadline = ((info.get("cycle") or {}).get("deadline"))
+        if deadline is None:
+            return None
+        slack_ms = (float(deadline) - float(wait_entered_at)) * 1000.0
+        if abs(slack_ms) > _TIMING_SANITY_MS:
+            return None
+        return slack_ms
+
+    def _emit_summary(
         self,
-        cycle_index: Any,
-        durations: Mapping[str, float],
-        info: Optional[Mapping[str, Any]],
-        wait_entered_at: Optional[float],
-        wait_returned_at: Optional[float],
-    ) -> str:
-        parts = [
-            f"{name}={durations[name] * 1000:.1f}"
-            for name in _CYCLE_PHASES
-            if name in durations
-        ]
-        cycle = (info or {}).get("cycle") or {}
-        tail = ""
-        period = cycle.get("control_period")
-        deadline = cycle.get("deadline")
-        captured = cycle.get("snapshot_captured_at")
-        if period is not None:
-            tail += f" period={float(period) * 1000:.1f}"
-        if deadline is not None and wait_entered_at is not None:
-            slack_ms = (float(deadline) - float(wait_entered_at)) * 1000.0
-            if abs(slack_ms) <= _TIMING_SANITY_MS:
-                tail += f" slack={slack_ms:+.1f}"
-        if captured is not None and wait_returned_at is not None:
-            post_ms = (float(wait_returned_at) - float(captured)) * 1000.0
-            if abs(post_ms) <= _TIMING_SANITY_MS:
-                tail += f" post={post_ms:+.1f}"
-        return (
-            f"[cycle-timing]{self._tag()} cycle {cycle_index} [ms]: "
-            + " ".join(parts)
-            + tail
+        *,
+        count: int,
+        samples: Mapping[str, list],
+        hold_count: int,
+        slack_min_ms: Optional[float],
+        window: bool,
+    ) -> None:
+        """输出一行 median / max 汇总（滚动窗口或累计）."""
+        parts = []
+        for name in _CYCLE_PHASES:
+            values = samples.get(name)
+            if not values:
+                continue
+            parts.append(
+                f"{name} med={statistics.median(values) * 1000:.1f} "
+                f"max={max(values) * 1000:.1f}"
+            )
+        if hold_count:
+            parts.append(f"holds={hold_count}")
+        if slack_min_ms is not None:
+            parts.append(f"slack min={slack_min_ms:+.1f}")
+        suffix = f" window={self._summary_interval:.0f}s" if window else ""
+        self._log(
+            f"[cycle-timing]{self._tag()} summary n={count}{suffix} [ms]: "
+            + " | ".join(parts)
         )
 
 
@@ -317,9 +365,10 @@ def collect_once(
     配合 ``max_steps``（>0 时到点正常收尾）限制整轮内存占用。``flush_policy="batch"``
     是旧的边攒边写行为（长 episode / 内存受限时使用）。
 
-    ``debug_timing=True`` 时每个 cycle 打印一行各阶段耗时（infer / wait /
-    action / step / write / hold / total，另附 ``slack`` 与 ``post``），并在
-    episode 结束时打印 median / max 汇总；没有 logger 时直接打印到 stdout。
+    ``debug_timing=True`` 时每 10s 打印一行滚动汇总（infer / wait / step / hold /
+    total 的 median / max，另附 ``holds`` 计数与 ``slack`` 最小值），episode 结束时
+    再打印一行累计汇总；没有 logger 时直接打印到 stdout。逐 cycle 打印已取消，
+    避免日志 IO 本身污染控制周期。
 
     runtime 打开 ``on_wait_failure="hold"`` 时，``wait_for_step()`` 会以返回值
     报告软失败（policy 超时 / 状态不新鲜）：这类周期调用 ``env.step(None)`` 派发
@@ -404,10 +453,6 @@ def collect_once(
             _wait_done = time.perf_counter()
 
             if not ready:
-                _log(
-                    logger, "info",
-                    f"进入 step hold"
-                )
                 # hold 周期：派发空动作、不落盘，并继续等待同一个 future
                 env.step(None)
                 _hold_done = time.perf_counter()
@@ -431,17 +476,11 @@ def collect_once(
                 )
                 continue
             action = np.array(future.get_action(), copy = True)
-            _action_done = time.perf_counter()
-            _log(
-                logger, "info",
-                f"正常 step"
-            )
             observations, info = env.step(action)
             _step_done = time.perf_counter()
 
             writer.append(observations, action, info)
             recorded_steps += 1
-            _write_done = time.perf_counter()
 
             # 为下一周期启动推理（infer 耗时记在本周期末尾）
             future = policy.infer_async(observations)
@@ -451,10 +490,8 @@ def collect_once(
                 (info.get("cycle") or {}).get("index", recorded_steps),
                 {
                     "wait": _wait_done - _cycle_start,
-                    "action": _action_done - _wait_done,
-                    "step": _step_done - _action_done,
-                    "write": _write_done - _step_done,
-                    "infer": _infer_done - _write_done,
+                    "step": _step_done - _wait_done,
+                    "infer": _infer_done - _step_done,
                     "total": _infer_done - _cycle_start,
                 },
                 info = info,

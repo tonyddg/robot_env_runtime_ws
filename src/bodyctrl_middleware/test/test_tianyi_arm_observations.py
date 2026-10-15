@@ -86,7 +86,7 @@ def _view(clock: FakeClock, samples: dict) -> StateView:
 
 
 def _plugin_sources(clock: FakeClock) -> dict:
-    """按插件的默认配置构造 qpos / color / depth 三个假 state."""
+    """按插件的默认配置构造 qpos / color / depth / odom 四个假 state."""
     return {
         "qpos_state": _arm_values(),
         "color_state": cache_value(
@@ -95,6 +95,7 @@ def _plugin_sources(clock: FakeClock) -> dict:
         "depth_state": cache_value(
             make_depth_msg(DEPTH_SOURCE_SHAPE), depth_config(),
         ),
+        "odom_state": np.zeros(3, dtype = float),
     }
 
 
@@ -143,7 +144,11 @@ def test_observation_builds_with_fake_state(
     plugin = tianyi_arm(TianyiArmConfig())
     sources = _plugin_sources(clock)
     observation = plugin.observations[obs_name].factory(_ctx(clock), sources)
-    out = np.asarray(observation.build(_view(clock, {state_name: sources[state_name]})))
+    samples = {state_name: sources[state_name]}
+    if obs_name == "eef_pose":
+        # eef_pose 输出世界系位姿：除 qpos 外还依赖 odom_state
+        samples["odom_state"] = sources["odom_state"]
+    out = np.asarray(observation.build(_view(clock, samples)))
     if expected_shape is None:
         assert out.shape == (len(TianyiArmConfig().arm_motor_list),)
     else:
@@ -157,7 +162,10 @@ def test_eef_pose_matches_direct_forward_kinematics() -> None:
     plugin = tianyi_arm(TianyiArmConfig())
     values = _arm_values()
     observation = plugin.observations["eef_pose"].factory(_ctx(clock), {})
-    out = np.asarray(observation.build(_view(clock, {"qpos_state": values})))
+    out = np.asarray(observation.build(_view(clock, {
+        "qpos_state": values,
+        "odom_state": np.zeros(3, dtype = float),   # 单位 odom → world pose == base pose
+    })))
 
     model = tcp_module.create_robot_model()
     model_ctx = model.create_context()
