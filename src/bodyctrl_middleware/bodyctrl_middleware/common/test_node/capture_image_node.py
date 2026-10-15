@@ -40,6 +40,10 @@ class Config(BaseModel):
         "/home/nvidia/robot_env_runtime_ws/output/capture.png", read_only = True,
         description = "捕获图片保存路径",
     )
+    is_clock_mode: bool = RosField(
+        True, read_only = True,
+        description = "是否使用 clock 模式计算图像 stamp 与接收时刻的延迟, 此时将不会保存图片与自动退出节点",
+    )
 
 class CaptureImageNode(Node):
     def __init__(self):
@@ -67,7 +71,8 @@ class CaptureImageNode(Node):
 
     def on_receive(self, msg: Union[Image, CompressedImage]):
         self.receive_image = self.adapter.decode(msg) # type: ignore
-        self.get_logger().info("接收到图片")
+        receive_delay = self.get_clock().now().nanoseconds / 1e9 - self.adapter.source_stamp(msg)
+        self.get_logger().info(f"接收到图片, 延迟: {receive_delay*1e3:.1f}ms")
 
 def main():
     rclpy.init()
@@ -76,7 +81,7 @@ def main():
     try:
         while rclpy.ok():
             rclpy.spin_once(node)
-            if node.receive_image is not None:
+            if (node.receive_image is not None) and (not node.config.is_clock_mode):
                 node.get_logger().info("捕获到图片进行保存")
                 cv2.imwrite(node.config.save_path, node.receive_image)
                 break
