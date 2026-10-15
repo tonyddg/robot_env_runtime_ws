@@ -402,7 +402,12 @@ def collect_once(
             _cycle_start = time.perf_counter()
             ready = env.wait_for_step(future)
             _wait_done = time.perf_counter()
+
             if not ready:
+                _log(
+                    logger, "info",
+                    f"进入 step hold"
+                )
                 # hold 周期：派发空动作、不落盘，并继续等待同一个 future
                 env.step(None)
                 _hold_done = time.perf_counter()
@@ -427,6 +432,10 @@ def collect_once(
                 continue
             action = np.array(future.get_action(), copy = True)
             _action_done = time.perf_counter()
+            _log(
+                logger, "info",
+                f"正常 step"
+            )
             observations, info = env.step(action)
             _step_done = time.perf_counter()
 
