@@ -39,6 +39,7 @@ setup(
             "tianyi_wholebody_tele_node = bodyctrl_middleware.tianyi.node.wholebody_tele_node:main",
 
             "input_service = bodyctrl_middleware.utility.input_service:main",
+            "capture_image_node = bodyctrl_middleware.common.test_node.capture_image_node:main",
         ],
     },
 )
