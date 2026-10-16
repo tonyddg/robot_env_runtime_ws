@@ -46,6 +46,10 @@ class ArmInterpolateControl(Node):
             [11, 12, 13, 14, 15, 16, 17], read_only = True,
             description = "控制电机名称与移动指令",
         )
+        arm_state_qos_depth: int = RosField(
+            1, 
+            description = "关节状态 QOS 保存深度, 由于关节消息发布频率极高, 设置深度为 1, 允许适当丢弃消息避免接收消息占用计算"
+        )
 
         motor_max_cur: float = RosField(
             8.0, ge = 0.0, read_only = True,
@@ -261,7 +265,7 @@ class ArmInterpolateControl(Node):
         self._arm_state_pos: Optional[np.ndarray] = None
         self._arm_state_spd: Optional[np.ndarray] = None
         self._arm_state_sub = self.create_subscription(
-            MotorStatusMsg, "arm/status", self._on_sub_arm_status, 10
+            MotorStatusMsg, "arm/status", self._on_sub_arm_status, self.config.arm_state_qos_depth
         )
 
         # 命令执行

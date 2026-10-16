@@ -73,9 +73,12 @@ def registe_tianyi_arm_qpos_obs(
 
     # 仅保存最新的状态, 订阅队列深度为 1, 避免高频话题拖慢整体速度
     qos_depth: int = 1,
+    # 允许数据丢失, 发送失败时不需要重复发送
+    qos_reliability: str = "best_effort",
 
     warn_after: float = 0.05,
     error_after: float = 0.1,
+    
 ):
     '''
     注册天轶机器人手臂关节状态
@@ -97,7 +100,7 @@ def registe_tianyi_arm_qpos_obs(
             adapter = adapter,
             logger = ctx.logger,
 
-            qos = make_qos(depth = qos_depth)
+            qos = make_qos(depth = qos_depth, reliability = qos_reliability)
         )
 
     def tianyi_arm_qpos_obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:

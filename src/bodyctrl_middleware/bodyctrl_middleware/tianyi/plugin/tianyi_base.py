@@ -3,6 +3,7 @@ from typing import Literal, Optional
 import numpy as np
 from pydantic import BaseModel
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
+from bodyctrl_middleware.utility.qos import QosConfig
 
 from robot_env_runtime.extension.plugin import RobotPlugin
 
@@ -61,6 +62,16 @@ class TianyiBaseConfig(BaseModel):
         0.05, ge = 0, read_only = True,
         description = "允许的观测延迟"
     )
+    error_after: float = RosField(
+        0.1, ge = 0, read_only = True,
+        description = "最大的观测延迟"
+    )
+    qos_reliability: str = RosField(
+       "best_effort", read_only = True, description = "图像观测外其他消息的 qos 可靠性, 默认为 reliable, 改为 best_effort 允许数据丢失, 发送失败时不需要重复发送",
+    )
+    qos_depth: int = RosField(
+        1, read_only = True, description = "图像观测外其他消息的 qos 深度, 订阅队列深度为 1, 仅保存最新的状态, 避免高频话题拖慢整体速度",
+    )
 
     # 遥操作控制开关
     is_enable_tele: bool = RosField(
@@ -97,7 +108,10 @@ def tianyi_base(
                 max_tele_linear = config.max_linear,
                 max_tele_angular = config.max_angular,
                 tele_cmd_vel_topic = config.tele_cmd_vel_topic,
-                warn_after = config.warn_after
+
+                warn_after = config.warn_after,
+                error_after = config.error_after,
+                qos = QosConfig(depth = config.qos_depth,reliability = config.qos_reliability)
             ),
             differential_base_tele_cmd_obs_name = config.tele_cmd_vel_obs_name
         )
@@ -113,7 +127,10 @@ def tianyi_base(
         robot, 
         config = OdomStateAdapterConfig(
             odom_topic = config.odom_topic,
-            warn_after = config.warn_after
+            
+            warn_after = config.warn_after,
+            error_after = config.error_after,
+            qos = QosConfig(depth = config.qos_depth,reliability = config.qos_reliability)
         ),
         odom_obs_name = config.odom_obs_name
     )

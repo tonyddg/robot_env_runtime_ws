@@ -4,6 +4,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
+from bodyctrl_middleware.utility.qos import QosConfig
 
 # 里程计消息
 from std_msgs.msg import Bool
@@ -19,9 +20,14 @@ class BoolStateAdapterConfig(BaseModel):
     topic_name: str = RosField(
         "bool", read_only = True, description = "话题名",
     )
+
     warn_after: float = RosField(
-        0.1, read_only = True, description = "消息容许延迟",
+        0.05, read_only = True, description = "消息容许延迟",
     )
+    error_after: float = RosField(
+        0.1, read_only = True, description = "消息最大延迟",
+    )
+    qos: QosConfig = RosField(default_factory = lambda: QosConfig())
 
     true_value: float = RosField(
         1.0, read_only = True, description = "取 True 时的状态值",
@@ -65,6 +71,8 @@ def registe_bool_obs(
             msg_type = Bool,
             adapter = BoolStateAdapter(config),
             logger = ctx.logger,
+
+            qos = config.qos.make_qos()
         )
 
     def obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
@@ -77,7 +85,9 @@ def registe_bool_obs(
             spec = ObservationSpec(
                 dtype = "float32", shape = (), semantic = f"base odom pose [x, y, yaw]"
             ),
+
             warn_after = config.warn_after,
+            error_after = config.error_after,
         )
     
     robot_plugin.state(

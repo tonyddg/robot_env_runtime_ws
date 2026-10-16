@@ -8,6 +8,8 @@ from robot_env_runtime.extension.plugin import RobotPlugin
 
 from bodyctrl_middleware.tianyi.hardware.constants import LEFT_ARM_MOTOR_IDS, RIGHT_ARM_MOTOR_IDS
 
+from bodyctrl_middleware.utility.qos import QosConfig
+
 from bodyctrl_middleware.tianyi.runtime.registe_tele_arm_obs import registe_tele_arm_obs
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_qpos_obs import registe_tianyi_arm_qpos_obs
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_arm_interpolate_control import registe_tianyi_arm_interpolate_control, TianyiArmInterpolateAdapterConfig
@@ -164,6 +166,12 @@ class TianyiArmConfig(BaseModel):
         0.1, ge = 0, read_only = True,
         description = "最大的观测延迟"
     )
+    qos_reliability: str = RosField(
+       "best_effort", read_only = True, description = "图像观测外其他消息的 qos 可靠性, 默认为 reliable, 改为 best_effort 允许数据丢失, 发送失败时不需要重复发送",
+    )
+    qos_depth: int = RosField(
+        1, read_only = True, description = "图像观测外其他消息的 qos 深度, 订阅队列深度为 1, 仅保存最新的状态, 避免高频话题拖慢整体速度",
+    )
 
 def tianyi_arm(
     config: Optional[TianyiArmConfig] = None,
@@ -206,7 +214,9 @@ def tianyi_arm(
         tianyi_arm_qpos_state_name = tianyi_arm_qpos_state_name,
 
         warn_after = config.warn_after,
-        error_after = config.error_after
+        error_after = config.error_after,
+        qos_depth = config.qos_depth,
+        qos_reliability = config.qos_reliability
     )
 
     if config.is_enable_tele:
@@ -216,7 +226,10 @@ def tianyi_arm(
             tele_state_name = tele_state_name,
 
             motor_id_to_idx = tuple(config.arm_motor_list),
-            warn_after = config.warn_after
+            warn_after = config.warn_after,
+            error_after = config.error_after,
+            qos_depth = config.qos_depth,
+            qos_reliability = config.qos_reliability
         )
 
     # 手部控制
@@ -321,7 +334,10 @@ def tianyi_arm(
     # 遥操终止信号
     if config.tele_stop_sign_topic_name != "":
         tele_stop_config = BoolStateAdapterConfig(
-            topic_name = config.tele_stop_sign_topic_name, warn_after = config.warn_after
+            topic_name = config.tele_stop_sign_topic_name,
+            warn_after = config.warn_after,
+            error_after = config.error_after,
+            qos = QosConfig(depth = config.qos_depth,reliability = config.qos_reliability)
         )
         robot = registe_bool_obs(
             robot, tele_stop_config,

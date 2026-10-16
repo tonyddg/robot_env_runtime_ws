@@ -4,6 +4,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
+from bodyctrl_middleware.utility.qos import QosConfig
 
 # 里程计消息
 from nav_msgs.msg import Odometry
@@ -22,6 +23,10 @@ class OdomStateAdapterConfig(BaseModel):
     warn_after: float = RosField(
         0.1, read_only = True, description = "里程计消息容许延迟",
     )
+    error_after: float = RosField(
+        0.1, read_only = True, description = "消息最大延迟",
+    )
+    qos: QosConfig = RosField(default_factory = lambda: QosConfig())
 
 class OdomStateAdapter(RosStateAdapter):
     """订阅里程计话题, 获取底盘平面位置 [x, y, yaw]"""
@@ -74,6 +79,8 @@ def registe_odom_obs(
             msg_type = Odometry,
             adapter = OdomStateAdapter(),
             logger = ctx.logger,
+
+            qos = config.qos.make_qos()
         )
 
     def obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
@@ -86,7 +93,9 @@ def registe_odom_obs(
             spec = ObservationSpec(
                 dtype = "float32", shape = (3,), semantic = f"base odom pose [x, y, yaw]"
             ),
+
             warn_after = config.warn_after,
+            error_after = config.error_after
         )
     
     robot_plugin.state(

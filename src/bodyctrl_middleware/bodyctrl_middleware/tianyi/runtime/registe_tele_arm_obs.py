@@ -10,6 +10,7 @@ from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
 from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
+from robot_env_runtime.ros2.qos import make_qos
 
 from bodyctrl_middleware.tianyi.hardware.constants import (
     TELE_ARM_STATE_TOPIC, TELE_RESULT_LENGTH, TELE_GRIPPER_OPENNESS_MAP, TELE_RESULT_TO_MOTOR_MAP,
@@ -45,7 +46,14 @@ def registe_tele_arm_obs(
 
     tele_arm_state_topic: str = TELE_ARM_STATE_TOPIC,
     tele_state_name: str = "tele_arm_state",
-    warn_after: float = 0.2
+
+    warn_after: float = 0.05,
+    error_after: float = 0.1,
+
+    # qos 深度, 订阅队列深度为 1, 仅保存最新的状态, 避免高频话题拖慢整体速度
+    qos_depth: int = 1,
+    # qos 可靠性, 默认为 reliable, 改为 best_effort 允许数据丢失, 发送失败时不需要重复发送
+    qos_reliability: str = "best_effort",
 ):
     '''
     注册遥操臂状态
@@ -66,6 +74,8 @@ def registe_tele_arm_obs(
                 msg_type = Float32MultiArray,
                 adapter = TeleArmStateAdapter(),
                 logger = ctx.logger,
+
+                qos = make_qos(depth = qos_depth, reliability = qos_reliability)
             )
         robot_plugin.state(
             tele_state_name,
@@ -95,7 +105,9 @@ def registe_tele_arm_obs(
             spec = ObservationSpec(
                 dtype = "float32", shape = (len(state_to_qpos_obs),), semantic = f"tele arm qpos with motor {motor_id_to_idx}"
             ),
+
             warn_after = warn_after,
+            error_after = error_after,
         )
     robot_plugin.observation(
         tele_arm_qpos_obs_name,

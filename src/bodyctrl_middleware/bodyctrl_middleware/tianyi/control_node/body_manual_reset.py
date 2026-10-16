@@ -121,7 +121,8 @@ class PartStateMonitor:
     def __init__(
         self, node: Node, motor_name_list: list[int], 
         group: str, state_delay_tol: float = 0.2,
-        on_fail_callback: Optional[Callable[[str], None]] = None
+        on_fail_callback: Optional[Callable[[str], None]] = None,
+        sub_qpos_depth: int = 1, # 关节消息发布频率极高, 允许适当丢弃消息避免接收消息占用计算
     ) -> None:
 
         if group not in ALL_GROUP:
@@ -151,7 +152,7 @@ class PartStateMonitor:
         self._last_timestamp = None
 
         self._sub = self._node.create_subscription(
-            MotorStatusMsg, group_def.status_topic, self.on_subscribe, 10
+            MotorStatusMsg, group_def.status_topic, self.on_subscribe, sub_qpos_depth
         )
         self._close = False
 
@@ -227,6 +228,11 @@ class BodyManualResetNode(Node):
         cmd_pub_rate: float = RosField(
             50, ge = 1.0, read_only = True,
             description = "控制节点底层命令发布频率",
+        )
+
+        arm_state_qos_depth: int = RosField(
+            1, 
+            description = "关节状态 QOS 保存深度, 由于关节消息发布频率极高, 设置深度为 1, 允许适当丢弃消息避免接收消息占用计算"
         )
 
     @dataclass

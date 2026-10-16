@@ -3,6 +3,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
+from bodyctrl_middleware.utility.qos import QosConfig
 
 # 观测消息
 from geometry_msgs.msg import Twist
@@ -27,6 +28,10 @@ class DifferentialBaseTeleCmdAdapterConfig(BaseModel):
     warn_after: float = RosField(
         0.1, read_only = True, description = "虚拟底盘速度指令容许延迟",
     )
+    error_after: float = RosField(
+        0.1, read_only = True, description = "消息最大延迟",
+    )
+    qos: QosConfig = RosField(default_factory = lambda: QosConfig())
 
 class DifferentialBaseTeleCmdAdapter(RosStateAdapter):
     """订阅遥操作 tele/cmd_vel 提取其中的线速度与角速度指令为 [v, w]"""
@@ -70,6 +75,8 @@ def registe_differential_base_tele_cmd_obs(
             msg_type = Twist,
             adapter = DifferentialBaseTeleCmdAdapter(config),
             logger = ctx.logger,
+
+            qos = config.qos.make_qos()
         )
 
     def obs_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> TransformObservation:
@@ -83,7 +90,9 @@ def registe_differential_base_tele_cmd_obs(
             spec = ObservationSpec(
                 dtype = "float32", shape = (2,), semantic = f"tele differential base vel cmd [v, w]"
             ),
+
             warn_after = config.warn_after,
+            error_after = config.error_after,
         )
     
     robot_plugin.state(
