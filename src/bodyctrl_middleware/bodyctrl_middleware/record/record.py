@@ -32,6 +32,7 @@ from bodyctrl_middleware.record.episode_writer import (
     EpisodeH5Writer,
     jsonable,
 )
+from bodyctrl_middleware.policy.base import Policy
 
 ACCEPT_INPUT = set(("t", "y", "1"))
 
@@ -334,7 +335,7 @@ def build_action_meta(
 
 def collect_once(
     env: Any,
-    policy: Any,
+    policy: Policy,
     episode_index: int,
     save_dir: Union[Path, str],
     *,
@@ -420,6 +421,7 @@ def collect_once(
     soft_fail_cycles: list[int] = []
 
     try:
+
         _setup_start = time.perf_counter()
         observations = env.reset(**(reset_kwargs or {}))
         _reset_done = time.perf_counter()
@@ -479,12 +481,12 @@ def collect_once(
             observations, info = env.step(action)
             _step_done = time.perf_counter()
 
-            writer.append(observations, action, info)
-            recorded_steps += 1
-
             # 为下一周期启动推理（infer 耗时记在本周期末尾）
             future = policy.infer_async(observations)
             _infer_done = time.perf_counter()
+
+            writer.append(observations, action, info)
+            recorded_steps += 1
 
             timing.record(
                 (info.get("cycle") or {}).get("index", recorded_steps),

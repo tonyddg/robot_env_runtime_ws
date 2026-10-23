@@ -326,14 +326,17 @@ class ResetContext:
 
 class InferenceFuture(Protocol):
     """
-    Policy 推理 future 的最小协议：runtime 只关心它是否完成.
+    Policy 推理 future 的最小协议：runtime 只关心它是否完成以及完成后取出动作
 
     runtime 不负责 policy inference、CUDA 同步、``get_action()`` 或 future 实现；
-    Policy 自己持有 ``get_action()``，由调用方在 ``step()`` 前取出 action。
     """
 
     def done(self) -> bool:
         """推理是否已经完成."""
+        ...
+
+    def get_action(self) -> np.ndarray:
+        """推理完成时取出动作"""
         ...
 
 
