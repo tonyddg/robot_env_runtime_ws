@@ -60,6 +60,8 @@ def launch_setup(context, *args, **kwargs):
     profile_path = LaunchConfiguration("profile_path").perform(context)
     wholebody_node_params_path = LaunchConfiguration("wholebody_node_params_path").perform(context)
 
+    _control_node_only = LaunchConfiguration("control_node_only").perform(context)
+
     if arm_type not in ARM_CONFIG:
         raise RuntimeError(
             f"Unknown arm type '{arm_type}', "
@@ -76,10 +78,7 @@ def launch_setup(context, *args, **kwargs):
             f"available: ['liftup', 'liftdown']"
         )
 
-    if wholebody_node_params_path != "":
-        wholebody_node_addition_params = [rel_to_package(wholebody_node_params_path, "bodyctrl_middleware")]
-    else:
-        wholebody_node_addition_params = []
+    control_node_only = bool(_control_node_only.lower() == "true")
 
     control_arm_motor_list = ARM_CONFIG[arm_type]["control_arm_motor_list"]
     control_motor_kp_list = ARM_CONFIG[arm_type]["control_motor_kp_list"]
@@ -109,22 +108,29 @@ def launch_setup(context, *args, **kwargs):
         ]
     )
 
-    tianyi_wholebody_tele_node = Node(
-        package = "bodyctrl_middleware",
-        executable = "tianyi_wholebody_tele_node",
-        parameters = [
-            {
-                "config.arm.arm_motor_list": control_arm_motor_list,
-                "config.profile_path": profile_path,
-            }
-        ] + wholebody_node_addition_params
-    )
+    node_list = [tianyi_arm_interpolate_control, tianyi_body_manual_reset]
 
-    return [
-        tianyi_arm_interpolate_control, 
-        tianyi_body_manual_reset,
-        # tianyi_wholebody_tele_node
-    ]
+    if not control_node_only:
+
+        if wholebody_node_params_path != "":
+            wholebody_node_addition_params = [rel_to_package(wholebody_node_params_path, "bodyctrl_middleware")]
+        else:
+            wholebody_node_addition_params = []
+
+        tianyi_wholebody_tele_node = Node(
+            package = "bodyctrl_middleware",
+            executable = "tianyi_wholebody_tele_node",
+            parameters = [
+                {
+                    "config.arm.arm_motor_list": control_arm_motor_list,
+                    "config.profile_path": profile_path,
+                }
+            ] + wholebody_node_addition_params
+        )
+
+        node_list += [tianyi_wholebody_tele_node, ]
+
+    return node_list
 
 def generate_launch_description():
 
@@ -148,6 +154,11 @@ def generate_launch_description():
             "wholebody_node_params_path",
             default_value="",
             description="wholebody_node 的节点参数 yaml 文件在功能包资源文件夹下的路径或绝对路径, 取空则跳过"
+        ),
+        DeclareLaunchArgument(
+            "control_node_only",
+            default_value="true",
+            description="仅启动控制节点, 不启动策略运行环境本身"
         ),
 
         OpaqueFunction(
