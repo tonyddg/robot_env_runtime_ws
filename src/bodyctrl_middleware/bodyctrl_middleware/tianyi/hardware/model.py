@@ -146,3 +146,18 @@ def build_state_vectors(
         second_idx = URDF_JOINT_ORDER.index("second_leg_pitch_joint")
         q[second_idx] = status[51] - status[52]
     return q
+
+def querry_q_urdf(
+    motor_id_list: list[int],
+    q_urdf: Sequence[float],
+) -> np.ndarray:
+    """
+    依据给定的 motor_id_list 从中提取原始 q_urdf 中的对应值, 用于 get_generalized_gravity 
+    """
+    q_urdf = np.array(q_urdf, dtype=float, copy=True)
+    q_query = np.zeros(len(motor_id_list))
+
+    for i, id in enumerate(motor_id_list):
+        idx_in_qvel = URDF_JOINT_ORDER.index(MOTOR_TO_URDF_JOINT[id])
+        q_query[i] = q_urdf[idx_in_qvel]
+    return q_query

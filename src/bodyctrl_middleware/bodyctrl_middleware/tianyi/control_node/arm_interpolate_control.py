@@ -21,6 +21,9 @@ from std_srvs.srv import Trigger
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
 from bodyctrl_middleware_interface.msg import CmdSetMotorInterpolate, SetMotorInterpolate
 from bodyctrl_middleware.tianyi.hardware.constants import JOINT_GROUPS, SDK_LIMITS, get_qpos_bound
+from bodyctrl_middleware.tianyi.hardware.model import (
+    PACKAGE_NAME, create_robot_model, build_state_vectors, querry_q_urdf
+)
 
 SDK_ARM_LIMITS: dict[int, tuple[float, float] | None] = {
     motor_id: SDK_LIMITS[motor_id] 
@@ -111,6 +114,16 @@ class ArmInterpolateControl(Node):
             description = "提前到达目标比率",
         )
 
+        # Tianyi URDF 功能包名
+        tianyi_urdf_package_name: str = RosField(
+            PACKAGE_NAME, 
+            description = "Tianyi URDF 功能包名, 仅在 pd 模式下开启力补偿时有效",
+        )
+        enable_pd_force: bool = RosField(
+            True,
+            description = "是否在 pd 模式下开启力补偿",
+        )
+
         @model_validator(mode = "after")
         def check_config(self):
             if self.control_mode == "pd":
@@ -165,6 +178,11 @@ class ArmInterpolateControl(Node):
                 modified_movement, 
                 start_time, total_time
             )
+            # return cls(
+            #     np.array(start_pos_list), 
+            #     np.array(movement_list), 
+            #     start_time, total_time
+            # )
 
         def sample(self, elapsed_time: float) -> tuple[np.ndarray, np.ndarray]:
             s = float(np.clip(elapsed_time / self.total_time, 0.0, 1.0))
@@ -243,8 +261,18 @@ class ArmInterpolateControl(Node):
         )
         self.config = self.params.bind()
 
-        # if self.config.control_mode == "pd":
-        #     raise ValueError("pd 控制模式暂未实现")
+        # pd 模式下开启力补偿时加载 URDF
+        if self.config.enable_pd_force and self.config.control_mode == "pd":
+            _start_time = time.perf_counter()
+            robot_model = create_robot_model(self.config.tianyi_urdf_package_name)
+            _use_time = time.perf_counter() - _start_time
+            self.get_logger().info(f"URDF 加载完成, 用时 {_use_time * 1000:.3f}ms")
+
+            self.q_default = robot_model.get_q_default()
+            self.robot_context = robot_model.create_context()
+        else:
+            self.q_default = None
+            self.robot_context = None
 
         self.command_topic_name = self.config.root_name + "/command"
         self.status_topic_name = self.config.root_name + "/status"
@@ -302,6 +330,29 @@ class ArmInterpolateControl(Node):
         # 初始化完成
         self._close = False
         self._csm.on_initialized()
+
+    def _get_generalized_gravity(self, ):
+        if self.robot_context is not None and self.q_default is not None:
+            arm_state, _ = self._read_arm_status()
+            if arm_state is None:
+                return None
+
+            status = {
+                id: float(qpos) for id, qpos in zip(self.config.control_motor_list, arm_state.tolist())
+            }
+
+            _start_time = time.perf_counter()
+            q_cur = build_state_vectors(status, self.q_default)
+            q_force = self.robot_context.get_generalized_gravity(q_cur)
+            res = querry_q_urdf(self.config.control_motor_list, q_force)
+            _use_time = time.perf_counter() - _start_time
+
+            self.get_logger().info(f"计算力补偿用时 {_use_time * 1000 :.3f} ms", throttle_duration_sec = 5)
+
+            return res
+
+        else:
+            return None
 
     def _on_sub_arm_status(self, msg: MotorStatusMsg):
         arm_state_pos = np.ones(len(self.config.control_motor_list)) * np.nan
@@ -509,6 +560,14 @@ class ArmInterpolateControl(Node):
         target_pos_array, speed_array = arm_cmd.sample(elapsed_time)
         is_last = elapsed_time >= arm_cmd.total_time
 
+        if self.robot_context is not None:
+            generalized_gravity = self._get_generalized_gravity()
+            if generalized_gravity is None:
+                self.fail("无法获取重力平衡力")
+                return
+        else:
+            generalized_gravity = None
+
         msg.cmds = []
         for i, motor_name in enumerate(self.config.control_motor_list):
             speed_raw = float(speed_array[i])
@@ -528,7 +587,11 @@ class ArmInterpolateControl(Node):
                 motor_cmd.kp = self.config.control_motor_kp_list[i]
                 motor_cmd.kd = self.config.control_motor_kd_list[i]
                 motor_cmd.spd = speed_raw
-                motor_cmd.tor = 0.0
+
+                if generalized_gravity is None:
+                    motor_cmd.tor = 0.0
+                else:
+                    motor_cmd.tor = float(generalized_gravity[i])
 
             motor_cmd.name = motor_name
             motor_cmd.pos = float(target_pos_array[i])
