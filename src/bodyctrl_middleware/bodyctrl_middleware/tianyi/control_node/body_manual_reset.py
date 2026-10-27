@@ -26,7 +26,8 @@ from pydantic import BaseModel, model_validator
 
 class PartTargetConfig(BaseModel):
     target_pos_list: list[float] = RosField(
-        description = "重置时电机的目标位置"
+        description = "重置时电机的目标位置", 
+        read_only = True # 防止状态读取机制出错
     )
     motor_name_list: list[int] = RosField(
         description = "目标位置对应电机 id", 

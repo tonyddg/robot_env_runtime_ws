@@ -16,7 +16,14 @@ ARM_CONFIG = dict(
         control_motor_kd_list = [
             30.0, 30.0, 30.0, 30.0, 5.0, 5.0, 5.0,
             30.0, 30.0, 30.0, 30.0, 5.0, 5.0, 5.0
-        ]
+        ],
+        reset_motor_pos_list = dict(
+            liftup = [
+                -0.7854, 0.5236, -0.5236, -0.7854, -0.5236, 0.0, 0.0,
+                -0.7854, -0.5236, 0.5236, -0.7854, 0.5236, 0.0, 0.0,
+            ],
+            liftdown = [0.0, 0.1] + [0.0] * 5 + [0.0, -0.1] + [0.0] * 5,
+        ),
     ),
     left = dict(
         control_arm_motor_list = [
@@ -27,7 +34,13 @@ ARM_CONFIG = dict(
         ],
         control_motor_kd_list = [
             30.0, 30.0, 30.0, 30.0, 5.0, 5.0, 5.0,
-        ]
+        ],
+        reset_motor_pos_list = dict(
+            liftup = [
+                -0.7854, 0.5236, -0.5236, -0.7854, -0.5236, 0.0, 0.0,
+            ],
+            liftdown = [0.0, 0.1] + [0.0] * 5,
+        ),
     ),
 )
 
@@ -42,6 +55,8 @@ def rel_to_package(path: str, package_name: str):
 
 def launch_setup(context, *args, **kwargs):
     arm_type = LaunchConfiguration("arm_type").perform(context)
+    reset_posture_type = LaunchConfiguration("reset_posture_type").perform(context)
+
     profile_path = LaunchConfiguration("profile_path").perform(context)
     wholebody_node_params_path = LaunchConfiguration("wholebody_node_params_path").perform(context)
 
@@ -49,6 +64,16 @@ def launch_setup(context, *args, **kwargs):
         raise RuntimeError(
             f"Unknown arm type '{arm_type}', "
             f"available: {list(ARM_CONFIG.keys())}"
+        )
+
+    if reset_posture_type == "liftup":
+        reset_motor_pos_list = ARM_CONFIG[arm_type]["reset_motor_pos_list"]["liftup"]
+    elif reset_posture_type == "liftdown":
+        reset_motor_pos_list = ARM_CONFIG[arm_type]["reset_motor_pos_list"]["liftdown"]
+    else:
+        raise RuntimeError(
+            f"Unknown reset posture type '{reset_posture_type}', "
+            f"available: ['liftup', 'liftdown']"
         )
 
     if wholebody_node_params_path != "":
@@ -72,10 +97,18 @@ def launch_setup(context, *args, **kwargs):
             }
         ]
     )
+
     tianyi_body_manual_reset = Node(
         package = "bodyctrl_middleware",
         executable = "tianyi_body_manual_reset",
+        parameters = [
+            {
+                "body_target.arm_target.motor_name_list": control_arm_motor_list,
+                "body_target.arm_target.target_pos_list": reset_motor_pos_list,
+            }
+        ]
     )
+
     tianyi_wholebody_tele_node = Node(
         package = "bodyctrl_middleware",
         executable = "tianyi_wholebody_tele_node",
@@ -90,7 +123,7 @@ def launch_setup(context, *args, **kwargs):
     return [
         tianyi_arm_interpolate_control, 
         tianyi_body_manual_reset,
-        tianyi_wholebody_tele_node
+        # tianyi_wholebody_tele_node
     ]
 
 def generate_launch_description():
@@ -105,6 +138,11 @@ def generate_launch_description():
             "arm_type",
             default_value="left",
             description="手臂控制模式, 仅控制左手 (left) 或控制双臂 (bimanual)"
+        ),
+        DeclareLaunchArgument(
+            "reset_posture_type",
+            default_value="liftup",
+            description="初始化时的手臂姿态, 可选 liftup 或 liftdown"
         ),
         DeclareLaunchArgument(
             "wholebody_node_params_path",
