@@ -13,6 +13,7 @@
 * `set_parameters` 参数修改校验
 * Pydantic 字段校验与跨字段校验
 * 嵌套 `BaseModel` 自动展开为 ROS 参数命名空间
+* `/parameter_events` 变更检测和 O(1) 的 `needs_refresh()`
 
 适合希望使用一份统一 Schema 同时管理：
 
@@ -288,13 +289,19 @@ print(current_config.speed)
 print(current_config.pid.kp)
 ```
 
-推荐业务代码通过：
+对于需要高频读取配置的节点，推荐仅在参数事件到达后更新业务持有的快照：
 
 ```python
-self.params.model()
+self.config = self.params.bind(initial=initial_config)
+
+# 在控制循环中：
+if self.params.needs_refresh():
+    self.config = self.params.model()
 ```
 
-获取当前权威配置，而不是长期缓存旧的 `Config` 对象。
+`needs_refresh()` 只比较版本号，不读取 ROS 参数；`model()` 才重新读取并验证。
+该方案兼容 ROS 2 Humble，不需要 `add_post_set_parameters_callback()`。
+注意 `/parameter_events` 是异步的，Executor 需要运行才能收到变更事件。
 
 ---
 
@@ -776,10 +783,11 @@ class ControllerNode(Node):
         self.config = self.params.bind()
 
     def do_work(self):
-        config = self.params.model()
+        if self.params.needs_refresh():
+            self.config = self.params.model()
 
-        speed = config.speed
-        kp = config.pid.kp
+        speed = self.config.speed
+        kp = self.config.pid.kp
 ```
 
 这样可以保持：
@@ -912,6 +920,7 @@ import types
 from collections.abc import Sequence as ABCSequence
 from dataclasses import dataclass
 from enum import Enum
+from threading import Lock
 from typing import (
     Annotated,
     Any,
@@ -933,10 +942,12 @@ from rcl_interfaces.msg import (
     FloatingPointRange,
     IntegerRange,
     ParameterDescriptor,
+    ParameterEvent,
     SetParametersResult,
 )
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import qos_profile_parameter_events
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -1423,7 +1434,8 @@ class RosParamBridge(Generic[ModelT]):
       * declare parameters with descriptors;
       * honor ROS parameter overrides from YAML / CLI;
       * reconstruct and validate a real BaseModel from current node parameters;
-      * build/install an on-set callback that validates candidate parameter state.
+      * build/install an on-set callback that validates candidate parameter state;
+      * detect successfully published parameter events via needs_refresh().
     """
 
     def __init__(
@@ -1448,6 +1460,53 @@ class RosParamBridge(Generic[ModelT]):
             raise RosParamError("Duplicate ROS parameter names were generated")
 
         self._installed_callback: Callable[[list[Parameter]], SetParametersResult] | None = None
+
+        # Fast, event-driven change detection. We deliberately do not keep
+        # another BaseModel cache: the caller owns its last model() result.
+        self._revision_lock = Lock()
+        self._revision = 0
+        self._model_revision = -1
+        self._managed_names = frozenset(self._by_ros_name)
+        self._node_fqn = self.node.get_fully_qualified_name()
+
+        # Keep the Subscription object alive for the lifetime of the bridge.
+        # This callback is invoked by the executor, not synchronously when
+        # parameters are set. Supported by ROS 2 Humble (no post-set API).
+        self._parameter_event_subscription = self.node.create_subscription(
+            ParameterEvent,
+            "/parameter_events",
+            self._on_parameter_event,
+            qos_profile_parameter_events,
+        )
+
+    def _on_parameter_event(self, event: ParameterEvent) -> None:
+        """Increment the revision after a managed parameter event is received."""
+        if event.node != self._node_fqn:
+            return
+
+        if not any(
+            parameter.name in self._managed_names
+            for group in (
+                event.new_parameters,
+                event.changed_parameters,
+                event.deleted_parameters,
+            )
+            for parameter in group
+        ):
+            return
+
+        with self._revision_lock:
+            self._revision += 1
+
+    def needs_refresh(self) -> bool:
+        """
+        O(1) check: has a managed parameter event arrived since model()?
+
+        This never reads ROS parameters and never validates a BaseModel.
+        It can become True only after the executor dispatches the event.
+        """
+        with self._revision_lock:
+            return self._revision != self._model_revision
 
     @property
     def specs(self) -> tuple[ParameterSpec, ...]:
@@ -1616,15 +1675,30 @@ class RosParamBridge(Generic[ModelT]):
         return raw, missing
 
     def model(self) -> ModelT:
-        """Read the node's current real parameter values and build a validated BaseModel."""
+        """
+        Read actual ROS parameters and return a validated BaseModel.
+
+        Calling model() acknowledges the revision observed before reading.
+        A newer event arriving during validation is left unacknowledged, so
+        needs_refresh() will still detect the pending change.
+        """
+        with self._revision_lock:
+            observed_revision = self._revision
+
         raw, missing = self._raw_state()
         if missing:
             raise UninitializedParametersError(missing)
 
         try:
-            return self.model_type.model_validate(raw)
+            config = self.model_type.model_validate(raw)
         except ValidationError as exc:
             raise ModelFromParametersError(exc) from exc
+
+        # Do not mark a failed read/validation as refreshed.
+        with self._revision_lock:
+            self._model_revision = observed_revision
+
+        return config
 
     def make_set_callback(
         self,
