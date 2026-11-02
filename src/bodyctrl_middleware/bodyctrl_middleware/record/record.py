@@ -12,26 +12,23 @@ Episode 采集循环（参考 ``robot_env/policy/record.py``，改用 robot_env_
   ``input()``，节点可以换成"ROS 输入服务"（见 ``record/confirm.py``）。这一点很重要：
   launch 启动的子进程拿不到终端 stdin（stdin 是管道），本地 ``input()`` 会永久阻塞；
   无法取得输入时按 ``on_unavailable`` 策略处理，而不是静默丢数据；
-- 采集循环只依赖鸭子类型接口，不 import robot_env_runtime：``env.reset() / env.ok() /
-  env.wait_for_step(future) / env.step(action) / env.fault / env.stop()``、
-  ``policy.reset(obs) / policy.done() / policy.infer_async(obs)``、``future.get_action()``。
+- 控制周期由 ``RecordEnvLoop`` 继承 ``BaseEnvLoop`` 实现；本模块只负责 writer
+  生命周期、异常分类、人工确认和最终保存，避免复制 wait/step/infer/hold 流程。
 """
 
 import json
-import statistics
 import sys
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Union
 
-import numpy as np
-
 from bodyctrl_middleware.record.episode_writer import (
     DEFAULT_BUFFER_WARN_BYTES,
     EpisodeH5Writer,
     jsonable,
 )
+from bodyctrl_middleware.record.record_env_loop import RecordEnvLoop
 from bodyctrl_middleware.policy.base import Policy
 
 ACCEPT_INPUT = set(("t", "y", "1"))
@@ -40,202 +37,6 @@ ACCEPT_INPUT = set(("t", "y", "1"))
 ConfirmFn = Callable[[str], Optional[bool]]
 
 ON_UNAVAILABLE_CHOICES = ("keep", "discard", "stop")
-
-# 循环耗时打点的阶段顺序（action / write 恒为微秒级，已取消）
-_CYCLE_PHASES = ("infer", "wait", "step", "hold", "total")
-
-# hold 周期的 cycle index 只保留前若干个（用于 episode attrs 诊断，避免无限增长）
-_MAX_SOFT_FAIL_CYCLES = 64
-
-# slack 的合理性上限（ms）：超过说明 info 里的时间戳与循环时钟不同源
-# （例如测试注入的 FakeClock），此时不统计该项，避免误导
-_TIMING_SANITY_MS = 60_000.0
-
-# 滚动汇总的输出间隔（秒）：稳态运行时每 N 秒一行，不再逐 cycle 打印
-_SUMMARY_INTERVAL_SEC = 10.0
-
-
-class CycleTiming:
-    """
-    采集 / 遥操循环的耗时打点（``debug_timing=True`` 时启用）.
-
-    **不逐 cycle 打印**（逐 cycle IO 本身会污染控制周期）：每个 cycle 只累加统计量，
-    每 ``summary_interval`` 秒（默认 10s）打一行滚动汇总，episode / 循环结束时再打
-    一行累计汇总。用于定位 ``wait_for_step()`` 迟到（StepOverrunError）与循环超时
-    到底是哪一段吃掉了周期：
-
-    - ``infer``：``policy.infer_async()`` 提交耗时（为**下一个**周期启动推理）；
-    - ``wait``：``env.wait_for_step()`` 阻塞耗时（等 deadline + 抓状态 + 校验）；
-    - ``step``：``future.get_action()`` + ``env.step()`` 派发命令 / 构建 observation；
-    - ``hold``：软失败（hold）周期里 ``env.step(None)`` 派发空动作的耗时；
-    - ``total``：一个循环体总共花了多少（与 ``period`` 对比）；
-    - ``slack``：进入 ``wait_for_step`` 时距 deadline 还剩多少 ms（负数 = 已经
-      迟到，正是 ``StepOverrunError`` 的判据），汇总里只保留窗口内的最小值；
-    - ``holds``：窗口内软失败（hold）周期的数量。
-
-    ``slack`` 依赖 runtime 的单调时钟（生产环境 ``MonotonicClock``）；使用 FakeClock
-    的测试里没有意义，会被上限过滤掉，不影响其余字段。
-    """
-
-    def __init__(
-        self,
-        logger: Any = None,
-        *,
-        enabled: bool = True,
-        tag: str = "",
-        summary_interval: float = _SUMMARY_INTERVAL_SEC,
-        now: Optional[Callable[[], float]] = None,
-    ) -> None:
-        """配置汇总间隔与时钟（``now`` 可注入，便于测试）。"""
-        self.enabled = bool(enabled)
-        self.tag = str(tag or "")
-        self._logger = logger
-        self._summary_interval = float(summary_interval)
-        self._now = time.perf_counter if now is None else now
-        self._count = 0
-        self._samples: dict = {}
-        self._hold_count = 0
-        self._slack_min: Optional[float] = None
-        self._window_count = 0
-        self._window_samples: dict = {}
-        self._window_hold = 0
-        self._window_slack_min: Optional[float] = None
-        self._window_started_at = self._now()
-
-    def record(
-        self,
-        cycle_index: Any,
-        durations: Mapping[str, float],
-        info: Optional[Mapping[str, Any]] = None,
-        *,
-        wait_entered_at: Optional[float] = None,
-        wait_returned_at: Optional[float] = None,
-    ) -> None:
-        """记录一个 cycle 的各阶段耗时（秒）；按 ``summary_interval`` 输出滚动汇总."""
-        if not self.enabled:
-            return
-        self._count += 1
-        self._window_count += 1
-        for name, value in durations.items():
-            value = float(value)
-            self._samples.setdefault(name, []).append(value)
-            self._window_samples.setdefault(name, []).append(value)
-        if "hold" in durations:
-            self._hold_count += 1
-            self._window_hold += 1
-        slack_ms = self._slack_ms(info, wait_entered_at)
-        if slack_ms is not None:
-            self._slack_min = slack_ms if self._slack_min is None else min(
-                self._slack_min, slack_ms
-            )
-            self._window_slack_min = slack_ms if self._window_slack_min is None else min(
-                self._window_slack_min, slack_ms
-            )
-        if self._now() - self._window_started_at >= self._summary_interval:
-            self._emit_summary(
-                count = self._window_count,
-                samples = self._window_samples,
-                hold_count = self._window_hold,
-                slack_min_ms = self._window_slack_min,
-                window = True,
-            )
-            self._reset_window()
-
-    def log_setup(
-        self,
-        *,
-        reset_sec: Optional[float] = None,
-        policy_reset_sec: Optional[float] = None,
-        padding_append_sec: Optional[float] = None,
-    ) -> None:
-        """记录循环开始前的一次性开销（reset / padding 行写入）."""
-        if not self.enabled:
-            return
-        parts = []
-        if reset_sec is not None:
-            parts.append(f"reset={reset_sec * 1000:.1f}ms")
-        if policy_reset_sec is not None:
-            parts.append(f"policy.reset={policy_reset_sec * 1000:.1f}ms")
-        if padding_append_sec is not None:
-            parts.append(f"padding_append={padding_append_sec * 1000:.1f}ms")
-        if parts:
-            self._log(f"[cycle-timing]{self._tag()} setup: " + " ".join(parts))
-
-    def log_summary(self) -> None:
-        """打印累计 median / max 汇总（没有样本时静默）."""
-        if not self.enabled or self._count == 0:
-            return
-        self._emit_summary(
-            count = self._count,
-            samples = self._samples,
-            hold_count = self._hold_count,
-            slack_min_ms = self._slack_min,
-            window = False,
-        )
-
-    # -- 内部 --------------------------------------------------------------
-
-    def _tag(self) -> str:
-        return f" {self.tag}" if self.tag else ""
-
-    def _log(self, message: str) -> None:
-        if self._logger is not None:
-            _log(self._logger, "info", message)
-        else:
-            print(message)
-
-    def _reset_window(self) -> None:
-        """清空滚动窗口，重新开始计时."""
-        self._window_count = 0
-        self._window_samples = {}
-        self._window_hold = 0
-        self._window_slack_min = None
-        self._window_started_at = self._now()
-
-    @staticmethod
-    def _slack_ms(
-        info: Optional[Mapping[str, Any]], wait_entered_at: Optional[float],
-    ) -> Optional[float]:
-        """计算进入 ``wait_for_step`` 时距 deadline 的余量（ms）；不可用时返回 None."""
-        if info is None or wait_entered_at is None:
-            return None
-        deadline = ((info.get("cycle") or {}).get("deadline"))
-        if deadline is None:
-            return None
-        slack_ms = (float(deadline) - float(wait_entered_at)) * 1000.0
-        if abs(slack_ms) > _TIMING_SANITY_MS:
-            return None
-        return slack_ms
-
-    def _emit_summary(
-        self,
-        *,
-        count: int,
-        samples: Mapping[str, list],
-        hold_count: int,
-        slack_min_ms: Optional[float],
-        window: bool,
-    ) -> None:
-        """输出一行 median / max 汇总（滚动窗口或累计）."""
-        parts = []
-        for name in _CYCLE_PHASES:
-            values = samples.get(name)
-            if not values:
-                continue
-            parts.append(
-                f"{name} med={statistics.median(values) * 1000:.1f} "
-                f"max={max(values) * 1000:.1f}"
-            )
-        if hold_count:
-            parts.append(f"holds={hold_count}")
-        if slack_min_ms is not None:
-            parts.append(f"slack min={slack_min_ms:+.1f}")
-        suffix = f" window={self._summary_interval:.0f}s" if window else ""
-        self._log(
-            f"[cycle-timing]{self._tag()} summary n={count}{suffix} [ms]: "
-            + " | ".join(parts)
-        )
-
 
 class ConfirmUnavailableError(RuntimeError):
     """
@@ -367,7 +168,7 @@ def collect_once(
     是旧的边攒边写行为（长 episode / 内存受限时使用）。
 
     ``debug_timing=True`` 时每 10s 打印一行滚动汇总（infer / wait / step / hold /
-    total 的 median / max，另附 ``holds`` 计数与 ``slack`` 最小值），episode 结束时
+    hook / total 的 median / max，另附 ``holds`` 计数与 ``slack`` 最小值），episode 结束时
     再打印一行累计汇总；没有 logger 时直接打印到 stdout。逐 cycle 打印已取消，
     避免日志 IO 本身污染控制周期。
 
@@ -412,108 +213,26 @@ def collect_once(
     fault_message: Optional[str] = None
     exception_type: Optional[str] = None
     exception_message: Optional[str] = None
-    timing = CycleTiming(logger, enabled = debug_timing, tag = f"episode {episode_index}")
-
-    # pending_padding = True
-    first_obs = None
-    recorded_steps = 0
-    soft_fail_count = 0
-    soft_fail_cycles: list[int] = []
+    record_loop = RecordEnvLoop(
+        env,
+        policy,
+        episode_index,
+        writer,
+        logger,
+        max_steps = max_steps,
+        enable_timing = debug_timing,
+    )
 
     try:
-
-        _setup_start = time.perf_counter()
-        observations = env.reset(**(reset_kwargs or {}))
-        _reset_done = time.perf_counter()
-        policy.reset(observations)
-        _policy_reset_done = time.perf_counter()
-        first_obs = observations
-        writer.append(
-            first_obs, np.zeros(env.action_dim, dtype = np.float32), None, padding = True
-        )
-
-        timing.log_setup(
-            reset_sec = _reset_done - _setup_start,
-            policy_reset_sec = _policy_reset_done - _reset_done,
-        )
-
-        # 预热与 setup 打点都不应计入第一个控制周期：进循环前重新锚定 deadline_0
-        rebase_deadline = getattr(env, "rebase_cycle_deadline", None)
-        if callable(rebase_deadline):
-            rebase_deadline()
-
-        reached_max_steps = False
-        future = policy.infer_async(observations)
-        while not policy.done() and env.ok():
-            if max_steps > 0 and recorded_steps >= max_steps:
-                # 到点正常收尾（finalize 模式下 max_steps 就是内存上限的兜底）
-                reached_max_steps = True
-                break
-
-            _cycle_start = time.perf_counter()
-            ready = env.wait_for_step(future)
-            _wait_done = time.perf_counter()
-
-            if not ready:
-                # hold 周期：派发空动作、不落盘，并继续等待同一个 future
-                env.step(None)
-                _hold_done = time.perf_counter()
-                soft_fail_count += 1
-                if len(soft_fail_cycles) < _MAX_SOFT_FAIL_CYCLES:
-                    soft_fail_cycles.append(int(getattr(env, "cycle_index", 0)))
-                timing.record(
-                    getattr(env, "cycle_index", recorded_steps),
-                    {
-                        "wait": _wait_done - _cycle_start,
-                        "hold": _hold_done - _wait_done,
-                        "total": _hold_done - _cycle_start,
-                    },
-                    info = _hold_info(env),
-                    wait_entered_at = _cycle_start,
-                    wait_returned_at = _wait_done,
-                )
-                _info_throttled(
-                    env,
-                    f"episode {episode_index} hold 周期累计 {soft_fail_count} 次",
-                )
-                continue
-            action = np.array(future.get_action(), copy = True)
-            observations, info = env.step(action)
-            _step_done = time.perf_counter()
-
-            # 为下一周期启动推理（infer 耗时记在本周期末尾）
-            future = policy.infer_async(observations)
-            _infer_done = time.perf_counter()
-
-            writer.append(observations, action, info)
-            recorded_steps += 1
-
-            timing.record(
-                (info.get("cycle") or {}).get("index", recorded_steps),
-                {
-                    "wait": _wait_done - _cycle_start,
-                    "step": _step_done - _wait_done,
-                    "infer": _infer_done - _step_done,
-                    "total": _infer_done - _cycle_start,
-                },
-                info = info,
-                wait_entered_at = _cycle_start,
-                wait_returned_at = _wait_done,
-            )
-
-        if reached_max_steps:
-            termination_reason = "max_steps"
+        outcome = record_loop.run(reset_kwargs = reset_kwargs)
+        termination_reason = outcome.reason
+        if termination_reason == "max_steps":
             _log(
                 logger, "info",
                 f"episode {episode_index} 达到 max_steps={max_steps}, 正常结束本轮",
             )
-        elif policy.done():
-            termination_reason = "policy_done"
-        elif not env.ok():
-            termination_reason = "robot_faulted"
+        elif termination_reason == "robot_faulted":
             fault_kind, fault_message = _fault_info(env)
-        else:
-            termination_reason = "ended"
     except KeyboardInterrupt:
         termination_reason = "interrupted"
         _log(logger, "warn", f"episode {episode_index} 采集被用户中断, 保留已采集数据")
@@ -531,7 +250,9 @@ def collect_once(
             f"{type(exc).__name__}: {exc}",
         )
 
-    timing.log_summary()
+    recorded_steps = record_loop.recorded_steps
+    soft_fail_count = record_loop.soft_fail_count
+    soft_fail_cycles = record_loop.soft_fail_cycles
 
     if recorded_steps == 0:
         _log(logger, "warn", "未采集到有效数据, 跳过保存")
@@ -546,7 +267,7 @@ def collect_once(
 
     keep, stop_run = True, False
     if ask_before_save:
-        if stop_before_confirm:
+        if stop_before_confirm and env.ok():
             _stop_env(env, logger)
         keep, stop_run = _confirm(
             f"episode {episode_index} 共 {writer.record_count} 行, "
@@ -760,17 +481,6 @@ def _stop_env(env: Any, logger: Any) -> None:
 # -- 其它内部辅助 ----------------------------------------------------------
 
 
-def _hold_info(env: Any) -> dict:
-    """构造 hold 周期传给 CycleTiming 的最小 info（含 runtime 的软失败诊断）."""
-    failure = getattr(env, "last_wait_failure", None)
-    return {
-        "hold": {
-            "reason": None if failure is None else failure.reason,
-            "consecutive": int(getattr(env, "hold_count", 0)),
-        }
-    }
-
-
 def _soft_fail_attrs(count: int, cycles: list[int]) -> dict:
     """hold 周期统计（写进 episode attrs，便于下游识别轨迹里的时间缺口）."""
     return {
@@ -876,19 +586,3 @@ def _log_error(logger: Any, message: str) -> None:
     func = getattr(logger, "error", None)
     if func is not None:
         func(message)
-
-
-def _info_throttled(owner: Any, message: str, *, period_sec: float = 5.0) -> None:
-    """给采集循环里的耗时打点用：拿不到 ROS logger 时静默跳过."""
-    node = getattr(getattr(owner, "_executor", None), "node", None)
-    logger = node.get_logger() if node is not None and hasattr(node, "get_logger") else None
-    func = getattr(logger, "info", None) if logger is not None else None
-    if func is None:
-        return
-    try:
-        func(message, throttle_duration_sec = period_sec)
-    except Exception:
-        try:
-            func(message)
-        except Exception:
-            pass
