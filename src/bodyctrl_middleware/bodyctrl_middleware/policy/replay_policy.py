@@ -43,7 +43,7 @@ class ReplayPolicy(PolicySync):
 
         if np.logical_or(action < -1.0, action > 1.0).any():
             message = f"遥操动作 {action} 超出 [-1, 1] 的范围"
-            self.on_warn(message)
+            self.logger.warn(message)
             if self.allow_clip:
                 action = np.clip(action, -1, 1)
             else:
@@ -54,6 +54,3 @@ class ReplayPolicy(PolicySync):
 
     def done(self):
         return self.cur_action_idx >= self.action_chunk.shape[0]
-
-    def on_warn(self, message: str):
-        self.logger.warn(message)

@@ -119,7 +119,7 @@ class TelePolicy(PolicySync):
 
         if np.logical_or(action < -1.0, action > 1.0).any():
             message = f"遥操动作 {action} 超出 [-1, 1] 的范围"
-            self.on_warn(message)
+            self.logger.warn(message)
             if self.allow_clip:
                 action = np.clip(action, -1, 1)
             else:
@@ -135,6 +135,3 @@ class TelePolicy(PolicySync):
 
     def done(self):
         return self.is_policy_done
-
-    def on_warn(self, message: str):
-        self.logger.warn(message)
