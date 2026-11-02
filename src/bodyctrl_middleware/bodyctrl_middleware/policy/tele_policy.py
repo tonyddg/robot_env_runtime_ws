@@ -104,7 +104,7 @@ class TelePolicy(PolicySync):
             else:
                 raise ValueError("给定动作维度小于 tele_config_list 中的最大索引")
 
-    def reset(self, obs: dict):
+    def reset(self, obs: dict, goal: Optional[dict] = None):
         self.last_obs = obs
         self.is_policy_done = False
 

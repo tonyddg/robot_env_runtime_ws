@@ -165,6 +165,7 @@ class BaseEnvLoop:
     def _setup_loop(
         self,
         reset_kwargs: Optional[dict[str, Any]] = None,
+        goal_kwargs: Optional[dict[str, Any]] = None,
         wait_for_first_action: bool = True,
         first_action_max_wait_second: float = 10,
     ) -> tuple[dict[str, Any], InferenceFuture]:
@@ -173,7 +174,7 @@ class BaseEnvLoop:
         reset_done_at = time.perf_counter()
 
         policy_reset_started_at = time.perf_counter()
-        self.policy.reset(obs)
+        self.policy.reset(obs, goal_kwargs)
         policy_reset_done_at = time.perf_counter()
 
         on_reset_started_at = time.perf_counter()
@@ -285,6 +286,7 @@ class BaseEnvLoop:
     def loop(
         self,
         reset_kwargs: Optional[dict[str, Any]] = None,
+        goal_kwargs: Optional[dict[str, Any]] = None,
         wait_for_first_action: bool = True,
         first_action_max_wait_second: float = 10,
     ) -> LoopOutcome:
@@ -299,7 +301,7 @@ class BaseEnvLoop:
         last_cycle_index = 0
         try:
             _, action_infer_future = self._setup_loop(
-                reset_kwargs,
+                reset_kwargs, goal_kwargs,
                 wait_for_first_action,
                 first_action_max_wait_second,
             )

@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 import numpy as np
 
 from robot_env_runtime.core.types import InferenceFuture
 
 class Policy(ABC):
     @abstractmethod
-    def reset(self, obs: dict):
+    def reset(self, obs: dict, goal: Optional[dict] = None):
         raise NotImplementedError()
 
     @abstractmethod

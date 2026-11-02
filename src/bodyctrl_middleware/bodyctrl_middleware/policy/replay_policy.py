@@ -30,7 +30,7 @@ class ReplayPolicy(PolicySync):
         self.logger = NULL_LOGGER if logger is None else logger
         self.allow_clip = allow_clip
 
-    def reset(self, obs: dict):
+    def reset(self, obs: dict, goal: Optional[dict] = None):
         self.cur_action_idx = 0
         self._resetted = True
 
