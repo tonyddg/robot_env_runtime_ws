@@ -172,6 +172,9 @@ class TianyiArmConfig(BaseModel):
     qos_depth: int = RosField(
         1, read_only = True, description = "图像观测外其他消息的 qos 深度, 订阅队列深度为 1, 仅保存最新的状态, 避免高频话题拖慢整体速度",
     )
+    log_throttle_sec: int = RosField(
+        10, read_only = True, description = "相关日志打印间隔",
+    )
 
 def tianyi_arm(
     config: Optional[TianyiArmConfig] = None,
@@ -286,12 +289,12 @@ def tianyi_arm(
     robot = registe_image_obs(
         robot, color_config,
         image_obs_name = config.image_color_obs_name,
-        log_throttle_sec = 1.0,
+        log_throttle_sec = config.log_throttle_sec,
     )
     robot = registe_image_obs(
         robot, depth_config,
         image_obs_name = config.image_depth_obs_name,
-        log_throttle_sec = 1.0,
+        log_throttle_sec = config.log_throttle_sec,
     )
 
     # 末端位姿
@@ -317,7 +320,7 @@ def tianyi_arm(
         warn_after = config.warn_after,
         error_after = config.error_after,
 
-        log_throttle_sec = 1.0,
+        log_throttle_sec = config.log_throttle_sec,
     )
 
     # 遥操终止信号
