@@ -38,6 +38,11 @@ setup(
             "tianyi_bimanual_tele_node = bodyctrl_middleware.tianyi.node.bimanual_tele_node:main",
             "tianyi_wholebody_tele_node = bodyctrl_middleware.tianyi.node.wholebody_tele_node:main",
 
+            "tianyi_arm_ready_monitor_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_ready_monitor_node:main",
+            "tianyi_arm_state_reflect_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_state_reflect_node:main",
+
+            "diff_base_reset = bodyctrl_middleware.common.control_node.diff_base_reset:main",
+
             "input_service = bodyctrl_middleware.utility.input_service:main",
             "capture_image_node = bodyctrl_middleware.common.test_node.capture_image_node:main",
         ],
