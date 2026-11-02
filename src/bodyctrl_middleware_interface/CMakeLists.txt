@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(robot_env_interface REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -17,7 +18,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SetMotorResetTarget.msg"
   "srv/BodyManualReset.srv"
   "srv/InputService.srv"
+  "srv/DiffBaseReset.srv"
   DEPENDENCIES std_msgs 
+  DEPENDENCIES geometry_msgs 
   DEPENDENCIES robot_env_interface
 )
 
