@@ -69,12 +69,12 @@ class RosExecutorHost:
     # -- ExecutorHost 协议 -------------------------------------------------
 
     @property
-    def node(self) -> Any:
+    def node(self):
         """返回 runtime node（``shutdown()`` 之后为 None）."""
         return self._node
 
     @property
-    def executor(self) -> Any:
+    def executor(self):
         """返回底层 executor（便于把额外的仿真节点挂到同一线程）."""
         return self._executor
 

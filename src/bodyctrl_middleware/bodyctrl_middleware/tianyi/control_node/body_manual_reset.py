@@ -279,7 +279,8 @@ class BodyManualResetNode(Node):
                 BodyManualResetNode.GroupInfo(
                     monitor = PartStateMonitor(
                         self, body_config.get_target(group_name).motor_name_list, group_name, 
-                        self.node_config.state_delay_tol, self.on_fail
+                        self.node_config.state_delay_tol, self.on_fail,
+                        sub_qpos_depth = self.node_config.arm_state_qos_depth
                     ),
                     pub = self.create_publisher(CmdSetMotorPosition, GROUP_DEFS[group_name].cmd_pos_topic, 10),
                     target = body_config.get_target(group_name)
