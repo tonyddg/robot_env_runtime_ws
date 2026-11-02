@@ -19,6 +19,7 @@ from robot_env_runtime.core.clock import Clock
 from robot_env_runtime.core.errors import ConfigError, ServiceCallError
 from robot_env_runtime.core.snapshot import StateSample, StateSnapshot
 from robot_env_runtime.core.state_view import StateInput, StateView
+from robot_env_runtime.logging import LoggerLike
 
 
 class CycleState(Enum):
@@ -267,7 +268,7 @@ class ResetContext:
     """reset 策略可见的运行环境（runtime 负责构造）."""
 
     clock: Clock
-    logger: Any
+    logger: LoggerLike
     state_provider: Callable[[str], StateSample[Any] | None]
     call_trigger: Callable[[str, float], Any]
     timeout: float
@@ -346,6 +347,10 @@ class ExecutorHost(Protocol):
     @property
     def node(self) -> Any:
         """返回 runtime 使用的 ROS node."""
+        ...
+
+    def get_logger(self) -> LoggerLike:
+        """返回 executor 所属的日志实现."""
         ...
 
     def start(self) -> None:

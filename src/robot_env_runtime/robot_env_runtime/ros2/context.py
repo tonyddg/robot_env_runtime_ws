@@ -12,6 +12,7 @@ from typing import Any
 
 from robot_env_runtime.core.clock import Clock
 from robot_env_runtime.core.types import RuntimeSettings
+from robot_env_runtime.logging import LoggerLike
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,6 @@ class ComponentContext:
     name: str
     node: Any
     clock: Clock
-    logger: Any
+    logger: LoggerLike
     control_period: float
     settings: RuntimeSettings

@@ -7,6 +7,7 @@ import numpy as np
 
 from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.core.types import InferenceFuture
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 from bodyctrl_middleware.loop.cycle_timing import CycleTiming
 from bodyctrl_middleware.policy.base import Policy
@@ -64,7 +65,7 @@ class BaseEnvLoop:
         self,
         env: RobotEnv,
         policy: Policy,
-        logger: Any,
+        logger: LoggerLike = NULL_LOGGER,
         enable_timing: bool = True,
         *,
         action_poll_period: float = 0.1,
@@ -74,7 +75,7 @@ class BaseEnvLoop:
             raise ValueError("action_poll_period must be positive")
         self.env = env
         self.policy = policy
-        self.logger = logger
+        self.logger = NULL_LOGGER if logger is None else logger
         self._action_poll_period = float(action_poll_period)
         self.timing = CycleTiming(
             logger,
@@ -306,18 +307,9 @@ class BaseEnvLoop:
                 if self.env.ok():
                     self.env.stop()
             except Exception as exc:
-                self._log_stop_failure(exc)
+                self.logger.warn(
+                    f"runtime stop after loop failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
             finally:
                 self.timing.log_summary()
-
-    def _log_stop_failure(self, exc: Exception) -> None:
-        """记录退出阶段 stop 失败，但绝不覆盖原返回值或异常."""
-        warn = getattr(self.logger, "warning", None)
-        if warn is None:
-            warn = getattr(self.logger, "warn", None)
-        if warn is None:
-            return
-        try:
-            warn(f"runtime stop after loop failed: {type(exc).__name__}: {exc}")
-        except Exception:
-            pass

@@ -23,6 +23,7 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
 from robot_env_runtime.core.errors import RosExecutorFailureError
+from robot_env_runtime.logging import LoggerLike
 
 
 class RosExecutorHost:
@@ -54,6 +55,7 @@ class RosExecutorHost:
         self._shutdown_timeout = float(shutdown_timeout)
         self._thread_name = thread_name or f"{node_name}-executor"
         self._node = rclpy.create_node(node_name)
+        self._logger: LoggerLike = self._node.get_logger()
         self._extra_nodes = list(nodes)
         self._executor = SingleThreadedExecutor() if executor is None else executor
         self._executor.add_node(self._node)
@@ -72,6 +74,10 @@ class RosExecutorHost:
     def node(self):
         """返回 runtime node（``shutdown()`` 之后为 None）."""
         return self._node
+
+    def get_logger(self) -> LoggerLike:
+        """返回 runtime node 的 logger."""
+        return self._logger
 
     @property
     def executor(self):

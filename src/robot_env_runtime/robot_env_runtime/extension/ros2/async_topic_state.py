@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
+from robot_env_runtime.logging import LoggerLike
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         msg_type: Any,
         adapter: Any,
         qos: Any = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         wall_clock: Any = None,
         inline: bool = False,
         stamp_at_arrival: bool = True,
@@ -206,7 +207,7 @@ class AsyncRosTopicStateSource(RosTopicStateSource):
         worker = self._worker
         if worker.is_alive():
             worker.join(timeout=self._join_timeout)
-            if worker.is_alive() and self._logger is not None:
+            if worker.is_alive():
                 self._logger.warn(
                     f"async state worker for {self._topic} did not stop within "
                     f"{self._join_timeout}s; leaving daemon thread"

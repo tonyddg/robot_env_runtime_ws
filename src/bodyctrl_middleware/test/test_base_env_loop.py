@@ -19,8 +19,20 @@ class _Logger:
     def __init__(self) -> None:
         self.messages: list[str] = []
 
-    def info(self, message: str) -> None:
+    def debug(self, message: str, **kwargs) -> None:
         self.messages.append(message)
+
+    def info(self, message: str, **kwargs) -> None:
+        self.messages.append(message)
+
+    def warn(self, message: str, **kwargs) -> None:
+        self.messages.append(message)
+
+    def error(self, message: str, **kwargs) -> None:
+        self.messages.append(message)
+
+    def get_child(self, name: str):
+        return self
 
 
 class _LoopEnv(FakeEnv):

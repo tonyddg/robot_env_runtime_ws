@@ -74,29 +74,53 @@ class FakeTimer:
 class FakeLogger:
     """记录日志调用而不是输出."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        name: str = "",
+        *,
+        records: list[tuple[str, str]] | None = None,
+        calls: list[tuple[str, str, dict[str, Any]]] | None = None,
+    ) -> None:
         """创建空日志记录."""
-        self.records: list[tuple[str, str]] = []
+        self.name = name
+        self.records = [] if records is None else records
+        self.calls = [] if calls is None else calls
 
-    def debug(self, message: Any, *args: Any, **kwargs: Any) -> None:
+    def get_child(self, name: str) -> "FakeLogger":
+        """创建共享记录列表的子 logger."""
+        child_name = f"{self.name}.{name}" if self.name else name
+        return FakeLogger(
+            child_name,
+            records = self.records,
+            calls = self.calls,
+        )
+
+    def _record(self, level: str, message: Any, **kwargs: Any) -> bool:
+        """记录级别、文本和原始 kwargs."""
+        text = str(message)
+        self.records.append((level, text))
+        self.calls.append((level, text, dict(kwargs)))
+        return True
+
+    def debug(self, message: Any, *args: Any, **kwargs: Any) -> bool:
         """记录 debug."""
-        self.records.append(("debug", str(message)))
+        return self._record("debug", message, **kwargs)
 
-    def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
+    def info(self, message: Any, *args: Any, **kwargs: Any) -> bool:
         """记录 info."""
-        self.records.append(("info", str(message)))
+        return self._record("info", message, **kwargs)
 
-    def warn(self, message: Any, *args: Any, **kwargs: Any) -> None:
+    def warn(self, message: Any, *args: Any, **kwargs: Any) -> bool:
         """记录 warn."""
-        self.records.append(("warn", str(message)))
+        return self._record("warn", message, **kwargs)
 
-    def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
+    def warning(self, message: Any, *args: Any, **kwargs: Any) -> bool:
         """记录 warning（与 warn 等价）."""
-        self.records.append(("warn", str(message)))
+        return self._record("warn", message, **kwargs)
 
-    def error(self, message: Any, *args: Any, **kwargs: Any) -> None:
+    def error(self, message: Any, *args: Any, **kwargs: Any) -> bool:
         """记录 error."""
-        self.records.append(("error", str(message)))
+        return self._record("error", message, **kwargs)
 
     def messages(self, level: str | None = None) -> list[str]:
         """返回指定级别的日志文本."""

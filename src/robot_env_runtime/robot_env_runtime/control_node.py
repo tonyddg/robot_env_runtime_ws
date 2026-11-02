@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 from robot_env_interface.msg import ControlStatus
 
 from robot_env_runtime.extension.ros2.protocol import ACCEPTING_STATES, ControlState
+from robot_env_runtime.logging import LoggerLike
 from robot_env_runtime.ros2.qos import make_qos
 
 
@@ -70,7 +71,7 @@ class ControlStatusPublisher:
         *,
         rate: float = 50.0,
         qos: Any = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         stamp: bool = True,
         autostart: bool = True,
     ) -> None:
@@ -179,7 +180,7 @@ class ControlStateMachine:
         publisher: ControlStatusPublisher,
         *,
         start_epoch: int = 1,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
     ) -> None:
         """以 INITIALIZING 状态起步，并立即发布一次 ControlStatus."""
         self._publisher = publisher
@@ -246,7 +247,7 @@ class ControlStateMachine:
         """自检完成：INITIALIZING → READY."""
         if not self._guard("on_initialized", (ControlState.INITIALIZING,)):
             return False
-        self._log_info(f"节点初始化完成, 有信息: {message}")
+        self._logger.info(f"节点初始化完成, 有信息: {message}")
         return self._transition(ControlState.READY, message=message)
 
     def accept_command(
@@ -268,7 +269,7 @@ class ControlStateMachine:
         if int(control_epoch) != self._control_epoch:
             self._counters["rejected_stale_epoch"] += 1
             self._counters["rejected"] += 1
-            self._log_warn(
+            self._logger.warn(
                 f"拒绝命令 {command_id}: epoch {control_epoch} 与本机 "
                 f"{self._control_epoch} 不一致（可能是 stop/reset 之前的旧命令）"
             )
@@ -276,7 +277,7 @@ class ControlStateMachine:
         if int(command_id) <= self._active_command_id:
             self._counters["rejected_stale_command_id"] += 1
             self._counters["rejected"] += 1
-            self._log_warn(
+            self._logger.warn(
                 f"拒绝命令 {command_id}: 不大于已接受的 {self._active_command_id}"
                 "（重复或乱序命令）"
             )
@@ -284,7 +285,7 @@ class ControlStateMachine:
         if command_validator is not None:
             is_valid = command_validator()
             if not is_valid:
-                self._log_warn("命令内容没有通过检验")
+                self._logger.warn("命令内容没有通过检验")
                 return False
 
         self._active_command_id = int(command_id)
@@ -311,7 +312,9 @@ class ControlStateMachine:
         """
         self._message = "" if message is None else message
 
-        self._log_info(f"节点在 Epoch {self.control_epoch} 建立软件屏障, 进入 STOP 状态")
+        self._logger.info(
+            f"节点在 Epoch {self.control_epoch} 建立软件屏障, 进入 STOP 状态"
+        )
         return self._transition(
             ControlState.STOPPED,
             bump_epoch=True,
@@ -321,7 +324,10 @@ class ControlStateMachine:
 
     def begin_reset(self, message: str | None = None) -> bool:
         """开始 reset：任意状态 → RESETTING，epoch + 1，命令 id 清零."""
-        self._log_info(f"节点在 Epoch {self.control_epoch} 开始重置, 进入 RESETTING 状态, 有信息: {message}")
+        self._logger.info(
+            f"节点在 Epoch {self.control_epoch} 开始重置, "
+            f"进入 RESETTING 状态, 有信息: {message}"
+        )
         return self._transition(
             ControlState.RESETTING,
             bump_epoch=True,
@@ -334,7 +340,10 @@ class ControlStateMachine:
         if not self._guard("finish_reset", (ControlState.RESETTING,)):
             return False
 
-        self._log_info(f"节点初始化为 Epoch {self.control_epoch}, 进入 READY 状态, 有信息: {message}")
+        self._logger.info(
+            f"节点初始化为 Epoch {self.control_epoch}, "
+            f"进入 READY 状态, 有信息: {message}"
+        )
         return self._transition(ControlState.READY, message=message)
 
     def fail(self, message: str | None = None) -> bool:
@@ -350,7 +359,10 @@ class ControlStateMachine:
             return False
         self._counters["faults"] += 1
 
-        self._log_warn(f"节点在 Epoch {self.control_epoch} 出现异常, 进入 FAULTED 状态, 有信息: {message}")
+        self._logger.warn(
+            f"节点在 Epoch {self.control_epoch} 出现异常, "
+            f"进入 FAULTED 状态, 有信息: {message}"
+        )
         return self._transition(
             ControlState.FAULTED,
             bump_epoch=True,
@@ -417,7 +429,7 @@ class ControlStateMachine:
         self._counters["rejected_state"] += 1
         self._counters["rejected"] += 1
         allowed_names = ", ".join(state.name for state in allowed)
-        self._log_warn(
+        self._logger.warn(
             f"拒绝 {action}: 当前状态 {self._state.name} 不在允许集合 "
             f"({allowed_names}) 内"
         )
@@ -431,13 +443,3 @@ class ControlStateMachine:
             response.success = bool(ok)
         if hasattr(response, "message"):
             response.message = self._message
-
-    def _log_warn(self, message: str) -> None:
-        """写 warn 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.warn(message)
-
-    def _log_info(self, message: str) -> None:
-        """写 info 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.info(message)

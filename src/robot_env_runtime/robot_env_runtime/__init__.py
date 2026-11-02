@@ -90,6 +90,7 @@ from robot_env_runtime.extension.reset import (
     ResetStrategy,
     SequentialResetStrategy,
 )
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER, NullLogger
 from robot_env_runtime.extension.ros2 import (
     ACCEPTING_STATES,
     AsyncRosTopicStateSource,
@@ -153,8 +154,11 @@ __all__ = [
     "ExecutorHost",
     "HoldReason",
     "InferenceFuture",
+    "LoggerLike",
     "NullActionReport",
     "NullActionStatus",
+    "NULL_LOGGER",
+    "NullLogger",
     "InvalidTransitionError",
     "LegacyProtocol",
     "ManagedControlError",

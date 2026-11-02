@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from robot_env_runtime.core.errors import ConfigError
 from robot_env_runtime.core.state_view import StateInput, StateView
 from robot_env_runtime.core.types import ResetContext
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 _MAX_DESCRIBE_VALUE = 120
 
@@ -169,14 +170,14 @@ class SequentialResetStrategy(ResetStrategy):
         name: str,
         steps: Sequence[ResetStrategy],
         *,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
     ) -> None:
         """保存按序执行的 step 列表（至少一个）."""
         if not steps:
             raise ConfigError("SequentialResetStrategy needs at least one step")
         self._name = name
         self._steps = tuple(steps)
-        self._logger = logger
+        self._logger = NULL_LOGGER if logger is None else logger
         self._parameter_names = self._collect_parameter_names()
 
     @property
@@ -208,7 +209,9 @@ class SequentialResetStrategy(ResetStrategy):
     def run(self, ctx: ResetContext) -> None:
         """按顺序执行每个 step（任一失败直接冒泡）."""
         for index, step in enumerate(self._steps, start=1):
-            self._log_info(f"reset step {index}/{len(self._steps)}: {step.name!r}")
+            self._logger.info(
+                f"reset step {index}/{len(self._steps)}: {step.name!r}"
+            )
             step.run(ctx)
 
     def close(self) -> None:
@@ -217,12 +220,9 @@ class SequentialResetStrategy(ResetStrategy):
             try:
                 step.close()
             except Exception as exc:  # pragma: no cover - 关闭尽力而为
-                self._log_info(f"reset step {step.name!r} close failed: {exc}")
-
-    def _log_info(self, message: str) -> None:
-        """写 info 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.info(message)
+                self._logger.warn(
+                    f"reset step {step.name!r} close failed: {exc}"
+                )
 
     def _collect_parameter_names(self) -> tuple[str, ...]:
         """合并各 step 的参数白名单；同一参数被两个 step 声明视为装配期配置错误."""

@@ -462,8 +462,8 @@ def test_async_source_received_at_semantics(stamp_at_arrival: bool) -> None:
     source.close()
 
 
-def test_logger_warn_throttling_uses_clock() -> None:
-    """同一告警在 1 秒内最多记录一次（用 FakeClock，不依赖真实时间）."""
+def test_logger_warn_forwards_native_throttle_option() -> None:
+    """topic source 直接交给 ROS logger 原生 throttle，不自行维护时间窗口."""
     clock = FakeClock()
     logger = FakeLogger()
     node = FakeRosNode(logger=logger)
@@ -479,7 +479,11 @@ def test_logger_warn_throttling_uses_clock() -> None:
     source.open()
     node.deliver("/arm/status", _Msg(value=1.0))
     node.deliver("/arm/status", _Msg(value=1.0))
-    assert len(logger.messages("warn")) == 1
     clock.advance(1.5)
     node.deliver("/arm/status", _Msg(value=1.0))
-    assert len(logger.messages("warn")) == 2
+    assert len(logger.calls) == 3
+    assert all(
+        kwargs == {"throttle_duration_sec": 1.0}
+        for level, _, kwargs in logger.calls
+        if level == "warn"
+    )

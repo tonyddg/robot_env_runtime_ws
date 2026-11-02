@@ -28,6 +28,7 @@ from robot_env_runtime.core.types import (
 from robot_env_runtime.extension.controller import Controller
 from robot_env_runtime.extension.ros2.controller_adapter import RosControllerAdapter
 from robot_env_runtime.extension.ros2.protocol import ControlProtocol
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 from robot_env_runtime.ros2.qos import make_qos
 
 
@@ -51,7 +52,7 @@ class RosPublisherController(Controller):
         protocol: ControlProtocol,
         control_period: float,
         qos: Any = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         require_subscribers: bool = False,
         subscriber_settle_sec: float = 0.0,
     ) -> None:
@@ -65,7 +66,7 @@ class RosPublisherController(Controller):
         self._protocol = protocol
         self._control_period = float(control_period)
         self._qos = make_qos() if qos is None else qos
-        self._logger = logger
+        self._logger = NULL_LOGGER if logger is None else logger
         self._require_subscribers = bool(require_subscribers)
         self._subscriber_settle_sec = float(subscriber_settle_sec)
         self._publisher: Any = None
@@ -211,12 +212,11 @@ class RosPublisherController(Controller):
         sent_at = self._clock.now()
         metadata = dict(prepared.metadata)
         metadata["subscribers"] = self._subscriber_count()
-        if self._logger is not None:
-            self._logger.debug(
-                f"controller {self._name!r} dispatched on {self._topic} "
-                f"(command_id={prepared.ctx.command_id}, "
-                f"control_epoch={prepared.ctx.control_epoch})"
-            )
+        self._logger.debug(
+            f"controller {self._name!r} dispatched on {self._topic} "
+            f"(command_id={prepared.ctx.command_id}, "
+            f"control_epoch={prepared.ctx.control_epoch})"
+        )
         record = CommandRecord(
             controller=self._name,
             action=prepared.action,

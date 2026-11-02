@@ -1,8 +1,9 @@
 import numpy as np
-from typing import Any, Optional, Callable, Union, Dict
+from typing import Optional, Callable, Union, Dict
 from dataclasses import dataclass
 
 from bodyctrl_middleware.policy.base import PolicySync
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 ObsType = Dict[str, np.ndarray]
 
@@ -78,15 +79,15 @@ class TelePolicy(PolicySync):
         # 遥操结束判定函数, 传入 obs
         is_tele_done_fn: Optional[Callable[[dict], bool]] = None,
 
-        # ROS2 node.get_logger() 用于当 action 被裁剪时输出警告
-        logger: Optional[Any] = None,
+        # 用于当 action 被裁剪时输出警告
+        logger: LoggerLike = NULL_LOGGER,
         # 是否允许裁剪动作, 否则直接抛出错误
         allow_clip: bool = True
     ):
         self.tele_config_list = tele_config_list
         self.last_obs = None
         self.is_policy_done = False
-        self.logger = logger
+        self.logger = NULL_LOGGER if logger is None else logger
         self.allow_clip = allow_clip
         self.is_tele_done_fn = is_tele_done_fn
 
@@ -136,5 +137,4 @@ class TelePolicy(PolicySync):
         return self.is_policy_done
 
     def on_warn(self, message: str):
-        if self.logger is not None:
-            self.logger.warn(message)
+        self.logger.warn(message)

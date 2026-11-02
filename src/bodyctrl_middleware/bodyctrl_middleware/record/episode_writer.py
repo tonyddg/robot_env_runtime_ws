@@ -52,6 +52,8 @@ from typing import Any, Dict, List, Mapping, Optional, Union
 import h5py
 import numpy as np
 
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
+
 WRITER_VERSION = "bodyctrl_middleware.record/2"
 
 # 允许的压缩模式：默认 none（相机图像接近不可压缩，gzip 只省 ~7% 却要 200ms+）
@@ -187,7 +189,7 @@ class EpisodeH5Writer:
         compression: str = "none",
         compression_overrides: Optional[Mapping[str, str]] = None,
         flush_warn_sec: float = DEFAULT_FLUSH_WARN_SEC,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         init_capacity: int = 512,
         flush_policy: str = "finalize",
         write_chunk_rows: int = 512,
@@ -233,7 +235,7 @@ class EpisodeH5Writer:
                 )
         self._compression_overrides = overrides
         self._flush_warn_sec = float(flush_warn_sec)
-        self._logger = logger
+        self._logger = NULL_LOGGER if logger is None else logger
 
         if self.save_path.exists():
             raise FileExistsError(
@@ -543,7 +545,9 @@ class EpisodeH5Writer:
         if needed <= self._capacity:
             return
         new_capacity = max(needed, self._capacity * 2, self.batch_size * 2)
-        self._warn(f"EpisodeH5Writer 预分配容量: {self._capacity} -> {new_capacity} 行")
+        self._logger.warn(
+            f"EpisodeH5Writer 预分配容量: {self._capacity} -> {new_capacity} 行"
+        )
 
         for dataset in self._row_datasets():
             dataset.resize((new_capacity,) + dataset.shape[1:])
@@ -592,7 +596,7 @@ class EpisodeH5Writer:
                 suggestion = "会拖长 episode 收尾写盘, 可减小 write_chunk_rows / max_steps"
             else:
                 suggestion = "会吃掉控制周期预算，建议降低 batch_size 或关闭压缩"
-            self._warn(
+            self._logger.warn(
                 f"EpisodeH5Writer flush 耗时 {elapsed * 1000:.1f}ms 超过阈值 "
                 f"{self._flush_warn_sec * 1000:.1f}ms "
                 f"(rows {start}..{end}, {self.save_path.name}); "
@@ -605,23 +609,6 @@ class EpisodeH5Writer:
         if self.flush_policy == "finalize":
             return self.write_chunk_rows
         return self.batch_size
-
-    def _warn(self, message: str) -> None:
-        """写 warn 日志（logger 可选）."""
-        if self._logger is None:
-            return
-        func = (
-            getattr(self._logger, "warning", None)
-            or getattr(self._logger, "warn", None)
-            or getattr(self._logger, "info", None)
-        )
-        if func is None:
-            return
-        try:
-            func(message)
-        except Exception:
-            # 日志绝不能打断采集（例如 rclpy 的调用点 severity 限制）
-            pass
 
     # -- 初始化 / 校验 -----------------------------------------------------
 
@@ -829,7 +816,7 @@ class EpisodeH5Writer:
             and self._buffer_bytes > self.buffer_warn_bytes
         ):
             self._buffer_warned = True
-            self._warn(
+            self._logger.warn(
                 f"EpisodeH5Writer 待写内存 "
                 f"{self._buffer_bytes / 1024 / 1024:.1f}MB 超过阈值 "
                 f"{self.buffer_warn_bytes / 1024 / 1024:.1f}MB "

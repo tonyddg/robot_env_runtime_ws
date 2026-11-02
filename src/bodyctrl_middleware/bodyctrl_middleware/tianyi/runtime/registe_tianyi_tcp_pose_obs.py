@@ -1,4 +1,5 @@
-from typing import Any, Callable, Literal, Mapping, Optional, Sequence
+import math
+from typing import Any, Literal, Mapping, Optional, Sequence
 import numpy as np
 import time
 
@@ -41,16 +42,18 @@ def registe_tianyi_tcp_pose_obs(
     warn_after: float = 0.05,
     error_after: float = 0.1,
 
-    # 打印调试信息, 建议传入 node.get_logger().info
-    log_fn: Optional[Callable[..., None]] = None
+    # None 关闭诊断日志；0 表示每次打印；正数交给 ROS logger 原生节流
+    log_throttle_sec: Optional[float] = None,
 ):
     '''
     通过正运动学获取给定末端连杆的位姿 (4x4 齐次矩阵)
     仅更新手臂关节, 认为其他位置的关节初始化后不会改变 (通过 default_motor_id、default_motor_qpos 给出)
     '''
 
-    if log_fn is None:
-        log_fn = lambda message, **kwargs: None
+    if log_throttle_sec is not None:
+        log_throttle_sec = float(log_throttle_sec)
+        if not math.isfinite(log_throttle_sec) or log_throttle_sec < 0.0:
+            raise ValueError("log_throttle_sec must be finite and non-negative")
 
     if len(motor_id_to_idx) != len(set(motor_id_to_idx)):
         raise ValueError("给定手臂关节电机 id 列表存在重复")
@@ -75,7 +78,11 @@ def registe_tianyi_tcp_pose_obs(
         _start_time = time.perf_counter()
         robot_model = create_robot_model(tianyi_urdf_package_name)
         _use_time = time.perf_counter() - _start_time
-        log_fn(f"URDF 加载完成, 用时 {_use_time * 1000:.3f}ms")
+        if log_throttle_sec is not None:
+            ctx.logger.info(
+                f"URDF 加载完成, 用时 {_use_time * 1000:.3f}ms",
+                throttle_duration_sec = log_throttle_sec,
+            )
         
         q_default = robot_model.get_q_default()
         # 仅会在 robot_env 线程调用
@@ -99,7 +106,11 @@ def registe_tianyi_tcp_pose_obs(
                 q, tcp_frame
             )
             _use_time = time.perf_counter() - _start_time
-            log_fn(f"正运动学用时 {_use_time * 1000:.3f}ms")
+            if log_throttle_sec is not None:
+                ctx.logger.info(
+                    f"正运动学用时 {_use_time * 1000:.3f}ms",
+                    throttle_duration_sec = log_throttle_sec,
+                )
             
             pose_base_tcp = np.identity(4)
             pose_base_tcp[:3, :3] = tcp_rot

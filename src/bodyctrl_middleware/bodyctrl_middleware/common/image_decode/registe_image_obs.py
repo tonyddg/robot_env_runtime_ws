@@ -1,6 +1,6 @@
 import math
 import time
-from typing import Any, Callable, Literal, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 import cv2
 import numpy as np
 
@@ -17,6 +17,7 @@ from robot_env_runtime.extension.ros2.async_topic_state import AsyncRosTopicStat
 from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 from robot_env_runtime.ros2.qos import make_qos
 
 # 相机解码器
@@ -179,10 +180,38 @@ class ImageStateAdapterConfig(BaseModel):
 
         return self
 
+def _validate_log_throttle(log_throttle_sec: Optional[float]) -> Optional[float]:
+    """校验调试日志周期；None 表示关闭诊断日志."""
+    if log_throttle_sec is None:
+        return None
+    value = float(log_throttle_sec)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError("log_throttle_sec must be finite and non-negative")
+    return value
+
+
+def _log_decode(
+    logger: LoggerLike,
+    log_throttle_sec: Optional[float],
+    elapsed_sec: float,
+    raw_shape: tuple[int, ...],
+    image_shape: tuple[int, ...],
+) -> None:
+    """直接调用 logger，由 ROS logger 原生处理 throttle."""
+    if log_throttle_sec is None:
+        return
+    logger.info(
+        f"解码图像完成, 用时 {elapsed_sec * 1000:.3f}ms, "
+        f"原始图像尺寸 {raw_shape} 解码图像尺寸 {image_shape}",
+        throttle_duration_sec = log_throttle_sec,
+    )
+
+
 def _decode_to_image(
         config: ImageStateAdapterConfig, buffer: np.ndarray, fmt: str,
-        # 打印调试信息
-        log_fn: Optional[Callable[[str], None]] = None
+        *,
+        logger: LoggerLike = NULL_LOGGER,
+        log_throttle_sec: Optional[float] = None,
     ):
     _start_time = time.perf_counter()
 
@@ -190,9 +219,13 @@ def _decode_to_image(
     raw_image = DECODER_DICT[config.compress_decoder_type](fmt, buffer)
     image = _image_process(raw_image, config.image_process_config, image_dtype)
 
-    if log_fn is not None:
-        _use_time = time.perf_counter() - _start_time
-        log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms, 原始图像尺寸 {raw_image.shape} 解码图像尺寸 {image.shape}")
+    _log_decode(
+        logger,
+        _validate_log_throttle(log_throttle_sec),
+        time.perf_counter() - _start_time,
+        raw_image.shape,
+        image.shape,
+    )
 
     return image
 
@@ -202,16 +235,25 @@ class CompressedImageStateAdapter(RosStateAdapter):
         # 需要获取的关节 id 列表, 也即观测结果对应的元素代指的关节 id
         config: ImageStateAdapterConfig,
 
-        # 打印调试信息
-        log_fn: Optional[Callable[[str], None]] = None
+        # 组件级 logger，直接使用 ROS 原生 throttle
+        *,
+        logger: LoggerLike = NULL_LOGGER,
+        log_throttle_sec: Optional[float] = None,
     ):
         self.config = config
-        self.log_fn = log_fn
+        self.logger = logger
+        self.log_throttle_sec = _validate_log_throttle(log_throttle_sec)
 
     def decode(self, msg: CompressedImage) -> np.ndarray:
         buffer = _msg_to_buffer(msg)
         fmt = (getattr(msg, "format", "") or "").lower()
-        return _decode_to_image(self.config, buffer, fmt, self.log_fn)
+        return _decode_to_image(
+            self.config,
+            buffer,
+            fmt,
+            logger = self.logger,
+            log_throttle_sec = self.log_throttle_sec,
+        )
 
     def source_stamp(self, msg: CompressedImage) -> float | None:
         """返回 header.stamp（epoch 秒）."""
@@ -245,11 +287,14 @@ class RawImageStateAdapter(RosStateAdapter):
         # 需要获取的关节 id 列表, 也即观测结果对应的元素代指的关节 id
         config: ImageStateAdapterConfig,
 
-        # 打印调试信息
-        log_fn: Optional[Callable[[str], None]] = None
+        # 组件级 logger，直接使用 ROS 原生 throttle
+        *,
+        logger: LoggerLike = NULL_LOGGER,
+        log_throttle_sec: Optional[float] = None,
     ):
         self.config = config
-        self.log_fn = log_fn
+        self.logger = logger
+        self.log_throttle_sec = _validate_log_throttle(log_throttle_sec)
 
     def decode(self, msg: Image) -> np.ndarray:
         _start_time = time.perf_counter()
@@ -258,9 +303,13 @@ class RawImageStateAdapter(RosStateAdapter):
         raw_image = decode_image(msg)
         image = _image_process(raw_image, self.config.image_process_config, image_dtype)
 
-        if self.log_fn is not None:
-            _use_time = time.perf_counter() - _start_time
-            self.log_fn(f"解码图像完成, 用时 {_use_time * 1000:.3f}ms, 原始图像尺寸 {raw_image.shape} 解码图像尺寸 {image.shape}")
+        _log_decode(
+            self.logger,
+            self.log_throttle_sec,
+            time.perf_counter() - _start_time,
+            raw_image.shape,
+            image.shape,
+        )
 
         return image
 
@@ -275,8 +324,8 @@ def registe_image_obs(
     image_obs_name: str = "iamge",
     image_state_name: Optional[str] = None,
 
-    # 打印调试信息, 建议传入 lambda message: node.get_logger().info(message, throttle_duration_sec = 5)
-    log_fn: Optional[Callable[[str], None]] = None
+    # None 关闭诊断日志；0 表示每次打印；正数交给 ROS logger 原生节流
+    log_throttle_sec: Optional[float] = None,
 ):
     '''
     注册天轶机器人手臂关节状态
@@ -287,16 +336,25 @@ def registe_image_obs(
         config = ImageStateAdapterConfig()
     if image_state_name is None:
         image_state_name = image_obs_name + "_state"
+    log_throttle_sec = _validate_log_throttle(log_throttle_sec)
 
     def state_factory(ctx: ComponentContext) -> Any:
         if config.is_compress_image:
             if config.decode_mode == "cache":
                 adapter = CompressedImageCacheStateAdapter(config)
             else:
-                adapter = CompressedImageStateAdapter(config, log_fn)
+                adapter = CompressedImageStateAdapter(
+                    config,
+                    logger = ctx.logger,
+                    log_throttle_sec = log_throttle_sec,
+                )
             msg_type = CompressedImage
         else:
-            adapter = RawImageStateAdapter(config)
+            adapter = RawImageStateAdapter(
+                config,
+                logger = ctx.logger,
+                log_throttle_sec = log_throttle_sec,
+            )
             msg_type = Image
         
         kwargs = dict(
@@ -331,7 +389,13 @@ def registe_image_obs(
         if config.decode_mode == "cache" and config.is_compress_image:
             def _state_to_obs(state: tuple[str, np.ndarray]):
                 fmt, buffer = state
-                res = _decode_to_image(config, buffer, fmt, log_fn)
+                res = _decode_to_image(
+                    config,
+                    buffer,
+                    fmt,
+                    logger = ctx.logger,
+                    log_throttle_sec = log_throttle_sec,
+                )
                 return res
             kwargs["transform"] = lambda view: _state_to_obs(view.value(image_state_name)) # type: ignore
 

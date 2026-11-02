@@ -10,6 +10,7 @@ import numpy as np
 from bodyctrl_middleware.loop import BaseEnvLoop, LoopOutcome, LoopStep
 from bodyctrl_middleware.policy.base import Policy
 from bodyctrl_middleware.record.episode_writer import EpisodeH5Writer
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 
 MAX_SOFT_FAIL_CYCLES = 64
@@ -29,7 +30,7 @@ class RecordEnvLoop(BaseEnvLoop):
         policy: Policy,
         episode_index: int,
         writer: EpisodeH5Writer,
-        logger: Any,
+        logger: LoggerLike = NULL_LOGGER,
         *,
         max_steps: int = 0,
         enable_timing: bool = False,
@@ -45,12 +46,12 @@ class RecordEnvLoop(BaseEnvLoop):
         )
         self.episode_index = int(episode_index)
         self.writer = writer
+        self.logger = NULL_LOGGER if self.logger is None else self.logger
         self.max_steps = int(max_steps)
         self.first_obs: Optional[Any] = None
         self.recorded_steps = 0
         self.soft_fail_count = 0
         self.soft_fail_cycles: list[int] = []
-        self._last_hold_log_at: Optional[float] = None
 
     def run(
         self,
@@ -91,7 +92,11 @@ class RecordEnvLoop(BaseEnvLoop):
         self.soft_fail_count += 1
         if len(self.soft_fail_cycles) < MAX_SOFT_FAIL_CYCLES:
             self.soft_fail_cycles.append(int(result.cycle_index))
-        self._log_hold_if_due()
+        self.logger.info(
+            f"episode {self.episode_index} hold 周期累计 "
+            f"{self.soft_fail_count} 次",
+            throttle_duration_sec = 5.0,
+        )
 
     def on_step(
         self,
@@ -108,30 +113,3 @@ class RecordEnvLoop(BaseEnvLoop):
             self.recorded_steps += 1
         finally:
             durations["hook"] = time.perf_counter() - hook_started_at
-
-    def _log_hold_if_due(self) -> None:
-        now = time.monotonic()
-        if (
-            self._last_hold_log_at is not None
-            and now - self._last_hold_log_at < 5.0
-        ):
-            return
-        self._last_hold_log_at = now
-
-        info = getattr(self.logger, "info", None)
-        if info is None:
-            return
-        try:
-            info(
-                f"episode {self.episode_index} hold 周期累计 "
-                f"{self.soft_fail_count} 次",
-                throttle_duration_sec = 5.0,
-            )
-        except Exception:
-            try:
-                info(
-                    f"episode {self.episode_index} hold 周期累计 "
-                    f"{self.soft_fail_count} 次",
-                )
-            except Exception:
-                pass

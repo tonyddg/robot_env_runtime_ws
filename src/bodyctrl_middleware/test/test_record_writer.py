@@ -276,8 +276,20 @@ def test_flush_instrumentation_and_slow_warning(tmp_path) -> None:
         def __init__(self) -> None:
             self.messages: list = []
 
-        def warn(self, message: str) -> None:
+        def debug(self, message: str, **kwargs) -> None:
             self.messages.append(message)
+
+        def info(self, message: str, **kwargs) -> None:
+            self.messages.append(message)
+
+        def warn(self, message: str, **kwargs) -> None:
+            self.messages.append(message)
+
+        def error(self, message: str, **kwargs) -> None:
+            self.messages.append(message)
+
+        def get_child(self, name: str):
+            return self
 
     logger = _Logger()
     path = tmp_path / "episode_flush.h5py"
@@ -459,8 +471,20 @@ def test_buffer_warning_and_high_water(tmp_path) -> None:
         def __init__(self) -> None:
             self.messages: list = []
 
-        def warning(self, message: str) -> None:
+        def debug(self, message: str, **kwargs) -> None:
             self.messages.append(message)
+
+        def info(self, message: str, **kwargs) -> None:
+            self.messages.append(message)
+
+        def warn(self, message: str, **kwargs) -> None:
+            self.messages.append(message)
+
+        def error(self, message: str, **kwargs) -> None:
+            self.messages.append(message)
+
+        def get_child(self, name: str):
+            return self
 
     logger = _Logger()
     path = tmp_path / "episode_mem.h5py"

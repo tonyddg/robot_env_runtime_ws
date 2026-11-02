@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from bodyctrl_middleware_interface.srv import InputService
 from robot_env_runtime.core.errors import RobotRuntimeError
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 from robot_env_runtime.ros2.services import RosServiceCaller
 
 from bodyctrl_middleware.record.record import ACCEPT_INPUT, ConfirmFn
@@ -40,7 +41,7 @@ def make_service_confirm(
     *,
     timeout: float = DEFAULT_CONFIRM_TIMEOUT,
     caller: Any = None,
-    logger: Any = None,
+    logger: LoggerLike | None = None,
 ) -> ConfirmFn:
     """
     构造"通过 InputService 询问用户"的 confirm 回调.
@@ -52,7 +53,8 @@ def make_service_confirm(
     这里用 ``call_async`` + 有界等待实现，依赖后台 executor 线程，**不要**改用
     rclpy 的同步 ``call()``。
     """
-    service_caller = RosServiceCaller(node, logger = logger) if caller is None else caller
+    logger = NULL_LOGGER if logger is None else logger
+    service_caller = RosServiceCaller(node) if caller is None else caller
     timeout_sec = float(timeout)
 
     def confirm(prompt: str) -> Optional[bool]:
@@ -63,22 +65,19 @@ def make_service_confirm(
                 service_name, InputService, request, timeout_sec
             )
         except RobotRuntimeError as exc:
-            _warn(
-                logger,
+            logger.warn(
                 f"调用输入服务 {service_name!r} 失败: {type(exc).__name__}: {exc}; "
                 "确认请用 `ros2 run bodyctrl_middleware input_service` 单独启动输入节点",
             )
             return None
         except Exception as exc:
-            _warn(
-                logger,
+            logger.warn(
                 f"调用输入服务 {service_name!r} 异常: {type(exc).__name__}: {exc}",
             )
             return None
 
         if not bool(getattr(response, "success", False)):
-            _warn(
-                logger,
+            logger.warn(
                 f"输入服务 {service_name!r} 未取得输入 "
                 f"(result={getattr(response, 'result', '')!r})",
             )
@@ -86,12 +85,3 @@ def make_service_confirm(
         return parse_confirm_answer(getattr(response, "result", ""))
 
     return confirm
-
-
-def _warn(logger: Any, message: str) -> None:
-    """写 warn 日志（logger 可选）."""
-    if logger is None:
-        return
-    func = getattr(logger, "warn", None) or getattr(logger, "info", None)
-    if func is not None:
-        func(message)

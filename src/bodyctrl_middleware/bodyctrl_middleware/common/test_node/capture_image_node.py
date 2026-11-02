@@ -55,12 +55,20 @@ class CaptureImageNode(Node):
         self.config = params.declare()
 
         if not self.config.config.is_compress_image:
-            self.adapter = RawImageStateAdapter(self.config.config, lambda message: self.get_logger().info(message)) # type: ignore
+            self.adapter = RawImageStateAdapter(
+                self.config.config,
+                logger = self.get_logger(),
+                log_throttle_sec = 0.0,
+            ) # type: ignore
             self.sub = self.create_subscription(
                 Image, self.config.config.image_topic, self.on_receive, 1
             )
         else:
-            self.adapter = CompressedImageStateAdapter(self.config.config, lambda message: self.get_logger().info(message)) # type: ignore
+            self.adapter = CompressedImageStateAdapter(
+                self.config.config,
+                logger = self.get_logger(),
+                log_throttle_sec = 0.0,
+            ) # type: ignore
             self.sub = self.create_subscription(
                 CompressedImage, self.config.config.image_topic, self.on_receive, 1
             )

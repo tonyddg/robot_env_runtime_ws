@@ -2,6 +2,8 @@ from typing import Any, Callable, Mapping, Optional
 import time
 import statistics
 
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
+
 # 循环耗时打点的阶段顺序。hook 由子类按需通过 durations 提供。
 _CYCLE_PHASES = ("infer", "wait", "step", "hold", "hook", "total")
 
@@ -37,8 +39,7 @@ class CycleTiming:
 
     def __init__(
         self,
-        # logger = node.get_logger()
-        logger: Any = None,
+        logger: LoggerLike = NULL_LOGGER,
         *,
         enabled: bool = True,
         tag: str = "",
@@ -48,7 +49,7 @@ class CycleTiming:
         """配置汇总间隔与时钟（``now`` 可注入，便于测试）。"""
         self.enabled = bool(enabled)
         self.tag = str(tag or "")
-        self._logger = logger
+        self._logger = NULL_LOGGER if logger is None else logger
         self._summary_interval = float(summary_interval)
         self._now = time.perf_counter if now is None else now
         self._count = 0
@@ -125,7 +126,9 @@ class CycleTiming:
         if padding_append_sec is not None:
             parts.append(f"padding_append={padding_append_sec * 1000:.1f}ms")
         if parts:
-            self._log(f"[cycle-timing]{self._tag()} setup: " + " ".join(parts))
+            self._logger.info(
+                f"[cycle-timing]{self._tag()} setup: " + " ".join(parts)
+            )
 
     def log_summary(self) -> None:
         """打印累计 median / max 汇总（没有样本时静默）."""
@@ -143,17 +146,6 @@ class CycleTiming:
 
     def _tag(self) -> str:
         return f" {self.tag}" if self.tag else ""
-
-    def _log(self, message: str) -> None:
-
-        if (
-            self._logger is not None and
-            hasattr(self._logger, "info") and
-            callable(self._logger.info)
-        ):
-            self._logger.info(message)
-        else:
-            print(message)
 
     def _reset_window(self) -> None:
         """清空滚动窗口，重新开始计时."""
@@ -202,7 +194,7 @@ class CycleTiming:
         if slack_min_ms is not None:
             parts.append(f"slack min={slack_min_ms:+.1f}")
         suffix = f" window={self._summary_interval:.0f}s" if window else ""
-        self._log(
+        self._logger.info(
             f"[cycle-timing]{self._tag()} summary n={count}{suffix} [ms]: "
             + " | ".join(parts)
         )

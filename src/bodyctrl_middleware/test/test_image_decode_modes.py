@@ -13,8 +13,9 @@ from robot_env_runtime.core.types import RuntimeSettings
 from robot_env_runtime.extension.plugin import RobotPlugin
 from robot_env_runtime.extension.ros2.async_topic_state import AsyncRosTopicStateSource
 from robot_env_runtime.extension.ros2.topic_state import RosTopicStateSource
+from robot_env_runtime.logging import NULL_LOGGER
 from robot_env_runtime.ros2.context import ComponentContext
-from robot_env_runtime.testing import FakeClock, FakeRosNode
+from robot_env_runtime.testing import FakeClock, FakeLogger, FakeRosNode
 
 from fake_image import (
     COLOR_SHAPE,
@@ -36,13 +37,13 @@ STATE_NAME = "color_state"
 MODES = ("sync", "async", "cache")
 
 
-def _ctx(clock: FakeClock) -> ComponentContext:
+def _ctx(clock: FakeClock, logger = NULL_LOGGER) -> ComponentContext:
     """构造组件上下文（不接真实 ROS）."""
     return ComponentContext(
         name = "test",
         node = FakeRosNode(),
         clock = clock,
-        logger = None,
+        logger = logger,
         control_period = 0.1,
         settings = RuntimeSettings(control_period = 0.1),
     )
@@ -63,11 +64,22 @@ def _view(clock: FakeClock, value) -> StateView:
     return _view_for(clock, STATE_NAME, value)
 
 
-def _build(config, *, obs_name: str = OBS_NAME):
+def _build(
+    config,
+    *,
+    obs_name: str = OBS_NAME,
+    logger = NULL_LOGGER,
+    log_throttle_sec = None,
+):
     """注册一个 image observation，返回 (plugin, state_source)."""
     clock = FakeClock()
-    ctx = _ctx(clock)
-    plugin = registe_image_obs(RobotPlugin("t"), config, image_obs_name = obs_name)
+    ctx = _ctx(clock, logger)
+    plugin = registe_image_obs(
+        RobotPlugin("t"),
+        config,
+        image_obs_name = obs_name,
+        log_throttle_sec = log_throttle_sec,
+    )
     source = plugin.states[obs_name + "_state"].factory(ctx)
     observation = plugin.observations[obs_name].factory(ctx, {obs_name + "_state": source})
     return clock, source, observation
@@ -97,6 +109,53 @@ def test_observation_builds_for_every_mode(decode_mode: str, compress: bool) -> 
     out = observation.build(_view(clock, value))
     assert np.asarray(out).shape == COLOR_SHAPE
     assert np.asarray(out).dtype == np.uint8
+
+
+def test_sync_decode_uses_ctx_logger_and_native_throttle() -> None:
+    """state_factory 的 ctx.logger 直接接收 ROS 原生 throttle 参数."""
+    logger = FakeLogger()
+    config = color_config(decode_mode = "sync")
+    _, source, _ = _build(
+        config,
+        logger = logger,
+        log_throttle_sec = 1.0,
+    )
+    source.adapter.decode(make_color_msg())
+
+    assert len(logger.calls) == 1
+    level, message, kwargs = logger.calls[0]
+    assert level == "info"
+    assert "解码图像完成" in message
+    assert kwargs == {"throttle_duration_sec": 1.0}
+
+
+def test_cache_decode_uses_obs_factory_ctx_logger() -> None:
+    """cache 模式在实际解码的 obs_factory transform 中使用 ctx.logger."""
+    logger = FakeLogger()
+    config = color_config(decode_mode = "cache")
+    clock, _, observation = _build(
+        config,
+        logger = logger,
+        log_throttle_sec = 1.0,
+    )
+    value = cache_value(make_color_msg(), config)
+
+    observation.build(_view(clock, value))
+
+    assert len(logger.calls) == 1
+    assert logger.calls[0][2] == {"throttle_duration_sec": 1.0}
+
+
+@pytest.mark.parametrize("value", [-1.0, float("inf"), float("nan")])
+def test_invalid_log_throttle_is_rejected(value: float) -> None:
+    """非法 throttle 在注册阶段直接报错，不创建组件."""
+    with pytest.raises(ValueError, match = "log_throttle_sec"):
+        registe_image_obs(
+            RobotPlugin("t"),
+            color_config(),
+            image_obs_name = "invalid_log",
+            log_throttle_sec = value,
+        )
 
 
 def test_raw_image_with_default_decode_mode_is_supported() -> None:

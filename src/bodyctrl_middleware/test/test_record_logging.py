@@ -1,81 +1,45 @@
-"""record 日志健壮性：rclpy 的 severity 调用点限制 + 日志异常兜底."""
+"""record 日志直接调用 LoggerLike，不再需要本地 severity 分发包装."""
 
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
-from bodyctrl_middleware.record.record import _log
+from bodyctrl_middleware.record.record import collect_once
+from robot_env_runtime.testing import FakeLogger
+
+from harness import FakeEnv, FakePolicy
 
 
-class SeverityTrackingLogger:
-    """复刻 rclpy：同一个调用点（文件:行号）不允许切换 severity."""
+def test_collect_once_uses_direct_logger_methods(tmp_path) -> None:
+    """采集流程直接调用 logger.info/warn，不再经 record._log 分发."""
+    logger = FakeLogger()
 
-    def __init__(self) -> None:
-        self.calls: list = []
-        self._by_caller: dict = {}
-
-    def _record(self, severity: str, message: str) -> None:
-        frame = inspect.currentframe().f_back
-        caller = (frame.f_code.co_filename, frame.f_lineno)
-        previous = self._by_caller.get(caller)
-        if previous is not None and previous != severity:
-            raise ValueError("Logger severity cannot be changed between calls.")
-        self._by_caller[caller] = severity
-        self.calls.append((severity, message))
-
-    def info(self, message: str) -> None:
-        self._record("INFO", message)
-
-    def warning(self, message: str) -> None:
-        self._record("WARN", message)
-
-    def warn(self, message: str) -> None:
-        self._record("WARN", message)
-
-    def error(self, message: str) -> None:
-        self._record("ERROR", message)
+    assert collect_once(
+        FakeEnv(),
+        FakePolicy(steps = 1),
+        0,
+        tmp_path,
+        logger = logger,
+    ) is True
+    assert any("开始采集" in message for message in logger.messages("info"))
+    assert any("已保存" in message for message in logger.messages("info"))
 
 
-def test_log_dispatches_by_severity_without_rclpy_error() -> None:
-    """info → warn → error 连续切换不再触发 rclpy 的 severity 异常."""
-    logger = SeverityTrackingLogger()
-    _log(logger, "info", "开始采集")
-    _log(logger, "warn", "采集异常")
-    _log(logger, "error", "收尾失败")
-    assert logger.calls == [
-        ("INFO", "开始采集"),
-        ("WARN", "采集异常"),
-        ("ERROR", "收尾失败"),
-    ]
-
-
-def test_log_never_raises_on_broken_logger(capsys) -> None:
-    """logger 自身抛异常时退化为 stderr，绝不打断采集."""
-
-    class _Broken:
-        def warning(self, message: str) -> None:
-            raise RuntimeError("logger boom")
-
-    _log(_Broken(), "warn", "仍然要能继续采集")
-    assert "仍然要能继续采集" in capsys.readouterr().err
-
-
-def test_log_with_real_rclpy_logger() -> None:
-    """真实 rclpy logger 回归：旧的单行派发实现会在这里抛 ValueError."""
+def test_real_rclpy_logger_accepts_direct_severity_calls() -> None:
+    """不同直接调用点可连续记录不同 severity."""
     rclpy = pytest.importorskip("rclpy")
     from rclpy.node import Node
 
-    if not rclpy.ok():
+    owns_context = not rclpy.ok()
+    if owns_context:
         rclpy.init()
     node = Node("record_logging_test")
     try:
         logger = node.get_logger()
-        _log(logger, "info", "info 消息")
-        _log(logger, "warn", "warn 消息")
-        _log(logger, "error", "error 消息")
+        logger.info("info 消息")
+        logger.warn("warn 消息")
+        logger.error("error 消息")
     finally:
         node.destroy_node()
-        if rclpy.ok():
+        if owns_context and rclpy.ok():
             rclpy.shutdown()

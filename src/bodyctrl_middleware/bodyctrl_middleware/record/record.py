@@ -17,7 +17,6 @@ Episode 采集循环（参考 ``robot_env/policy/record.py``，改用 robot_env_
 """
 
 import json
-import sys
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -30,6 +29,7 @@ from bodyctrl_middleware.record.episode_writer import (
 )
 from bodyctrl_middleware.record.record_env_loop import RecordEnvLoop
 from bodyctrl_middleware.policy.base import Policy
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 ACCEPT_INPUT = set(("t", "y", "1"))
 
@@ -155,7 +155,7 @@ def collect_once(
     max_steps: int = 0,
     buffer_warn_bytes: int = DEFAULT_BUFFER_WARN_BYTES,
     debug_timing: bool = False,
-    logger: Any = None,
+    logger: LoggerLike | None = None,
     # 调用方可以通过 reset_kwargs 注入额外参数给 env.reset()
     reset_kwargs: Optional[dict[str, Any]] = None
 ) -> bool:
@@ -167,9 +167,9 @@ def collect_once(
     配合 ``max_steps``（>0 时到点正常收尾）限制整轮内存占用。``flush_policy="batch"``
     是旧的边攒边写行为（长 episode / 内存受限时使用）。
 
-    ``debug_timing=True`` 时每 10s 打印一行滚动汇总（infer / wait / step / hold /
+    ``debug_timing=True`` 时每 10s 输出一行滚动汇总（infer / wait / step / hold /
     hook / total 的 median / max，另附 ``holds`` 计数与 ``slack`` 最小值），episode 结束时
-    再打印一行累计汇总；没有 logger 时直接打印到 stdout。逐 cycle 打印已取消，
+    再输出一行累计汇总；没有 logger 时使用 ``NullLogger`` 静默。逐 cycle 打印已取消，
     避免日志 IO 本身污染控制周期。
 
     runtime 打开 ``on_wait_failure="hold"`` 时，``wait_for_step()`` 会以返回值
@@ -189,6 +189,7 @@ def collect_once(
     - ``stop_before_confirm=True`` 会在询问前调用 ``env.stop()``（等待期间机器人
       处于 STOPPED；下一轮 ``reset()`` 会重新 armed）。
     """
+    logger = NULL_LOGGER if logger is None else logger
     save_dir = Path(save_dir)
     save_dir.mkdir(parents = True, exist_ok = True)
     save_path = save_dir / f"episode_{int(episode_index):04d}.h5py"
@@ -206,7 +207,7 @@ def collect_once(
         write_chunk_rows = write_chunk_rows,
         buffer_warn_bytes = buffer_warn_bytes,
     )
-    _log(logger, "info", f"开始采集 episode {episode_index}: {save_path}")
+    logger.info(f"开始采集 episode {episode_index}: {save_path}")
 
     termination_reason = "unknown"
     fault_kind: Optional[str] = None
@@ -227,15 +228,16 @@ def collect_once(
         outcome = record_loop.run(reset_kwargs = reset_kwargs)
         termination_reason = outcome.reason
         if termination_reason == "max_steps":
-            _log(
-                logger, "info",
+            logger.info(
                 f"episode {episode_index} 达到 max_steps={max_steps}, 正常结束本轮",
             )
         elif termination_reason == "robot_faulted":
             fault_kind, fault_message = _fault_info(env)
     except KeyboardInterrupt:
         termination_reason = "interrupted"
-        _log(logger, "warn", f"episode {episode_index} 采集被用户中断, 保留已采集数据")
+        logger.warn(
+            f"episode {episode_index} 采集被用户中断, 保留已采集数据"
+        )
     except Exception as exc:
         if _has_fault(env):
             termination_reason = "robot_faulted"
@@ -244,8 +246,7 @@ def collect_once(
             termination_reason = "exception"
             exception_type = type(exc).__name__
             exception_message = str(exc)
-        _log(
-            logger, "warn",
+        logger.warn(
             f"episode {episode_index} 采集异常结束: "
             f"{type(exc).__name__}: {exc}",
         )
@@ -255,7 +256,7 @@ def collect_once(
     soft_fail_cycles = record_loop.soft_fail_cycles
 
     if recorded_steps == 0:
-        _log(logger, "warn", "未采集到有效数据, 跳过保存")
+        logger.warn("未采集到有效数据, 跳过保存")
         _finalize(
             writer, termination_reason, keep = False,
             fault_kind = fault_kind, fault_message = fault_message,
@@ -278,7 +279,7 @@ def collect_once(
         )
 
     if not keep:
-        _log(logger, "info", "放弃保存本轮 episode")
+        logger.info("放弃保存本轮 episode")
         _finalize(
             writer, termination_reason, keep = False,
             fault_kind = fault_kind, fault_message = fault_message,
@@ -297,8 +298,7 @@ def collect_once(
     ):
         return False
 
-    _log(
-        logger, "info",
+    logger.info(
         f"episode {episode_index} 已保存: {save_path} "
         f"({writer.record_count} 行, 结束原因 {termination_reason})",
     )
@@ -333,7 +333,7 @@ def collect_multi(
     max_steps: int = 0,
     buffer_warn_bytes: int = DEFAULT_BUFFER_WARN_BYTES,
     debug_timing: bool = False,
-    logger: Any = None,
+    logger: LoggerLike | None = None,
     # 调用方可以通过 reset_kwargs 注入额外参数给 env.reset()
     reset_kwargs: Optional[dict[str, Any]] = None
 ) -> int:
@@ -345,10 +345,11 @@ def collect_multi(
     - 只有 ``ask_before_next_episode=True`` 时才会在每轮结束后询问是否继续
       （默认跑完一轮就退出，避免无人值守时无休止采集）；此时无法取得输入 → 不继续。
     """
+    logger = NULL_LOGGER if logger is None else logger
     save_root = Path(save_root)
     save_dir = save_root / f"trajectory_{int(time.time())}"
     save_dir.mkdir(parents = True, exist_ok = False)
-    _log(logger, "info", f"数据采集目录: {save_dir}")
+    logger.info(f"数据采集目录: {save_dir}")
 
     episode_index = int(episode_start)
     saved = 0
@@ -375,7 +376,7 @@ def collect_multi(
         except ConfirmUnavailableError as exc:
             if exc.saved:
                 saved += 1
-            _log(logger, "warn", f"确认不可用, 结束数据采集: {exc}")
+            logger.warn(f"确认不可用, 结束数据采集: {exc}")
             break
 
         if is_saved:
@@ -383,7 +384,7 @@ def collect_multi(
         episode_index += 1
 
         if _has_fault(env):
-            _log(logger, "warn", "runtime 已 fault, 结束数据采集")
+            logger.warn("runtime 已 fault, 结束数据采集")
             break
         if not ask_before_next_episode:
             break
@@ -398,7 +399,7 @@ def collect_multi(
             env.reset(**(reset_kwargs or {}))  # 正常数据采集时进行复位
             break
 
-    _log(logger, "info", f"数据采集结束, 共保存 {saved} 条 episode")
+    logger.info(f"数据采集结束, 共保存 {saved} 条 episode")
     return saved
 
 
@@ -410,7 +411,7 @@ def _confirm(
     confirm: Optional[ConfirmFn],
     *,
     on_unavailable: str,
-    logger: Any,
+    logger: LoggerLike,
 ) -> tuple[bool, bool]:
     """
     取得一次人工确认，返回 ``(keep, stop_run)``.
@@ -430,11 +431,10 @@ def _confirm(
         try:
             answer = confirm(prompt)
         except KeyboardInterrupt:
-            _log(logger, "warn", "等待用户确认时被中断 (Ctrl-C)")
+            logger.warn("等待用户确认时被中断 (Ctrl-C)")
             answer = None
         except Exception as exc:
-            _log(
-                logger, "warn",
+            logger.warn(
                 f"确认回调失败: {type(exc).__name__}: {exc}",
             )
             answer = None
@@ -443,12 +443,16 @@ def _confirm(
         return bool(answer), False
 
     if on_unavailable == "discard":
-        _log(logger, "warn", "无法取得用户确认 → 丢弃本轮数据 (on_unavailable=discard)")
+        logger.warn(
+            "无法取得用户确认 → 丢弃本轮数据 (on_unavailable=discard)"
+        )
         return False, False
     if on_unavailable == "stop":
-        _log(logger, "warn", "无法取得用户确认 → 保留本轮并结束采集 (on_unavailable=stop)")
+        logger.warn(
+            "无法取得用户确认 → 保留本轮并结束采集 (on_unavailable=stop)"
+        )
         return True, True
-    _log(logger, "warn", "无法取得用户确认 → 保留本轮数据 (on_unavailable=keep)")
+    logger.warn("无法取得用户确认 → 保留本轮数据 (on_unavailable=keep)")
     return True, False
 
 
@@ -466,16 +470,16 @@ def _ask_local(prompt: str) -> Optional[bool]:
     return bool(answer.strip().lower()[-1:] in ACCEPT_INPUT)
 
 
-def _stop_env(env: Any, logger: Any) -> None:
+def _stop_env(env: Any, logger: LoggerLike) -> None:
     """等待确认前把机器人置于 STOPPED（可选安全措施，下一轮 reset 会重新 armed）."""
     stop = getattr(env, "stop", None)
     if stop is None:
         return
     try:
         stop()
-        _log(logger, "info", "等待用户确认前已执行 env.stop()（下一轮 reset 会恢复）")
+        logger.info("等待用户确认前已执行 env.stop()（下一轮 reset 会恢复）")
     except Exception as exc:
-        _log(logger, "warn", f"确认前 env.stop() 失败: {type(exc).__name__}: {exc}")
+        logger.warn(f"确认前 env.stop() 失败: {type(exc).__name__}: {exc}")
 
 
 # -- 其它内部辅助 ----------------------------------------------------------
@@ -499,7 +503,7 @@ def _finalize(
     exception_type: Optional[str],
     exception_message: Optional[str],
     extra_attrs: Optional[Mapping[str, Any]] = None,
-    logger: Any,
+    logger: LoggerLike,
 ) -> bool:
     """收尾写文件；失败时明确记录并返回 False（不让采集循环直接崩掉）."""
     try:
@@ -513,8 +517,7 @@ def _finalize(
             extra_attrs = extra_attrs,
         )
     except Exception as exc:
-        _log(
-            logger, "error",
+        logger.error(
             f"episode 收尾失败 ({type(exc).__name__}: {exc}); "
             "保留 .partial 文件",
         )
@@ -539,50 +542,3 @@ def _fault_info(env: Any) -> tuple[Optional[str], Optional[str]]:
         None if kind is None else str(kind),
         None if message is None else str(message),
     )
-
-
-def _log(logger: Any, level: str, message: str) -> None:
-    """
-    写日志（logger 可选，缺失时静默）.
-
-    rclpy 的 ``Logger`` 按**调用点**缓存 severity：同一个调用点先后以不同
-    severity 记录会抛 ``ValueError: Logger severity cannot be changed between
-    calls.``。历史上把 info/warn/error 都从同一行 ``func(message)`` 派发，
-    于是第一个 warn 就会把采集节点打死（并掩盖真正的异常）。所以三种 severity
-    各自放在独立函数 / 独立调用点，且任何日志异常都不允许影响采集。
-    """
-    if logger is None or not message:
-        return
-    try:
-        if level == "error":
-            _log_error(logger, message)
-        elif level == "warn":
-            _log_warn(logger, message)
-        else:
-            _log_info(logger, message)
-    except Exception:
-        # 退化为 stderr 文本：日志问题绝不能打断采集
-        try:
-            print(f"[record:{level}] {message}", file = sys.stderr)
-        except Exception:
-            pass
-
-
-def _log_info(logger: Any, message: str) -> None:
-    func = getattr(logger, "info", None)
-    if func is not None:
-        func(message)
-
-
-def _log_warn(logger: Any, message: str) -> None:
-    func = getattr(logger, "warning", None) or getattr(logger, "warn", None)
-    if func is None:
-        _log_info(logger, message)
-        return
-    func(message)
-
-
-def _log_error(logger: Any, message: str) -> None:
-    func = getattr(logger, "error", None)
-    if func is not None:
-        func(message)

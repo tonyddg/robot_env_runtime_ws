@@ -83,6 +83,57 @@ Tianyi Control Node（插值、PD/位置控制、stop/reset barrier）
 完整状态机、时间语义、`info` 结构和 reset 规则以
 `src/robot_env_runtime/README.md` 为准；不要凭猜测扩展这些契约。
 
+## 日志规范
+
+日志接口统一使用 `robot_env_runtime.logging.LoggerLike`。它至少提供
+`debug/info/warn/error/get_child`，所有实现都必须保证日志方法不会因写日志失败而
+抛异常。缺少 logger 时由 API 入口归一化为同一个 `NULL_LOGGER`；归一化后的
+组件接口不再用 `None` 表示静默，也不要为某个调用点另造空实现。
+
+logger 的所有权和传递路径：
+
+- 持有 ROS node 的 `ExecutorHost` 通过 `get_logger()` 提供根 logger。
+- `RuntimeBuilder` 优先使用显式注入的 logger，否则使用
+  `executor.get_logger()`。
+- `ComponentContext.logger` 必须是非 Optional 的 `LoggerLike`。builder 创建
+  context 时应使用 `logger.get_child(context.name)`，使不同组件的原生 ROS
+  throttle 状态相互隔离。
+- `RobotEnv.logger` 只暴露已经装配好的根 logger，不负责根据 node 类型重新选择
+  logger。
+- 独立 ROS 节点（例如 `capture_image_node`）继续直接使用
+  `self.get_logger()`，不需要接入 runtime 的 logger 注入。
+
+编写日志时遵守以下规则：
+
+1. 组件工厂内部直接使用自己的 `ctx.logger`，不要由插件注册函数向组件传入
+   外部 `logger`、`log_fn` 或 lambda 包装。
+2. 业务代码直接调用 `logger.info/warn/error/debug`。不要增加只做
+   `getattr(logger, ...)`、`logger is not None`、`warning`/`warn` 兼容或异常吞噬
+   的一对一包装函数。
+3. 可选 logger 只在 API 入口处归一化一次：
+   `logger = NULL_LOGGER if logger is None else logger`。归一化后不再做空判断。
+4. 需要节流时直接把 `throttle_duration_sec` 传给原始 logger，由 rclpy 或测试
+   logger 实现处理；不要在业务代码中额外维护时间窗口。
+5. 不同逻辑来源应有独立 child logger。特别是彩色图、深度图、TCP、controller
+   等高频日志，不能共享同一个调用点的 throttle 状态。
+6. 不把 logger 传给完全不记录日志的通用工具。参数必须真实使用，避免为了“统一”
+   而扩大构造接口。
+
+图像等可选诊断日志使用 `log_throttle_sec` 控制：
+
+- `None`：关闭该诊断日志。
+- `0.0`：每次调用都记录。
+- 正数：传给原始 logger 的 `throttle_duration_sec`。
+- 负数、NaN、Inf：配置错误，应在注册或构造阶段拒绝。
+
+测试要求：
+
+- 单元测试优先使用 `FakeLogger`，并断言实际收到的 level、message 和 kwargs。
+- throttle scope、severity 切换和 child logger 隔离必须有不依赖 `sleep()` 的测试；
+  必要时创建真实 rclpy 临时 node 做回归。
+- logger 不得影响控制语义。不要为“logger 可能抛异常”在业务调用点重新引入
+  包装层；应保证注入的 `LoggerLike` 实现遵守无异常契约。
+
 ## 天轶链路
 
 全身遥操作/回放主入口：

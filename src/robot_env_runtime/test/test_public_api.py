@@ -31,6 +31,9 @@ EXPECTED_EXPORTS = (
     "PolicyInferenceTimeoutError",
     "StepOverrunError",
     "RuntimeFaultedError",
+    "LoggerLike",
+    "NullLogger",
+    "NULL_LOGGER",
 )
 
 

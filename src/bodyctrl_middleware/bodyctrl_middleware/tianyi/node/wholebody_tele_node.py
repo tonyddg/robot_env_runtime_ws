@@ -29,6 +29,7 @@ from bodyctrl_middleware.record.confirm import make_service_confirm
 from robot_env_runtime.extension.plugin import RobotPlugin
 from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.extension.plugin import PluginRegistry
+from robot_env_runtime.logging import LoggerLike
 from robot_env_runtime.ros2.executor import RosExecutorHost
 
 DEFAULT_PROFILE = "config/tianyi/wholebody_tele.yaml"
@@ -136,7 +137,11 @@ class Config(BaseModel):
     policy: PolicyConfig = RosField(default_factory = lambda: PolicyConfig())
 
 
-def make_policy(config: Config, executor: RosExecutorHost):
+def make_policy(
+    config: Config,
+    executor: RosExecutorHost,
+    logger: LoggerLike,
+):
     import json
 
     if config.policy.policy_kwargs != "":
@@ -164,7 +169,7 @@ def make_policy(config: Config, executor: RosExecutorHost):
             ],
             # True 遥操继续, 观测值为 1, 函数返回 False 不结束遥操
             is_tele_done_fn = lambda obs: obs.get("stop_tele", 1) != 1,
-            logger = executor.node.get_logger()
+            logger = logger.get_child("policy")
         ), {}
 
     elif config.policy.policy_type == "replay":
@@ -194,13 +199,18 @@ def make_policy(config: Config, executor: RosExecutorHost):
         return ReplayPolicy(
             action_chunk, 
             policy_kwargs["action_scale"],  # type: ignore
-            logger = executor.node.get_logger()
+            logger = logger.get_child("policy")
         ), reset_kwargs
 
     else:
         raise ValueError(f"未知 policy_type {config.policy.policy_type}")
 
-def _run_tele_loop(env: RobotEnv, policy: Any, logger: Any, debug_timing: bool) -> None:
+def _run_tele_loop(
+    env: RobotEnv,
+    policy: Any,
+    logger: LoggerLike,
+    debug_timing: bool,
+) -> None:
     """不采集数据时的遥操循环（``debug_timing=True`` 时每 10s 打印耗时汇总）.
 
     hold 模式软失败（``wait_for_step()`` 返回 False）时不执行策略动作：本周期用
@@ -232,27 +242,26 @@ def main(argv = None):
     )
 
     executor.start()
+    logger = executor.get_logger()
 
     robot = RobotPlugin("tianyi")
-    robot = tianyi_arm(config.arm, robot, executor.node.get_logger())
+    robot = tianyi_arm(config.arm, robot)
     robot = tianyi_base(config.base, robot)
 
     env = RobotEnv.from_profile(
         config.profile_path,
         executor = executor,
-        logger = executor.node.get_logger(),
+        logger = logger,
         registry = PluginRegistry([robot]),
     )
 
     try:
-        policy, reset_kwargs = make_policy(
-            config, executor
-        )
+        policy, reset_kwargs = make_policy(config, executor, logger)
 
         # 启动期对象（imports / config / env / policy）都已构建：冻结 GC 扫描集合并
         # 降低 GIL 让出粒度，减少控制循环里的 GC / 线程切换停顿（见 runtime_tuning）
         tuning = apply_steady_state_tuning()
-        executor.node.get_logger().info(
+        logger.info(
             f"稳态调优: gc.freeze={tuning['gc_frozen']} "
             f"gc_threshold={tuning['gc_threshold']} "
             f"switch_interval={tuning['switch_interval_sec']:.4f}s"
@@ -277,10 +286,10 @@ def main(argv = None):
                         executor.node,
                         config.record.confirm_service,
                         timeout = config.record.confirm_timeout,
-                        logger = executor.node.get_logger(),
+                        logger = logger.get_child("record.confirm"),
                     )
                 else:
-                    executor.node.get_logger().warn(
+                    logger.warn(
                         "record.ask_before_save=True 且 confirm_service 为空 → 使用本地 "
                         "input()；通过 launch 启动时 stdin 不是 TTY，会阻塞或拿不到输入"
                     )
@@ -313,12 +322,17 @@ def main(argv = None):
                 max_steps = config.record.max_steps,
                 buffer_warn_bytes = config.record.buffer_warn_bytes,
                 debug_timing = config.debug_timing,
-                logger = executor.node.get_logger(),
+                logger = logger.get_child("record"),
 
                 reset_kwargs = reset_kwargs,
             )
         else:
-            _run_tele_loop(env, policy, executor.node.get_logger(), config.debug_timing)
+            _run_tele_loop(
+                env,
+                policy,
+                logger.get_child("tele_loop"),
+                config.debug_timing,
+            )
     finally:
         if env is not None:
             env.close()

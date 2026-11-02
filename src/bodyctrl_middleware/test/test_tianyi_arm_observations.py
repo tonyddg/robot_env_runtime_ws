@@ -15,8 +15,9 @@ from robot_env_runtime.core.state_store import StateStore
 from robot_env_runtime.core.state_view import StateInput, StateView
 from robot_env_runtime.core.types import RuntimeSettings
 from robot_env_runtime.extension.plugin import RobotPlugin
+from robot_env_runtime.logging import NULL_LOGGER
 from robot_env_runtime.ros2.context import ComponentContext
-from robot_env_runtime.testing import FakeClock, FakeRosNode, FakeStateSource
+from robot_env_runtime.testing import FakeClock, FakeLogger, FakeRosNode, FakeStateSource
 
 from fake_image import (
     COLOR_SHAPE,
@@ -55,13 +56,13 @@ def _cached_robot_model():
         yield cache
 
 
-def _ctx(clock: FakeClock) -> ComponentContext:
+def _ctx(clock: FakeClock, logger = NULL_LOGGER) -> ComponentContext:
     """构造组件上下文（不接真实 ROS）."""
     return ComponentContext(
         name = "test",
         node = FakeRosNode(),
         clock = clock,
-        logger = None,
+        logger = logger,
         control_period = 0.1,
         settings = RuntimeSettings(control_period = 0.1),
     )
@@ -122,6 +123,36 @@ def test_registration_defers_urdf_load(monkeypatch) -> None:
     assert "eef_pose" in plugin.observations
     plugin.observations["eef_pose"].factory(_ctx(FakeClock()), {})
     assert len(calls) == 1, "只有真正构建该观测时才加载一次 URDF"
+
+
+def test_tcp_observation_uses_ctx_logger(monkeypatch) -> None:
+    """TCP registe 直接使用 obs_factory 的 ctx.logger，不依赖外部 log_fn."""
+    class FakeModel:
+        def get_q_default(self):
+            return np.zeros(32)
+
+        def create_context(self):
+            return object()
+
+    monkeypatch.setattr(
+        tcp_module,
+        "create_robot_model",
+        lambda *args, **kwargs: FakeModel(),
+    )
+    logger = FakeLogger()
+    plugin = RobotPlugin("t")
+    registe_tianyi_tcp_pose_obs(
+        plugin,
+        motor_id_to_idx = tuple(TianyiArmConfig().arm_motor_list),
+        tianyi_arm_qpos_state_name = "qpos_state",
+        log_throttle_sec = 3.0,
+    )
+
+    plugin.observations["tcp_pose"].factory(_ctx(FakeClock(), logger), {})
+
+    assert len(logger.calls) == 1
+    assert "URDF 加载完成" in logger.calls[0][1]
+    assert logger.calls[0][2] == {"throttle_duration_sec": 3.0}
 
 
 @pytest.mark.parametrize(

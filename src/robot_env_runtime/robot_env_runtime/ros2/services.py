@@ -25,13 +25,11 @@ class RosServiceCaller:
         *,
         srv_type: Any = None,
         poll_period: float = 0.005,
-        logger: Any = None,
     ) -> None:
         """保存 node / 默认服务类型与轮询周期."""
         self._node = node
         self._default_srv_type = Trigger if srv_type is None else srv_type
         self._poll_period = float(poll_period)
-        self._logger = logger
 
     def call_service(
         self,

@@ -58,6 +58,7 @@ from robot_env_runtime.core.types import (
     ServiceCaller,
     WaitFailure,
 )
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 
 class RobotEnv:
@@ -75,7 +76,7 @@ class RobotEnv:
         settings: RuntimeSettings,
         reset_strategy: Any = None,
         service_caller: ServiceCaller | None = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         description: str = "",
     ) -> None:
         """装配 runtime 组件（通常由 RuntimeBuilder 调用）."""
@@ -87,7 +88,7 @@ class RobotEnv:
         self._reset_strategy = reset_strategy
         self._service_caller = service_caller
         self._settings = settings
-        self._logger = logger
+        self._logger = NULL_LOGGER if logger is None else logger
         self._description = description
         self._dispatcher = Dispatcher(self._controllers, action_router)
         self._scheduler = CycleScheduler(
@@ -122,7 +123,7 @@ class RobotEnv:
         registry: Any = None,
         clock: Clock | None = None,
         executor: ExecutorHost | None = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         config_root: str | Path | None = None,
     ) -> "RobotEnv":
         """从 Profile YAML 构建 RobotEnv（会实例化依赖闭包内的组件）."""
@@ -146,7 +147,7 @@ class RobotEnv:
         registry: Any = None,
         clock: Clock | None = None,
         executor: ExecutorHost | None = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
     ) -> "RobotEnv":
         """从已构造的 RobotPlugin + Profile 模型构建 RobotEnv."""
         from robot_env_runtime.config.builder import build_from_plugin
@@ -166,6 +167,11 @@ class RobotEnv:
     def clock(self) -> Clock:
         """返回 runtime 使用的时钟."""
         return self._clock
+
+    @property
+    def logger(self) -> LoggerLike:
+        """返回 runtime 使用的 logger."""
+        return self._logger
 
     @property
     def settings(self) -> RuntimeSettings:
@@ -244,11 +250,13 @@ class RobotEnv:
         self._snapshot = None
         self._scheduler.reset()
         try:
-            self._log_info("reset: pre-reset stop barrier")
+            self._logger.info("reset: pre-reset stop barrier")
             self._best_effort_stop()
             if self._reset_strategy is not None:
                 self._wait_for_reset_states()
-                self._log_info(f"reset: running strategy {self._reset_strategy.name!r}")
+                self._logger.info(
+                    f"reset: running strategy {self._reset_strategy.name!r}"
+                )
                 self._reset_strategy.run(self._make_reset_context(params))
             for name, controller in self._controllers.items():
                 try:
@@ -278,7 +286,7 @@ class RobotEnv:
         self._observation_info = observation_info
         self._last_observations = observations
         self._state = CycleState.WAIT_REQUIRED
-        self._log_info(
+        self._logger.info(
             f"reset completed: observations={list(observations)} "
             f"control_period={self._settings.control_period}"
         )
@@ -424,7 +432,7 @@ class RobotEnv:
     def stop(self) -> None:
         """执行 software stop barrier（尽力而为，不抛出异常）."""
         self._raise_if_closed()
-        self._log_info("runtime stop requested (software stop barrier)")
+        self._logger.info("runtime stop requested (software stop barrier)")
         self._best_effort_stop()
         self._state = CycleState.STOPPED
 
@@ -435,7 +443,7 @@ class RobotEnv:
         self._best_effort_stop()
         self._close_resources()
         self._state = CycleState.CLOSED
-        self._log_info("runtime closed")
+        self._logger.info("runtime closed")
 
     def __enter__(self) -> "RobotEnv":
         """支持 with 语句（退出时自动 close）."""
@@ -470,16 +478,16 @@ class RobotEnv:
             try:
                 controller.close()
             except Exception as exc:  # pragma: no cover - 关闭尽力而为
-                self._log_warn(f"controller close failed: {exc}")
+                self._logger.warn(f"controller close failed: {exc}")
         if self._reset_strategy is not None:
             try:
                 self._reset_strategy.close()
             except Exception as exc:  # pragma: no cover
-                self._log_warn(f"reset strategy close failed: {exc}")
+                self._logger.warn(f"reset strategy close failed: {exc}")
         try:
             self._executor.shutdown()
         except Exception as exc:  # pragma: no cover
-            self._log_warn(f"executor shutdown failed: {exc}")
+            self._logger.warn(f"executor shutdown failed: {exc}")
 
     # -- 内部：fault / stop ------------------------------------------------
 
@@ -499,7 +507,7 @@ class RobotEnv:
             )
             fault = self._faults.fault
             kind = "unknown" if fault is None else fault.kind
-            self._log_error(f"runtime fault latched ({kind}): {exc}")
+            self._logger.error(f"runtime fault latched ({kind}): {exc}")
             if current is not CycleState.CLOSED:
                 self._best_effort_stop()
         self._state = CycleState.FAULTED
@@ -513,7 +521,7 @@ class RobotEnv:
             try:
                 controller.stop(snapshot)
             except Exception as exc:
-                self._log_warn(f"controller {name!r} stop failed: {exc}")
+                self._logger.warn(f"controller {name!r} stop failed: {exc}")
 
     # -- 内部：hold（软失败）模式 ------------------------------------------
 
@@ -547,7 +555,7 @@ class RobotEnv:
                 exc,
                 {"reason": reason, "consecutive": self._hold_count, "hold_limit": limit},
             )
-            self._log_warn(
+            self._logger.warn(
                 f"hold 模式连续软失败达到上限 {limit}（{reason}），改为按故障处理: {exc}"
             )
             return False
@@ -569,7 +577,7 @@ class RobotEnv:
         )
         self._state = CycleState.READY_FOR_STEP
         skipped_text = f"，跳过 {skipped} 个已错过周期" if skipped else ""
-        self._log_warn(
+        self._logger.warn(
             f"hold 模式软失败（{reason}，连续 {self._hold_count}/{limit}{skipped_text}），"
             f"本周期派发空动作: {exc}"
         )
@@ -686,7 +694,9 @@ class RobotEnv:
         names = tuple(self._reset_strategy.state_dependencies)
         if not names:
             return
-        self._log_info(f"reset: waiting for strategy states {list(names)}")
+        self._logger.info(
+            f"reset: waiting for strategy states {list(names)}"
+        )
         self._wait_for_states(names)
 
     def _wait_for_states(self, names: Sequence[str] | None = None) -> None:
@@ -911,29 +921,6 @@ class RobotEnv:
             raise RuntimeStoppedError(
                 "runtime is STOPPED after stop(); call reset() to resume"
             )
-
-    # -- 内部：日志 --------------------------------------------------------
-
-    def _log_debug(self, message: str) -> None:
-        """写 debug 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.debug(message)
-
-    def _log_info(self, message: str) -> None:
-        """写 info 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.info(message)
-
-    def _log_warn(self, message: str) -> None:
-        """写 warn 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.warn(message)
-
-    def _log_error(self, message: str) -> None:
-        """写 error 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.error(message)
-
 
 def default_clock() -> MonotonicClock:
     """返回默认生产时钟（便于测试替换）."""

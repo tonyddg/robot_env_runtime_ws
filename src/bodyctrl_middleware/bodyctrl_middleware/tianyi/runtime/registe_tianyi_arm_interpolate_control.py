@@ -251,11 +251,10 @@ def registe_tianyi_arm_interpolate_control(
             clock=ctx.clock,
             stop_service = stop_service_name,
             reset_service = reset_service_name,
-            service_caller = RosTriggerCaller(ctx.node, logger=ctx.logger),
+            service_caller = RosTriggerCaller(ctx.node),
             state_provider = lambda name: states[name].read(),
             status_max_age_sec = config.status_max_age_sec,
             stop_timeout = ctx.settings.service_timeout,
-            logger = ctx.logger,
             auto_reset = True
         )
         return RosPublisherController(

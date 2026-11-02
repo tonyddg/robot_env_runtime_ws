@@ -9,6 +9,7 @@ from robot_env_runtime.core.clock import Clock
 from robot_env_runtime.core.snapshot import StateSample
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter
 from robot_env_runtime.extension.state import StateSource
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 from robot_env_runtime.ros2.qos import make_qos
 
 _WARN_THROTTLE_SEC = 1.0
@@ -32,7 +33,7 @@ class RosTopicStateSource(StateSource):
         msg_type: Any,
         adapter: RosStateAdapter,
         qos: Any = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         wall_clock: Any = None,
     ) -> None:
         """保存订阅参数与 adapter."""
@@ -45,14 +46,13 @@ class RosTopicStateSource(StateSource):
         self._msg_type = msg_type
         self._adapter = adapter
         self._qos = make_qos() if qos is None else qos
-        self._logger = logger
+        self._logger = NULL_LOGGER if logger is None else logger
         self._wall_clock = _time.time if wall_clock is None else wall_clock
         self._subscription: Any = None
         self._lock = threading.Lock()
         self._sample: StateSample[Any] | None = None
         self._sequence = 0
         self._closed = False
-        self._last_warn_at = float("-inf")
 
     # -- StateSource 接口 --------------------------------------------------
 
@@ -132,8 +132,9 @@ class RosTopicStateSource(StateSource):
         try:
             value = self._adapter.decode(msg)
         except Exception as exc:
-            self._warn_throttled(
-                f"failed to decode {self._topic}: {exc}; message ignored"
+            self._logger.warn(
+                f"failed to decode {self._topic}: {exc}; message ignored",
+                throttle_duration_sec = _WARN_THROTTLE_SEC,
             )
             return False
         ready_at = self._clock.now()
@@ -172,8 +173,9 @@ class RosTopicStateSource(StateSource):
         try:
             source_stamp = self._adapter.source_stamp(msg)
         except Exception as exc:  # pragma: no cover - adapter 缺陷
-            self._warn_throttled(
-                f"adapter.source_stamp failed for {self._topic}: {exc}"
+            self._logger.warn(
+                f"adapter.source_stamp failed for {self._topic}: {exc}",
+                throttle_duration_sec = _WARN_THROTTLE_SEC,
             )
             return None
         if source_stamp is None:
@@ -187,12 +189,3 @@ class RosTopicStateSource(StateSource):
             # 消息时间戳来自未来（时钟不同步）：退化为 received_at。
             return received_at
         return value
-
-    def _warn_throttled(self, message: str) -> None:
-        """同类告警最多每秒一条."""
-        if self._logger is None:
-            return
-        now = self._clock.now()
-        if now - self._last_warn_at >= _WARN_THROTTLE_SEC:
-            self._last_warn_at = now
-            self._logger.warn(message)

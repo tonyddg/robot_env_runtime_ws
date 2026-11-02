@@ -198,7 +198,6 @@ class ManagedControlProtocol(ControlProtocol):
         auto_reset: bool = False,
         poll_period: float = 0.02,
         accepting_states: Sequence[ControlState] | None = None,
-        logger: Any = None,
     ) -> None:
         """保存协议配置（插件负责注入 service caller 与 state provider）."""
         if auto_reset and reset_service is None:
@@ -219,7 +218,6 @@ class ManagedControlProtocol(ControlProtocol):
         self._auto_reset = bool(auto_reset)
         self._poll_period = float(poll_period)
         self._accepting = tuple(accepting_states or ACCEPTING_STATES)
-        self._logger = logger
         self._command_ids: dict[str, int] = {}
 
     @property

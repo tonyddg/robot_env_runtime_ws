@@ -33,6 +33,7 @@ from robot_env_runtime.extension.reset import (
     ResetStrategy,
 )
 from robot_env_runtime.extension.ros2.protocol import ControlState, ControlStatusValue
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 
 class ResetServiceAdapter(ABC):
@@ -215,7 +216,7 @@ class RosServiceResetStrategy(ResetStrategy):
         completion: ResetCompletionPolicy | None = None,
         timeout: float | None = None,
         poll_period: float = 0.02,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
     ) -> None:
         """保存 service 名、request adapter 与完成判定 policy."""
         self._name = name
@@ -230,7 +231,7 @@ class RosServiceResetStrategy(ResetStrategy):
         self._completion = completion
         self._timeout = timeout
         self._poll_period = float(poll_period)
-        self._logger = logger
+        self._logger = NULL_LOGGER if logger is None else logger
 
     @property
     def name(self) -> str:
@@ -289,7 +290,9 @@ class RosServiceResetStrategy(ResetStrategy):
                 details={"service": self._service, "message": message},
             )
         if self._completion is None:
-            self._log_info(f"reset service {self._service!r} completed synchronously")
+            self._logger.info(
+                f"reset service {self._service!r} completed synchronously"
+            )
             return
         accepted_at = ctx.clock.now()
         deadline = accepted_at + timeout
@@ -299,7 +302,7 @@ class RosServiceResetStrategy(ResetStrategy):
             outcome = self._evaluate(states, ctx, elapsed)
             if outcome.is_completed:
                 suffix = f": {outcome.message}" if outcome.message else ""
-                self._log_info(
+                self._logger.info(
                     f"reset completed via {self._service!r} "
                     f"after {elapsed:.3f}s{suffix}"
                 )
@@ -407,8 +410,3 @@ class RosServiceResetStrategy(ResetStrategy):
             return self._completion.describe(states, ctx)
         except Exception:  # pragma: no cover - 诊断尽力而为
             return "<completion policy describe() failed>"
-
-    def _log_info(self, message: str) -> None:
-        """写 info 日志（logger 可选）."""
-        if self._logger is not None:
-            self._logger.info(message)

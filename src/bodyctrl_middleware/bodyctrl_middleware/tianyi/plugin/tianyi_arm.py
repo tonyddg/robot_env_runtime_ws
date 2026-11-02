@@ -1,4 +1,4 @@
-from typing import Any, Callable, Literal, Optional
+from typing import Literal, Optional
 
 import numpy as np
 from pydantic import BaseModel
@@ -176,9 +176,6 @@ class TianyiArmConfig(BaseModel):
 def tianyi_arm(
     config: Optional[TianyiArmConfig] = None,
     robot: Optional[RobotPlugin] = None,
-
-    # 打印调试信息, 建议传入 node.get_logger()
-    logger: Optional[Any] = None
 ):
     if config is None:
         config = TianyiArmConfig()
@@ -195,14 +192,6 @@ def tianyi_arm(
     tele_arm_qpos_obs_name = config.tele_arm_qpos_obs_name
     tele_state_name = tele_arm_qpos_obs_name + "_state"
 
-    # 调试日志统一包装（logger 为空时静默）
-    # make_log_fn = lambda: (lambda message: logger.info(message, throttle_duration_sec = 1.0)) if logger is not None else None
-    def make_log_fn():
-        if logger is None:
-            return None
-        else:
-            return lambda message: logger.info(message, throttle_duration_sec = 1.0) # type: ignore
-    
     arm_interpolate_controller_name = config.arm_controller_name
     tianyi_body_manual_reset_name = config.body_manual_reset_name
 
@@ -297,12 +286,12 @@ def tianyi_arm(
     robot = registe_image_obs(
         robot, color_config,
         image_obs_name = config.image_color_obs_name,
-        log_fn = make_log_fn()
+        log_throttle_sec = 1.0,
     )
     robot = registe_image_obs(
         robot, depth_config,
         image_obs_name = config.image_depth_obs_name,
-        log_fn = make_log_fn()
+        log_throttle_sec = 1.0,
     )
 
     # 末端位姿
@@ -328,7 +317,7 @@ def tianyi_arm(
         warn_after = config.warn_after,
         error_after = config.error_after,
 
-        log_fn = make_log_fn()
+        log_throttle_sec = 1.0,
     )
 
     # 遥操终止信号

@@ -1,0 +1,64 @@
+"""与具体 ROS 实现无关的日志协议和无输出实现."""
+
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+
+class LoggerLike(Protocol):
+    """
+    日志调用方需要的最小接口，兼容 rclpy Logger 与测试替身.
+
+    所有实现都必须保证日志方法不因写日志失败而抛异常。调用方因此可以直接使用
+    ``logger.info/warn/error``，不需要为日志单独增加异常兜底。
+    """
+
+    def debug(self, message: str, **kwargs: Any) -> bool:
+        """记录 debug 日志."""
+        ...
+
+    def info(self, message: str, **kwargs: Any) -> bool:
+        """记录 info 日志."""
+        ...
+
+    def warn(self, message: str, **kwargs: Any) -> bool:
+        """记录 warning 日志."""
+        ...
+
+    def error(self, message: str, **kwargs: Any) -> bool:
+        """记录 error 日志."""
+        ...
+
+    def get_child(self, name: str) -> "LoggerLike":
+        """返回组件级子 logger."""
+        ...
+
+
+class NullLogger:
+    """始终丢弃日志的 LoggerLike 实现."""
+
+    def debug(self, message: str, **kwargs: Any) -> bool:
+        """丢弃 debug 日志."""
+        return False
+
+    def info(self, message: str, **kwargs: Any) -> bool:
+        """丢弃 info 日志."""
+        return False
+
+    def warn(self, message: str, **kwargs: Any) -> bool:
+        """丢弃 warning 日志."""
+        return False
+
+    def error(self, message: str, **kwargs: Any) -> bool:
+        """丢弃 error 日志."""
+        return False
+
+    def get_child(self, name: str) -> "NullLogger":
+        """返回自身；空 logger 没有独立的子作用域."""
+        return self
+
+
+NULL_LOGGER = NullLogger()
+
+
+__all__ = ["LoggerLike", "NULL_LOGGER", "NullLogger"]

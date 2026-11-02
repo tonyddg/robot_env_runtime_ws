@@ -581,6 +581,133 @@ runtime:
 
 ---
 
+### 7.1 Logger、ExecutorHost 与 ComponentContext
+
+runtime 不自行判断 node 类型，也不提供额外的 logger 继承体系。日志统一依赖
+`robot_env_runtime.logging` 中的 `LoggerLike` Protocol：
+
+```python
+class LoggerLike(Protocol):
+    def debug(self, message: str, **kwargs: Any) -> bool: ...
+    def info(self, message: str, **kwargs: Any) -> bool: ...
+    def warn(self, message: str, **kwargs: Any) -> bool: ...
+    def error(self, message: str, **kwargs: Any) -> bool: ...
+    def get_child(self, name: str) -> "LoggerLike": ...
+```
+
+**LoggerLike 实现必须保证日志方法不会因写日志失败而抛异常。** 调用方因此在业务代码
+中直接调用 `logger.info/warn/error`，不需要为 logger 单独增加异常兜底。
+
+logger 的所有权与传递路径：
+
+```text
+RosExecutorHost / FakeExecutorHost
+        │ get_logger()
+        ▼
+RuntimeBuilder
+        │ explicit logger，否则 executor.get_logger()
+        ▼
+根 logger ── get_child(component_name) ──► ComponentContext.logger
+        │
+        └──► RobotEnv.logger
+```
+
+规则：
+
+1. `ExecutorHost` 负责提供 logger。`RosExecutorHost.get_logger()` 返回 runtime node
+   的 logger，`FakeExecutorHost.get_logger()` 返回 fake logger；非 ROS executor
+   应返回 `NULL_LOGGER`。
+2. `RuntimeBuilder(logger=...)` 的显式 logger 优先；未提供时使用
+   `executor.get_logger()`。
+3. `ComponentContext.logger` 是非 Optional 的 `LoggerLike`，并且由 builder 通过
+   `get_child(context.name)` 创建。不同 state / controller / observation / reset
+   不共享 throttle 状态。
+4. `RobotEnv.logger` 只返回已经装配好的根 logger，不负责重新选择或包装 logger。
+5. 缺少 logger 时在 API 入口归一化为 `NULL_LOGGER`：
+
+```python
+logger = NULL_LOGGER if logger is None else logger
+```
+
+归一化后组件内部不再判断 `logger is not None`。
+
+### 7.1.1 组件内直接调用原始 logger
+
+组件 factory 应使用自己的 `ctx.logger`：
+
+```python
+def image_state_factory(ctx: ComponentContext):
+    adapter = ImageAdapter(
+        logger=ctx.logger,
+        log_throttle_sec=1.0,
+    )
+    return create_state_source(ctx, adapter=adapter)
+```
+
+业务代码直接调用：
+
+```python
+self.logger.info("decoded image")
+ctx.logger.warn("state is stale")
+ctx.logger.info(
+    "decode took %.3f ms" % elapsed_ms,
+    throttle_duration_sec=1.0,
+)
+```
+
+不要新增以下重复包装：
+
+* `getattr(logger, "info")` / `hasattr(logger, "info")`
+* `warning` / `warn` 兼容函数
+* 只检查 `logger is None` 后转发的 `_log_info`、`_log_warn`、`_log_error`
+* 捕获 logger 异常后重试或退化到 stderr 的 `_log`、`_warn`
+* 把外部 `log_fn` / lambda 捕获到插件注册阶段
+
+可选 logger 只允许在公共 API 边界归一化一次。完全不记录日志的通用工具不应接收
+logger 参数。
+
+### 7.1.2 throttle 与 child logger
+
+高频日志必须直接使用 ROS logger 的原生 throttle：
+
+```python
+ctx.logger.warn(
+    "failed to decode image; frame ignored",
+    throttle_duration_sec=1.0,
+)
+```
+
+runtime 或 adapter 不应在业务层再维护一份时间窗口。需要不同节流来源时，使用不同
+child logger 或不同的固定调用点，避免彩色图、深度图、TCP、controller 等互相抑制。
+
+图像/TCP 等可选诊断日志可由上层配置 `log_throttle_sec`：
+
+| 值 | 语义 |
+| --- | --- |
+| `None` | 关闭该诊断日志 |
+| `0.0` | 每次调用都记录 |
+| 正数 | 作为 `throttle_duration_sec` 传给原始 logger |
+| 负数 / NaN / Inf | 配置错误，在注册或构造阶段拒绝 |
+
+### 7.1.3 测试
+
+测试优先使用 `robot_env_runtime.testing.FakeLogger`：
+
+```python
+logger = FakeLogger()
+component = make_component(logger=logger)
+component.run()
+
+assert logger.calls == [
+    ("warn", "state is stale", {"throttle_duration_sec": 1.0}),
+]
+```
+
+throttle、severity 切换和 child logger 隔离应使用 fake clock 或真实 rclpy 临时 node
+验证，不依赖长 `sleep()`。
+
+---
+
 ## 8. RosStateAdapter 与 StateSource
 
 职责分离：StateSource 管 ROS 生命周期，Adapter 管机器人语义。
@@ -742,7 +869,7 @@ protocol = ManagedControlProtocol(
     clock=ctx.clock,
     stop_service="/example/arm/stop",
     reset_service="/example/arm/reset",
-    service_caller=RosTriggerCaller(ctx.node, logger=ctx.logger),
+    service_caller=RosTriggerCaller(ctx.node),
     state_provider=lambda name: states[name].read(),
 )
 ```

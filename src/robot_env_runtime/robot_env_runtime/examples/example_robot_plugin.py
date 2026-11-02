@@ -340,11 +340,10 @@ def create_example_robot_plugin(
             clock=ctx.clock,
             stop_service=arm_config.stop_service,
             reset_service=arm_config.reset_service,
-            service_caller=RosTriggerCaller(ctx.node, logger=ctx.logger),
+            service_caller=RosTriggerCaller(ctx.node),
             state_provider=lambda name: states[name].read(),
             status_max_age_sec=arm_config.status_max_age_sec,
             stop_timeout=ctx.settings.service_timeout,
-            logger=ctx.logger,
         )
         return RosPublisherController(
             "arm",

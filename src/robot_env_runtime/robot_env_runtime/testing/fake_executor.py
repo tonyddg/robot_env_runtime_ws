@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from robot_env_runtime.core.errors import RosExecutorFailureError
+from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 from robot_env_runtime.testing.fake_node import FakeRosNode
 
 
@@ -14,6 +15,10 @@ class FakeExecutorHost:
     def __init__(self, node: Any = None, *, failure: BaseException | None = None) -> None:
         """可注入 node 与后台异常."""
         self._node = FakeRosNode() if node is None else node
+        get_logger = getattr(self._node, "get_logger", None)
+        self._logger: LoggerLike = (
+            get_logger() if callable(get_logger) else NULL_LOGGER
+        )
         self._failure = failure
         self.start_count = 0
         self.shutdown_count = 0
@@ -22,6 +27,10 @@ class FakeExecutorHost:
     def node(self) -> Any:
         """返回 fake node."""
         return self._node
+
+    def get_logger(self) -> LoggerLike:
+        """返回 fake node 的 logger."""
+        return self._logger
 
     @property
     def failure(self) -> BaseException | None:

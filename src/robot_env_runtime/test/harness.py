@@ -13,6 +13,7 @@ from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.core.state_store import StateStore
 from robot_env_runtime.core.types import RuntimeSettings
 from robot_env_runtime.extension.ros2.protocol import ControlState, ControlStatusValue
+from robot_env_runtime.logging import LoggerLike
 from robot_env_runtime.testing.fake_controller import FakeController
 from robot_env_runtime.testing.fake_executor import FakeExecutorHost
 from robot_env_runtime.testing.fake_node import FakeLogger
@@ -49,7 +50,7 @@ def build_env(
     executor: Any = None,
     reset_strategy: Any = None,
     service_caller: Any = None,
-    logger: Any = None,
+    logger: LoggerLike | None = None,
 ) -> RobotEnv:
     """用显式组件装配 RobotEnv（跳过 builder 的 ROS 资源创建）."""
     runtime_settings = make_settings() if settings is None else settings
@@ -86,7 +87,7 @@ def simple_env(
     observations: Mapping[str, Any] | None = None,
     reset_strategy: Any = None,
     service_caller: Any = None,
-    logger: Any = None,
+    logger: LoggerLike | None = None,
 ) -> RobotEnv:
     """构造一个"一个 state + 一个 controller + 一条路由"的最小 runtime."""
     arm_source = FakeStateSource("arm", clock=clock, value=(0.0, 0.0, 0.0))

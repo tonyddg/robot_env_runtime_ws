@@ -14,8 +14,20 @@ class _Logger:
     def __init__(self) -> None:
         self.messages: list = []
 
-    def info(self, message: str) -> None:
+    def debug(self, message: str, **kwargs) -> None:
         self.messages.append(message)
+
+    def info(self, message: str, **kwargs) -> None:
+        self.messages.append(message)
+
+    def warn(self, message: str, **kwargs) -> None:
+        self.messages.append(message)
+
+    def error(self, message: str, **kwargs) -> None:
+        self.messages.append(message)
+
+    def get_child(self, name: str):
+        return self
 
 
 def test_window_summary_after_interval() -> None:
@@ -78,13 +90,12 @@ def test_summary_and_switch() -> None:
     assert len(logger.messages) == 3   # 窗口 + setup + 累计，off 无输出
 
 
-def test_stdout_fallback_without_logger(capsys) -> None:
-    """没有 logger 时直接打印到 stdout（方便脚本 / 裸环境）。"""
-    timing = CycleTiming(None, summary_interval = 0.0)
+def test_null_logger_is_silent(capsys) -> None:
+    """没有显式 logger 时只统计，不向 stdout 输出."""
+    timing = CycleTiming(summary_interval = 0.0)
     timing.record({"wait": 0.01, "total": 0.02})
     out = capsys.readouterr().out
-    assert "[cycle-timing] summary n=1 window=0s [ms]" in out
-    assert "wait med=10.0" in out
+    assert out == ""
 
 
 def test_collect_once_debug_timing_prints_summary(tmp_path) -> None:

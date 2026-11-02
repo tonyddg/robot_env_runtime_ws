@@ -15,6 +15,7 @@ from robot_env_runtime.core.robot_env import RobotEnv
 from robot_env_runtime.core.state_store import StateStore
 from robot_env_runtime.extension.plugin import PluginRegistry, RobotPlugin
 from robot_env_runtime.extension.reset import SequentialResetStrategy
+from robot_env_runtime.logging import LoggerLike
 from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.ros2.executor import RosExecutorHost
 from robot_env_runtime.ros2.services import RosTriggerCaller
@@ -28,7 +29,7 @@ class RuntimeBuilder:
         *,
         clock: Clock | None = None,
         executor: Any = None,
-        logger: Any = None,
+        logger: LoggerLike | None = None,
         service_caller_factory: Any = None,
         node_name: str = "robot_env_runtime",
     ) -> None:
@@ -47,7 +48,7 @@ class RuntimeBuilder:
         if executor is None:
             executor = RosExecutorHost(node_name=self._node_name)
         node = executor.node
-        logger = self._logger if self._logger is not None else node.get_logger()
+        logger = self._logger if self._logger is not None else executor.get_logger()
         try:
             sources = self._build_states(compiled, plugin, node, clock, logger)
             controllers = self._build_controllers(compiled, plugin, node, clock, logger, sources)
@@ -58,7 +59,7 @@ class RuntimeBuilder:
             if owns_executor:
                 executor.shutdown()
             raise
-        service_caller = self._make_service_caller(node, logger)
+        service_caller = self._make_service_caller(node)
         return RobotEnv(
             clock=clock,
             executor=executor,
@@ -90,7 +91,7 @@ class RuntimeBuilder:
         plugin: RobotPlugin,
         node: Any,
         clock: Clock,
-        logger: Any,
+        logger: LoggerLike,
     ) -> dict[str, Any]:
         """按拓扑序实例化 state（未选中的 state 完全不会创建订阅）."""
         sources: dict[str, Any] = {}
@@ -112,7 +113,7 @@ class RuntimeBuilder:
         plugin: RobotPlugin,
         node: Any,
         clock: Clock,
-        logger: Any,
+        logger: LoggerLike,
         sources: Mapping[str, Any],
     ) -> dict[str, Any]:
         """实例化 controller 并交叉校验声明的依赖 / 维度."""
@@ -150,7 +151,7 @@ class RuntimeBuilder:
         plugin: RobotPlugin,
         node: Any,
         clock: Clock,
-        logger: Any,
+        logger: LoggerLike,
         sources: Mapping[str, Any],
     ) -> dict[str, Any]:
         """实例化 observation 并校验来源声明."""
@@ -178,7 +179,7 @@ class RuntimeBuilder:
         plugin: RobotPlugin,
         node: Any,
         clock: Clock,
-        logger: Any,
+        logger: LoggerLike,
         sources: Mapping[str, Any],
     ) -> Any:
         """
@@ -219,7 +220,7 @@ class RuntimeBuilder:
         name: str,
         node: Any,
         clock: Clock,
-        logger: Any,
+        logger: LoggerLike,
         sources: Mapping[str, Any],
     ) -> Any:
         """实例化单个 reset 策略，并校验名字与状态依赖声明."""
@@ -247,7 +248,7 @@ class RuntimeBuilder:
         name: str,
         node: Any,
         clock: Clock,
-        logger: Any,
+        logger: LoggerLike,
         compiled: CompiledProfile,
     ) -> ComponentContext:
         """构造组件上下文."""
@@ -255,15 +256,15 @@ class RuntimeBuilder:
             name=name,
             node=node,
             clock=clock,
-            logger=logger,
+            logger=logger.get_child(name),
             control_period=compiled.settings.control_period,
             settings=compiled.settings,
         )
 
-    def _make_service_caller(self, node: Any, logger: Any) -> Any:
+    def _make_service_caller(self, node: Any) -> Any:
         """构造 Trigger service 调用器（可注入 fake）."""
         if self._service_caller_factory is None:
-            return RosTriggerCaller(node, logger=logger)
+            return RosTriggerCaller(node)
         return self._service_caller_factory(node)
 
 
@@ -273,7 +274,7 @@ def build_from_profile(
     registry: PluginRegistry | None = None,
     clock: Clock | None = None,
     executor: Any = None,
-    logger: Any = None,
+    logger: LoggerLike | None = None,
     config_root: str | Path | None = None,
 ) -> RobotEnv:
     """从 Profile YAML 构建 RobotEnv."""
@@ -300,7 +301,7 @@ def build_from_plugin(
     registry: PluginRegistry | None = None,
     clock: Clock | None = None,
     executor: Any = None,
-    logger: Any = None,
+    logger: LoggerLike | None = None,
 ) -> RobotEnv:
     """从 RobotPlugin + Profile 模型构建 RobotEnv."""
     if registry is None:
