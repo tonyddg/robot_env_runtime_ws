@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Callable, Mapping, MutableMapping, Optional
 
 import time
 
@@ -11,6 +11,10 @@ from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 from bodyctrl_middleware.loop.cycle_timing import CycleTiming
 from bodyctrl_middleware.policy.base import Policy
+
+
+TerminationCheck = Callable[[int], Optional[str]]
+
 
 class FirstActionTimeoutError(RuntimeError):
     """首次 policy inference 在进入控制循环前没有按时完成."""
@@ -54,7 +58,7 @@ class BaseEnvLoop:
     子类只通过以下钩子扩展数据采集等副作用，不应覆盖 ``_single_step()``：
 
     - ``on_reset(obs)``：reset + policy.reset 完成后、首次推理前调用；
-    - ``before_cycle(cycle_index)``：每个 boundary 前调用，返回非空字符串可停止循环；
+    - ``register_termination_check(name, check)``：注册 boundary 前的结束判断；
     - ``on_hold(result, durations)``：hold 周期空动作派发后调用；
     - ``on_step(result, durations)``：正常周期预取下一次推理后调用。
 
@@ -77,6 +81,7 @@ class BaseEnvLoop:
         self.policy = policy
         self.logger = NULL_LOGGER if logger is None else logger
         self._action_poll_period = float(action_poll_period)
+        self._termination_checks: list[tuple[str, TerminationCheck]] = []
         self.timing = CycleTiming(
             logger,
             enabled = enable_timing,
@@ -88,8 +93,34 @@ class BaseEnvLoop:
     def on_reset(self, obs: Mapping[str, Any]) -> None:
         """reset 与 policy.reset 完成后、首次推理前调用."""
 
+    def register_termination_check(
+        self,
+        name: str,
+        check: TerminationCheck,
+    ) -> None:
+        """注册一个 boundary 前执行的结束判断，按注册顺序调用."""
+        if not name:
+            raise ValueError("termination check name must not be empty")
+        if not callable(check):
+            raise TypeError(f"termination check {name!r} must be callable")
+        if any(existing_name == name for existing_name, _ in self._termination_checks):
+            raise ValueError(f"duplicate termination check: {name}")
+        self._termination_checks.append((name, check))
+
     def before_cycle(self, cycle_index: int) -> Optional[str]:
-        """boundary 前调用；返回停止原因时结束循环，例如 ``"max_steps"``."""
+        """按注册顺序执行结束判断，第一个返回原因的检查结束循环."""
+        for name, check in self._termination_checks:
+            reason = check(cycle_index)
+            if reason is None:
+                continue
+            if not isinstance(reason, str) or not reason:
+                raise ValueError(
+                    f"termination check {name!r} returned invalid reason: {reason!r}"
+                )
+            self.logger.info(
+                f"termination check {name!r} ended loop: {reason}"
+            )
+            return reason
         return None
 
     def on_hold(

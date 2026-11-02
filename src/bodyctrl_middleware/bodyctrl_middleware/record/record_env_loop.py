@@ -52,6 +52,10 @@ class RecordEnvLoop(BaseEnvLoop):
         self.recorded_steps = 0
         self.soft_fail_count = 0
         self.soft_fail_cycles: list[int] = []
+        self.register_termination_check(
+            "max_steps",
+            self._check_max_steps,
+        )
 
     def run(
         self,
@@ -77,7 +81,7 @@ class RecordEnvLoop(BaseEnvLoop):
             padding = True,
         )
 
-    def before_cycle(self, cycle_index: int) -> Optional[str]:
+    def _check_max_steps(self, cycle_index: int) -> Optional[str]:
         """达到有效数据行上限时正常结束本轮."""
         if self.max_steps > 0 and self.recorded_steps >= self.max_steps:
             return "max_steps"

@@ -5,6 +5,7 @@ from bodyctrl_middleware.loop.base_env_loop import (
     FirstActionTimeoutError,
     LoopOutcome,
     LoopStep,
+    TerminationCheck,
 )
 from bodyctrl_middleware.loop.cycle_timing import CycleTiming
 
@@ -14,4 +15,5 @@ __all__ = [
     "FirstActionTimeoutError",
     "LoopOutcome",
     "LoopStep",
+    "TerminationCheck",
 ]

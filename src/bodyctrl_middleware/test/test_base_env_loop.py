@@ -70,8 +70,9 @@ class _MaxStepsLoop(_ObserverLoop):
         super().__init__(*args, **kwargs)
         self.max_steps = int(max_steps)
         self.before_cycles: list[int] = []
+        self.register_termination_check("max_steps", self._check_max_steps)
 
-    def before_cycle(self, cycle_index: int) -> str | None:
+    def _check_max_steps(self, cycle_index: int) -> str | None:
         self.before_cycles.append(cycle_index)
         if len(self.step_results) >= self.max_steps:
             return "max_steps"
@@ -145,7 +146,7 @@ def test_base_loop_hold_reuses_future_and_exposes_runtime_info() -> None:
     assert hold.info["cycle"]["index"] == 1
 
 
-def test_base_loop_before_cycle_can_stop_with_reason() -> None:
+def test_base_loop_termination_check_can_stop_with_reason() -> None:
     env = _LoopEnv()
     policy = FakePolicy(steps = 5)
     loop = _MaxStepsLoop(env, policy, _Logger(), max_steps = 2)
@@ -156,6 +157,48 @@ def test_base_loop_before_cycle_can_stop_with_reason() -> None:
     assert loop.before_cycles == [0, 2, 3]
     assert len(loop.step_results) == 2
     assert policy.infer_count == 3
+
+
+def test_base_loop_termination_checks_run_in_registration_order() -> None:
+    calls: list[str] = []
+    loop = BaseEnvLoop(_LoopEnv(), FakePolicy(steps = 2), _Logger())
+
+    def first(cycle_index: int) -> str | None:
+        calls.append(f"first:{cycle_index}")
+        return None
+
+    def second(cycle_index: int) -> str | None:
+        calls.append(f"second:{cycle_index}")
+        return "second_reason"
+
+    def third(cycle_index: int) -> str | None:
+        calls.append(f"third:{cycle_index}")
+        return "third_reason"
+
+    loop.register_termination_check("first", first)
+    loop.register_termination_check("second", second)
+    loop.register_termination_check("third", third)
+
+    outcome = loop.loop()
+
+    assert outcome == LoopOutcome(
+        reason = "second_reason",
+        last_cycle_index = 0,
+    )
+    assert calls == ["first:0", "second:0"]
+
+
+def test_base_loop_rejects_duplicate_or_invalid_termination_checks() -> None:
+    loop = BaseEnvLoop(_LoopEnv(), FakePolicy(steps = 1), _Logger())
+    loop.register_termination_check("duplicate", lambda cycle_index: None)
+
+    with pytest.raises(ValueError, match = "duplicate termination check"):
+        loop.register_termination_check("duplicate", lambda cycle_index: None)
+
+    invalid = BaseEnvLoop(_LoopEnv(), FakePolicy(steps = 1), _Logger())
+    invalid.register_termination_check("invalid", lambda cycle_index: "")
+    with pytest.raises(ValueError, match = "returned invalid reason"):
+        invalid.loop()
 
 
 def test_base_loop_first_action_timeout_stops_env() -> None:
