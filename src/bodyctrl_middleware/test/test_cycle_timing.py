@@ -26,7 +26,6 @@ def test_window_summary_after_interval() -> None:
     info = {"cycle": {"deadline": 1.1, "index": 7}}
     for _ in range(3):
         timing.record(
-            7,
             {"infer": 0.001, "wait": 0.095, "step": 0.009, "total": 0.106},
             info = info,
             wait_entered_at = 1.0,
@@ -35,7 +34,6 @@ def test_window_summary_after_interval() -> None:
 
     now[0] += 10.1
     timing.record(
-        7,
         {"infer": 0.001, "wait": 0.01, "step": 0.009, "total": 0.02},
         info = info,
         wait_entered_at = 1.0,
@@ -46,7 +44,7 @@ def test_window_summary_after_interval() -> None:
     assert "infer med=" in line and "wait med=" in line and "step med=" in line
     assert "total med=" in line and "max=" in line
     assert "slack min=+100.0" in line     # deadline(1.1) - 进入 wait(1.0)
-    assert "action" not in line and "write" not in line
+    assert "action" not in line and "hook" not in line
 
 
 def test_summary_and_switch() -> None:
@@ -57,13 +55,13 @@ def test_summary_and_switch() -> None:
     timing.log_summary()
     assert logger.messages == []
 
-    timing.record(1, {"wait": 0.01, "total": 0.02})
+    timing.record({"wait": 0.01, "total": 0.02})
     now[0] += 1.0
-    timing.record(2, {"wait": 0.03, "total": 0.05})
+    timing.record({"wait": 0.03, "total": 0.05})
     assert len(logger.messages) == 1
     assert "summary n=2 window=1s" in logger.messages[0]
 
-    timing.record(3, {"wait": 0.03, "total": 0.05})
+    timing.record({"wait": 0.03, "total": 0.05})
     timing.log_setup(reset_sec = 0.2)
     timing.log_summary()
 
@@ -74,7 +72,7 @@ def test_summary_and_switch() -> None:
     assert "total med=50.0 max=50.0" in summary
 
     off = CycleTiming(logger, enabled = False)
-    off.record(4, {"wait": 1.0})
+    off.record({"wait": 1.0})
     off.log_setup(reset_sec = 1.0)
     off.log_summary()
     assert len(logger.messages) == 3   # 窗口 + setup + 累计，off 无输出
@@ -83,7 +81,7 @@ def test_summary_and_switch() -> None:
 def test_stdout_fallback_without_logger(capsys) -> None:
     """没有 logger 时直接打印到 stdout（方便脚本 / 裸环境）。"""
     timing = CycleTiming(None, summary_interval = 0.0)
-    timing.record(1, {"wait": 0.01, "total": 0.02})
+    timing.record({"wait": 0.01, "total": 0.02})
     out = capsys.readouterr().out
     assert "[cycle-timing] summary n=1 window=0s [ms]" in out
     assert "wait med=10.0" in out
@@ -102,6 +100,7 @@ def test_collect_once_debug_timing_prints_summary(tmp_path) -> None:
     assert any("setup:" in message for message in lines)
     summary = next(message for message in lines if "summary" in message)
     assert "summary n=3 [ms]" in summary
+    assert "hook med=" in summary
     assert "cycle " not in summary
 
 

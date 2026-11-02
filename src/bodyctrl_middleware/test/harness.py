@@ -8,6 +8,8 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 
+from robot_env_runtime.testing import FakeClock
+
 ACTION_DIM = 3
 IMAGE_SHAPE = (64, 64, 3)
 
@@ -149,6 +151,7 @@ class FakeEnv:
         self._raise_after = raise_after
         self._hold_cycles = {int(index) for index in hold_cycles}
         self._base_time = base_time
+        self.clock = FakeClock(start = base_time)
         self._step = 0
         self._last_obs = make_obs(0)
         self.resets = 0

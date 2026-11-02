@@ -124,6 +124,15 @@ def test_collect_once_discards_episode_without_steps(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_collect_once_stops_runtime_after_normal_completion(tmp_path) -> None:
+    """record loop 正常结束后 runtime 已 STOPPED，下一轮可由 reset 恢复."""
+    env = FakeEnv()
+    assert collect_once(env, FakePolicy(steps = 1), 0, tmp_path) is True
+
+    assert env.stopped is True
+    assert env.stop_calls == 1
+
+
 def test_collect_multi_creates_trajectory_dir_and_numbers_episodes(tmp_path) -> None:
     """collect_multi 建 trajectory_<ts>/ 目录，按 episode_start 编号，默认只跑一轮."""
     env = FakeEnv()
