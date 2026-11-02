@@ -108,7 +108,12 @@ def launch_setup(context, *args, **kwargs):
         ]
     )
 
-    node_list = [tianyi_arm_interpolate_control, tianyi_body_manual_reset]
+    diff_base_manual_reset = Node(
+        package = "bodyctrl_middleware",
+        executable = "diff_base_reset",
+    )
+
+    node_list = [tianyi_arm_interpolate_control, tianyi_body_manual_reset, diff_base_manual_reset]
 
     if not control_node_only:
 

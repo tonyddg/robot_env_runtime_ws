@@ -7,11 +7,12 @@ from bodyctrl_middleware.utility.qos import QosConfig
 
 from robot_env_runtime.extension.plugin import RobotPlugin
 
-from bodyctrl_middleware.tianyi.runtime.registe_rel_base_manual_reset import registe_rel_base_manual_reset
+# from bodyctrl_middleware.tianyi.runtime.registe_rel_base_manual_reset import registe_rel_base_manual_reset
 
 from bodyctrl_middleware.common.runtime.registe_odom_obs import registe_odom_obs, OdomStateAdapterConfig
 from bodyctrl_middleware.common.runtime.registe_differential_base_controller import registe_differential_base_controller, DifferentialBaseVelocityAdapterConfig
 from bodyctrl_middleware.common.runtime.registe_differential_base_tele_cmd_obs import registe_differential_base_tele_cmd_obs, DifferentialBaseTeleCmdAdapterConfig
+from bodyctrl_middleware.common.runtime.registe_differential_base_reset import registe_differential_base_manual_reset
 
 class TianyiBaseConfig(BaseModel):
 
@@ -49,12 +50,6 @@ class TianyiBaseConfig(BaseModel):
     # 底盘初始化
     base_reset_name: str = RosField(
         "base_reset", read_only = True, description = "底盘初始化名",
-    )
-    base_reset_srv_name: str = RosField(
-        "reset_base_control", read_only = True, description = "底盘初始化服务",
-    )
-    base_cur_stage_topic: str = RosField(
-        "cur_stage", read_only = True, description = "底盘状态话题",
     )
 
     # 允许最大延迟
@@ -116,11 +111,9 @@ def tianyi_base(
             differential_base_tele_cmd_obs_name = config.tele_cmd_vel_obs_name
         )
 
-    robot = registe_rel_base_manual_reset(
+    robot = registe_differential_base_manual_reset(
         robot,
         reset_name = config.base_reset_name,
-        reset_srv_name = config.base_reset_srv_name,
-        cur_stage_topic = config.base_cur_stage_topic
     )
 
     robot = registe_odom_obs(

@@ -52,6 +52,11 @@ def generate_launch_description():
         package = "bodyctrl_middleware",
         executable = "tianyi_body_manual_reset",
     )
+    diff_base_manual_reset = Node(
+        package = "bodyctrl_middleware",
+        executable = "diff_base_reset",
+    )
+
     tianyi_bimanual_tele_node = Node(
         package = "bodyctrl_middleware",
         executable = "tianyi_bimanual_tele_node",
@@ -66,5 +71,6 @@ def generate_launch_description():
     return LaunchDescription([
         tianyi_arm_interpolate_control, 
         tianyi_body_manual_reset,
+        diff_base_manual_reset,
         tianyi_bimanual_tele_node
     ])
