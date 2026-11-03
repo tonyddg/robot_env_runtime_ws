@@ -225,6 +225,19 @@ class RobotEnv:
 
     # -- Policy 侧 API -----------------------------------------------------
 
+    def validate_reset_params(
+        self,
+        params: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """
+        无副作用校验 ``env.reset(**kwargs)`` 的参数名.
+
+        只检查参数是否属于当前 reset strategy 声明的白名单，不执行 stop、
+        reset service、状态等待或任何机器人动作。
+        """
+        self._raise_if_closed()
+        self._validate_reset_params({} if params is None else params)
+
     def reset(self, **params: Any) -> dict[str, Any]:
         """
         执行 reset 编排并返回初始 observation.
@@ -233,8 +246,7 @@ class RobotEnv:
         policy 读取；只接受该 reset 声明过的参数名（``ResetStrategy.parameter_names``），
         未声明的参数名会立即抛 :class:`ResetParameterError`（不 latch fault、不 stop）。
         """
-        self._raise_if_closed()
-        self._validate_reset_params(params)
+        self.validate_reset_params(params)
         self._faults.clear()
         self._records = {}
         self._validation_checks = {}

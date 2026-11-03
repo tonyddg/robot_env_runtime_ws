@@ -3,6 +3,7 @@
 from bodyctrl_middleware.loop.base_env_loop import (
     BaseEnvLoop,
     FirstActionTimeoutError,
+    InvalidPolicyGoalError,
     LoopOutcome,
     LoopStep,
     TerminationCheck,
@@ -13,6 +14,7 @@ __all__ = [
     "BaseEnvLoop",
     "CycleTiming",
     "FirstActionTimeoutError",
+    "InvalidPolicyGoalError",
     "LoopOutcome",
     "LoopStep",
     "TerminationCheck",

@@ -141,6 +141,29 @@ def test_unknown_parameter_is_rejected_without_latching_or_stop() -> None:
         env.close()
 
 
+def test_public_validation_is_side_effect_free() -> None:
+    """公开校验复用参数白名单，不触发 stop、service 或 reset 状态变化."""
+    clock = FakeClock()
+    caller = FakeServiceCaller()
+    strategy = RosServiceResetStrategy(
+        name="home", service="/reset", clock=clock, adapter=_ModeAdapter()
+    )
+    env, controller = _env(clock, strategy, caller=caller)
+    try:
+        env.validate_reset_params({"mode": "tele"})
+        assert controller.stop_count == 0
+        assert caller.calls == []
+        assert env.fault is None
+
+        with pytest.raises(ResetParameterError):
+            env.validate_reset_params({"unknown": 1})
+        assert controller.stop_count == 0
+        assert caller.calls == []
+        assert env.fault is None
+    finally:
+        env.close()
+
+
 def test_parameters_rejected_when_no_reset_is_configured() -> None:
     """没有配置 reset 时任何参数名都非法."""
     clock = FakeClock()

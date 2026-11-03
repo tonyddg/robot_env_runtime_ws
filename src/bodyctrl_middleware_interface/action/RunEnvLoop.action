@@ -1,0 +1,10 @@
+# Empty string means None. Otherwise this must decode to a JSON object.
+string env_reset
+
+# Empty string means None. Otherwise this must decode to a JSON object.
+string policy_goal
+---
+bool success
+string reason
+---
+uint32 cycle_index

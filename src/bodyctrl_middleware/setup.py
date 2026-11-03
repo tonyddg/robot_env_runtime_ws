@@ -37,6 +37,7 @@ setup(
 
             "tianyi_bimanual_tele_node = bodyctrl_middleware.tianyi.node.bimanual_tele_node:main",
             "tianyi_wholebody_tele_node = bodyctrl_middleware.tianyi.node.wholebody_tele_node:main",
+            "tianyi_wholebody_tele_action_node = bodyctrl_middleware.tianyi.node.wholebody_tele_action_node:main",
 
             "tianyi_arm_ready_monitor_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_ready_monitor_node:main",
             "tianyi_arm_state_reflect_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_state_reflect_node:main",

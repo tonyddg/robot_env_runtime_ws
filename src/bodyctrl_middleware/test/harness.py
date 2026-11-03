@@ -110,10 +110,15 @@ class FakePolicy:
         self.tele_config_list = tele_config_list
         self.infer_count = 0
         self.seen_obs: list = []
+        self.seen_goals: list = []
 
-    def reset(self, obs: dict) -> None:
+    def reset(self, obs: dict, goal: Optional[dict] = None) -> None:
         self.infer_count = 0
         self.seen_obs = []
+        self.seen_goals.append(goal)
+
+    def validate_goal(self, goal: Optional[dict] = None) -> bool:
+        return goal is None
 
     def done(self) -> bool:
         return self.infer_count > self.steps
@@ -157,8 +162,13 @@ class FakeEnv:
         self.resets = 0
         self.stopped = False
         self.stop_calls = 0
+        self.validated_reset_params: list[dict] = []
+        self.seen_reset_kwargs: list[dict] = []
 
-    def reset(self) -> dict:
+    def validate_reset_params(self, params: dict) -> None:
+        self.validated_reset_params.append(dict(params))
+
+    def reset(self, **reset_kwargs) -> dict:
         self._step = 0
         self.cycle_index = 0
         self.hold_count = 0
@@ -167,6 +177,7 @@ class FakeEnv:
         self.stopped = False
         self._last_obs = make_obs(0)
         self.resets += 1
+        self.seen_reset_kwargs.append(dict(reset_kwargs))
         return make_obs(0)
 
     def ok(self) -> bool:

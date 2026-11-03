@@ -30,6 +30,16 @@ class FirstActionTimeoutError(RuntimeError):
         }
 
 
+class InvalidPolicyGoalError(ValueError):
+    """当前 policy 不支持传入的 goal."""
+
+    def __init__(self, policy: Policy, goal: Optional[Mapping[str, Any]]) -> None:
+        self.goal = None if goal is None else dict(goal)
+        super().__init__(
+            f"policy {type(policy).__name__} rejected goal: {self.goal!r}"
+        )
+
+
 @dataclass(frozen=True)
 class LoopStep:
     """一个 cycle 对子类可见的结果快照."""
@@ -162,6 +172,25 @@ class BaseEnvLoop:
                 min(deadline, now + self._action_poll_period)
             )
 
+    def validate_params(
+        self,
+        reset_kwargs: Optional[Mapping[str, Any]] = None,
+        goal_kwargs: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """
+        在进入任何 reset 或 stop 路径前校验本轮参数.
+
+        ``reset_kwargs`` 复用 ``RobotEnv.validate_reset_params()`` 的参数白名单；
+        ``goal_kwargs`` 由具体 policy 的 ``validate_goal()`` 判断。校验本身保持
+        无副作用。
+        """
+        reset_params = {} if reset_kwargs is None else dict(reset_kwargs)
+        policy_goal = None if goal_kwargs is None else dict(goal_kwargs)
+
+        self.env.validate_reset_params(reset_params)
+        if not self.policy.validate_goal(policy_goal):
+            raise InvalidPolicyGoalError(self.policy, policy_goal)
+
     def _setup_loop(
         self,
         reset_kwargs: Optional[dict[str, Any]] = None,
@@ -174,7 +203,7 @@ class BaseEnvLoop:
         reset_done_at = time.perf_counter()
 
         policy_reset_started_at = time.perf_counter()
-        self.policy.reset(obs, goal_kwargs)
+        self.policy.reset(obs, goal = goal_kwargs)
         policy_reset_done_at = time.perf_counter()
 
         on_reset_started_at = time.perf_counter()
@@ -299,6 +328,9 @@ class BaseEnvLoop:
         """
         stop_reason: Optional[str] = None
         last_cycle_index = 0
+
+        # 参数校验必须位于 stop/finally 之外：非法参数不能触发机器人 stop barrier。
+        self.validate_params(reset_kwargs, goal_kwargs)
         try:
             _, action_infer_future = self._setup_loop(
                 reset_kwargs, goal_kwargs,

@@ -16,6 +16,9 @@ class Policy(ABC):
     def done(self) -> bool:
         return False
 
+    def validate_goal(self, goal: Optional[dict] = None):
+        return goal is None
+
 class SyncFuture:
     def __init__(
         self, result: np.ndarray

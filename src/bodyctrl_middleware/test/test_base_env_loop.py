@@ -8,9 +8,11 @@ import pytest
 from bodyctrl_middleware.loop import (
     BaseEnvLoop,
     FirstActionTimeoutError,
+    InvalidPolicyGoalError,
     LoopOutcome,
     LoopStep,
 )
+from robot_env_runtime.core.errors import ResetParameterError
 from robot_env_runtime.testing import FakeClock
 from harness import FakeEnv, FakePolicy
 
@@ -88,8 +90,11 @@ class _PendingFuture:
 
 
 class _PendingPolicy:
-    def reset(self, obs) -> None:
+    def reset(self, obs, goal=None) -> None:
         pass
+
+    def validate_goal(self, goal=None) -> bool:
+        return goal is None
 
     def infer_async(self, obs) -> _PendingFuture:
         return _PendingFuture()
@@ -233,3 +238,68 @@ def test_base_loop_stop_failure_does_not_mask_result_or_summary() -> None:
     assert outcome.reason == "policy_done"
     assert env.stop_calls == 1
     assert any("[cycle-timing]" in message for message in logger.messages)
+
+
+def test_validate_params_accepts_empty_values() -> None:
+    env = _LoopEnv()
+    policy = FakePolicy(steps = 1)
+    loop = BaseEnvLoop(env, policy, _Logger())
+
+    loop.validate_params()
+    loop.validate_params({}, None)
+
+    assert env.validated_reset_params == [{}, {}]
+    assert env.resets == 0
+    assert env.stop_calls == 0
+    assert policy.infer_count == 0
+
+
+def test_validate_params_rejects_policy_goal_without_side_effects() -> None:
+    env = _LoopEnv()
+    policy = FakePolicy(steps = 1)
+    loop = BaseEnvLoop(env, policy, _Logger())
+
+    with pytest.raises(InvalidPolicyGoalError, match = "rejected goal"):
+        loop.loop(goal_kwargs = {"task": "pick"})
+
+    assert env.resets == 0
+    assert env.stop_calls == 0
+    assert env.rebases == 0
+    assert policy.infer_count == 0
+
+
+def test_validate_params_rejects_env_reset_without_side_effects() -> None:
+    class _RejectingEnv(_LoopEnv):
+        def validate_reset_params(self, params: dict) -> None:
+            super().validate_reset_params(params)
+            if params:
+                raise ResetParameterError("unsupported reset parameter")
+
+    env = _RejectingEnv()
+    loop = BaseEnvLoop(env, FakePolicy(steps = 1), _Logger())
+
+    with pytest.raises(ResetParameterError):
+        loop.loop(reset_kwargs = {"mode": "tele"})
+
+    assert env.validated_reset_params == [{"mode": "tele"}]
+    assert env.resets == 0
+    assert env.stop_calls == 0
+    assert env.rebases == 0
+
+
+def test_valid_params_reach_env_reset_and_policy_reset() -> None:
+    class _AcceptingPolicy(FakePolicy):
+        def validate_goal(self, goal=None) -> bool:
+            return goal == {"task": "pick"}
+
+    env = _LoopEnv()
+    policy = _AcceptingPolicy(steps = 1)
+    loop = BaseEnvLoop(env, policy, _Logger())
+
+    loop.loop(
+        reset_kwargs = {"mode": "tele"},
+        goal_kwargs = {"task": "pick"},
+    )
+
+    assert env.seen_reset_kwargs == [{"mode": "tele"}]
+    assert policy.seen_goals == [{"task": "pick"}]

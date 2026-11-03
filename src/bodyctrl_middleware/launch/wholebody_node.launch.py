@@ -59,6 +59,7 @@ def launch_setup(context, *args, **kwargs):
 
     profile_path = LaunchConfiguration("profile_path").perform(context)
     wholebody_node_params_path = LaunchConfiguration("wholebody_node_params_path").perform(context)
+    runtime_executable = LaunchConfiguration("runtime_executable").perform(context)
 
     _control_node_only = LaunchConfiguration("control_node_only").perform(context)
 
@@ -124,7 +125,7 @@ def launch_setup(context, *args, **kwargs):
 
         tianyi_wholebody_tele_node = Node(
             package = "bodyctrl_middleware",
-            executable = "tianyi_wholebody_tele_node",
+            executable = runtime_executable,
             parameters = [
                 {
                     "config.arm.arm_motor_list": control_arm_motor_list,
@@ -159,6 +160,11 @@ def generate_launch_description():
             "wholebody_node_params_path",
             default_value="",
             description="wholebody_node 的节点参数 yaml 文件在功能包资源文件夹下的路径或绝对路径, 取空则跳过"
+        ),
+        DeclareLaunchArgument(
+            "runtime_executable",
+            default_value="tianyi_wholebody_tele_node",
+            description="policy runtime 可执行节点；action 模式使用 tianyi_wholebody_tele_action_node"
         ),
         DeclareLaunchArgument(
             "control_node_only",

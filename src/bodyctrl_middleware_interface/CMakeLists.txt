@@ -13,6 +13,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(robot_env_interface REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/RunEnvLoop.action"
   "msg/CmdSetMotorInterpolate.msg"
   "msg/SetMotorInterpolate.msg"
   "msg/SetMotorResetTarget.msg"
