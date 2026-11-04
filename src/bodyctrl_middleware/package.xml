@@ -12,6 +12,10 @@
   <depend>rclpy</depend>
   <depend>bodyctrl_msgs</depend>
   <depend>bodyctrl_middleware_interface</depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>python3-zmq</exec_depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

@@ -21,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/BodyManualReset.srv"
   "srv/InputService.srv"
   "srv/DiffBaseReset.srv"
+  "srv/TiansuoReset.srv"
   DEPENDENCIES std_msgs 
   DEPENDENCIES geometry_msgs 
   DEPENDENCIES robot_env_interface
