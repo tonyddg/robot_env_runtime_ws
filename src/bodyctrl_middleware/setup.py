@@ -46,6 +46,9 @@ setup(
 
             "input_service = bodyctrl_middleware.utility.input_service:main",
             "capture_image_node = bodyctrl_middleware.common.test_node.capture_image_node:main",
+
+            "robotiq_gripper_control = bodyctrl_middleware.robotiq.control_node.robotiq_gripper_control:main",
+            "robotiq_interpolate_test_node = bodyctrl_middleware.robotiq.test_node.interpolate_test_node:main"
         ],
     },
 )

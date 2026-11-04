@@ -19,6 +19,8 @@ from bodyctrl_middleware.tianyi.runtime.registe_tianyi_tcp_pose_obs import regis
 from bodyctrl_middleware.common.image_decode.registe_image_obs import registe_image_obs, ImageStateAdapterConfig, ImageProcessConfig
 from bodyctrl_middleware.common.runtime.registe_bool_obs import registe_bool_obs, BoolStateAdapterConfig
 
+from bodyctrl_middleware.robotiq.runtime.registe_robotiq_gripper_openness_control_and_obs import registe_robotiq_gripper_openness_control_and_obs
+
 class TianyiArmConfig(BaseModel):
     # 手臂控制器
     arm_controller_name: str = RosField(
@@ -51,7 +53,6 @@ class TianyiArmConfig(BaseModel):
         "qpos", read_only = True,
         description = "真机手臂关节位置观测名称"
     )
-
 
     # 遥操作
     is_enable_tele: bool = RosField(
@@ -155,6 +156,16 @@ class TianyiArmConfig(BaseModel):
     body_manual_reset_name: str = RosField(
         "body_reset", read_only = True,
         description = "基于遥操手臂状态的初始化器名称"
+    )
+
+    # 夹爪
+    left_robotiq_gripper_control_root_name: str = RosField(
+        "robotiq_gripper_control_left", read_only = True,
+        description = "左手夹爪控制节点话题的根名称, 空字符串时不启用对应控制器与观测"
+    )
+    right_robotiq_gripper_control_root_name: str = RosField(
+        "", read_only = True,
+        description = "右手夹爪控制节点话题的根名称, 空字符串时不启用对应控制器与观测"
     )
 
     # 允许最大延迟
@@ -322,6 +333,18 @@ def tianyi_arm(
 
         log_throttle_sec = config.log_throttle_sec,
     )
+
+    # 夹爪
+    if config.left_robotiq_gripper_control_root_name != "":
+        robot = registe_robotiq_gripper_openness_control_and_obs(
+            robot, "left_gripper", "left_gripper_openness",
+            robotiq_gripper_control_root_name = config.left_robotiq_gripper_control_root_name,
+        )
+    if config.right_robotiq_gripper_control_root_name != "":
+        robot = registe_robotiq_gripper_openness_control_and_obs(
+            robot, "right_gripper", "right_gripper_openness",
+            robotiq_gripper_control_root_name = config.right_robotiq_gripper_control_root_name,
+        )
 
     # 遥操终止信号
     if config.tele_stop_sign_topic_name != "":

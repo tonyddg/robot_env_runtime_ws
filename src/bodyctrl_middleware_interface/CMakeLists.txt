@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CmdSetMotorInterpolate.msg"
   "msg/SetMotorInterpolate.msg"
   "msg/SetMotorResetTarget.msg"
+  "msg/SetGripperOpenness.msg"
   "srv/BodyManualReset.srv"
   "srv/InputService.srv"
   "srv/DiffBaseReset.srv"

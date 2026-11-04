@@ -1,4 +1,4 @@
-"""ROS2 QoS 辅助（默认 KEEP_LAST + depth 10 + VOLATILE）."""
+"""ROS2 QoS 辅助（默认 KEEP_LAST + depth 1 + VOLATILE）."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ _DURABILITY = {
 
 def make_qos(
     *,
-    depth: int = 10,
+    # 默认 depth 设置为 1 适应 robot env runtime 仅需要最新消息的特性
+    depth: int = 1,
     reliability: str = "reliable",
     durability: str = "volatile",
 ) -> QoSProfile:

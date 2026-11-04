@@ -18,6 +18,12 @@ dependencies = [
     "tyro>=1.0.15",
 ]
 
+[project.optional-dependencies]
+robotiq = [
+    "minimalmodbus>=2.1.1",
+    "pyserial>=3.5",
+]
+
 [tool.uv]
 package = false
 

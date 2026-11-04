@@ -24,6 +24,7 @@ ARM_CONFIG = dict(
             ],
             liftdown = [0.0, 0.1] + [0.0] * 5 + [0.0, -0.1] + [0.0] * 5,
         ),
+        gripper_side = ["left", "right"],
     ),
     left = dict(
         control_arm_motor_list = [
@@ -41,6 +42,7 @@ ARM_CONFIG = dict(
             ],
             liftdown = [0.0, 0.1] + [0.0] * 5,
         ),
+        gripper_side = ["left",],
     ),
 )
 
@@ -53,6 +55,20 @@ def rel_to_package(path: str, package_name: str):
         _path = get_package_share_path(package_name) / _path
     return str(_path)
 
+from bodyctrl_middleware.robotiq.hardware.constant import ROBOTIQ_CLIENT_DEF
+
+def make_gripper_control_node(side: str):
+    return Node(
+        package = "bodyctrl_middleware",
+        executable = "robotiq_gripper_control",
+        name = f"robotiq_gripper_control_{side}",
+        parameters = [{
+            "config.root_name": f"robotiq_gripper_control_{side}",
+            "config.hand_dev_ip": ROBOTIQ_CLIENT_DEF[side].hand_dev_ip,
+            "config.slave_id": ROBOTIQ_CLIENT_DEF[side].slave_id,
+        }]
+    )
+
 def launch_setup(context, *args, **kwargs):
     arm_type = LaunchConfiguration("arm_type").perform(context)
     reset_posture_type = LaunchConfiguration("reset_posture_type").perform(context)
@@ -60,7 +76,8 @@ def launch_setup(context, *args, **kwargs):
     profile_path = LaunchConfiguration("profile_path").perform(context)
     wholebody_node_params_path = LaunchConfiguration("wholebody_node_params_path").perform(context)
     runtime_executable = LaunchConfiguration("runtime_executable").perform(context)
-
+    
+    _enable_gripper = LaunchConfiguration("enable_gripper").perform(context)
     _control_node_only = LaunchConfiguration("control_node_only").perform(context)
 
     if arm_type not in ARM_CONFIG:
@@ -70,51 +87,67 @@ def launch_setup(context, *args, **kwargs):
         )
 
     if reset_posture_type == "liftup":
-        reset_motor_pos_list = ARM_CONFIG[arm_type]["reset_motor_pos_list"]["liftup"]
+        reset_motor_pos_list = ARM_CONFIG[arm_type]["reset_motor_pos_list"]["liftup"] # type: ignore
     elif reset_posture_type == "liftdown":
-        reset_motor_pos_list = ARM_CONFIG[arm_type]["reset_motor_pos_list"]["liftdown"]
+        reset_motor_pos_list = ARM_CONFIG[arm_type]["reset_motor_pos_list"]["liftdown"] # type: ignore
     else:
         raise RuntimeError(
             f"Unknown reset posture type '{reset_posture_type}', "
-            f"available: ['liftup', 'liftdown']"
+            f"available: {list(ARM_CONFIG[arm_type]['reset_motor_pos_list'].keys())}" # type: ignore
         )
 
     control_node_only = bool(_control_node_only.lower() == "true")
+    enable_gripper = bool(_enable_gripper.lower() == "true")
 
     control_arm_motor_list = ARM_CONFIG[arm_type]["control_arm_motor_list"]
     control_motor_kp_list = ARM_CONFIG[arm_type]["control_motor_kp_list"]
     control_motor_kd_list = ARM_CONFIG[arm_type]["control_motor_kd_list"]
 
+    ###
+
     tianyi_arm_interpolate_control = Node(
         package = "bodyctrl_middleware",
         executable = "tianyi_arm_interpolate_control",
-        parameters = [
-            {
-                "config.control_motor_list": control_arm_motor_list,
-                "config.control_motor_kp_list": control_motor_kp_list,
-                "config.control_motor_kd_list": control_motor_kd_list,
-                "config.control_mode": "pd"
-            }
-        ]
+        parameters = [{
+            "config.control_motor_list": control_arm_motor_list,
+            "config.control_motor_kp_list": control_motor_kp_list,
+            "config.control_motor_kd_list": control_motor_kd_list,
+            "config.control_mode": "pd"
+        }]
     )
+
+    ###
 
     tianyi_body_manual_reset = Node(
         package = "bodyctrl_middleware",
         executable = "tianyi_body_manual_reset",
-        parameters = [
-            {
-                "body_target.arm_target.motor_name_list": control_arm_motor_list,
-                "body_target.arm_target.target_pos_list": reset_motor_pos_list,
-            }
-        ]
+        parameters = [{
+            "body_target.arm_target.motor_name_list": control_arm_motor_list,
+            "body_target.arm_target.target_pos_list": reset_motor_pos_list,
+        }]
     )
+
+    ###
 
     diff_base_manual_reset = Node(
         package = "bodyctrl_middleware",
         executable = "diff_base_reset",
     )
 
+    ###
+
     node_list = [tianyi_arm_interpolate_control, tianyi_body_manual_reset, diff_base_manual_reset]
+
+    ###
+
+    if enable_gripper:
+        gripper_side_list = ARM_CONFIG[arm_type]["gripper_side"]
+        gripper_node_list = []
+        for gripper_side in gripper_side_list:
+            gripper_node_list.append(make_gripper_control_node(gripper_side)) # type: ignore
+        node_list += gripper_node_list
+
+    ###
 
     if not control_node_only:
 
@@ -170,6 +203,11 @@ def generate_launch_description():
             "control_node_only",
             default_value="true",
             description="仅启动控制节点, 不启动策略运行环境本身"
+        ),
+        DeclareLaunchArgument(
+            "enable_gripper",
+            default_value="true",
+            description="是否启用夹爪"
         ),
 
         OpaqueFunction(
