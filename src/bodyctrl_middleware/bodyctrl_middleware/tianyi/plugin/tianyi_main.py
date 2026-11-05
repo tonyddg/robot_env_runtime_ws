@@ -9,11 +9,6 @@ from pydantic import BaseModel
 
 from robot_env_runtime.extension.plugin import RobotPlugin
 
-from bodyctrl_middleware.common.image_decode.registe_image_obs import (
-    ImageProcessConfig,
-    ImageStateAdapterConfig,
-    registe_image_obs,
-)
 from bodyctrl_middleware.robotiq.runtime.registe_robotiq_gripper_openness_control_and_obs import (
     registe_robotiq_gripper_openness_control_and_obs,
 )
@@ -36,9 +31,8 @@ from bodyctrl_middleware.tianyi.runtime.registe_tianyi_tcp_pose_obs import (
 )
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
 
-
 class TianyiMainConfig(BaseModel):
-    """Tianyi hardware, action, camera, and fixed-reset configuration."""
+    """Tianyi arm, TCP pose, gripper, and fixed-reset configuration."""
 
     arm_controller_name: str = RosField(
         "arm",
@@ -76,65 +70,6 @@ class TianyiMainConfig(BaseModel):
         "qpos",
         read_only=True,
         description="实际手臂关节位置 observation 名称",
-    )
-
-    image_color_topic_name: str = RosField(
-        "camera/color/image_raw/compressed",
-        read_only=True,
-        description="彩色相机图像 topic",
-    )
-    image_color_obs_name: str = RosField(
-        "color",
-        read_only=True,
-        description="彩色图像 observation 名称",
-    )
-    image_color_reduce_decode: bool = RosField(
-        True,
-        read_only=True,
-        description="彩色压缩图是否使用 reduce2 解码以降低分辨率",
-    )
-    image_color_obs_process: ImageProcessConfig = RosField(
-        default_factory=lambda: ImageProcessConfig(
-            is_clip_image=False,
-            clip_lx=48,
-            clip_rx=272,
-            clip_ly=8,
-            clip_ry=232,
-        ),
-        description="彩色图像裁剪和缩放参数",
-    )
-    image_depth_topic_name: str = RosField(
-        "camera/depth/image_raw/compressedDepth",
-        read_only=True,
-        description="深度相机图像 topic",
-    )
-    image_depth_obs_name: str = RosField(
-        "depth",
-        read_only=True,
-        description="深度图像 observation 名称",
-    )
-    image_depth_obs_process: ImageProcessConfig = RosField(
-        default_factory=lambda: ImageProcessConfig(
-            is_clip_image=False,
-            clip_lx=112,
-            clip_rx=368,
-            clip_ly=7,
-            clip_ry=263,
-            is_resize_image=False,
-            resize_target_x=128,
-            resize_target_y=128,
-        ),
-        description="深度图像裁剪和缩放参数",
-    )
-    image_is_compress: bool = RosField(
-        True,
-        read_only=True,
-        description="相机消息是否为压缩图像；false 时按 sensor_msgs/Image 处理",
-    )
-    image_decode_mode: Literal["sync", "async", "cache"] = RosField(
-        "cache",
-        read_only=True,
-        description="图像解码时机：sync 回调内解码，async 异步解码，cache 获取 obs 时解码",
     )
 
     fk_default_motor_id: list[int] = RosField(
@@ -207,7 +142,7 @@ class TianyiMainConfig(BaseModel):
         10,
         ge=0,
         read_only=True,
-        description="图像解码诊断日志节流周期，单位秒；0 表示每次记录",
+        description="TCP pose 等可选诊断日志节流周期，单位秒；0 表示每次记录",
     )
 
 
@@ -254,45 +189,6 @@ def tianyi_main(
         robot,
         reset_name=config.body_manual_reset_name,
         motor_name_list=tuple(config.arm_motor_list),
-    )
-
-    color_config = ImageStateAdapterConfig(
-        image_topic=config.image_color_topic_name,
-        image_dtype="uint8",
-        image_channel=3,
-        is_compress_image=config.image_is_compress,
-        compress_decoder_type=(
-            "normal_compress_color_reduce2"
-            if config.image_color_reduce_decode
-            else "normal_compress_color"
-        ),
-        warn_after=config.warn_after,
-        error_after=config.error_after,
-        decode_mode=config.image_decode_mode,
-        image_process_config=config.image_color_obs_process,
-    )
-    depth_config = ImageStateAdapterConfig(
-        image_topic=config.image_depth_topic_name,
-        image_dtype="uint16",
-        image_channel=1,
-        compress_decoder_type="orbbec_compress_depth",
-        is_compress_image=config.image_is_compress,
-        warn_after=config.warn_after,
-        error_after=config.error_after,
-        decode_mode=config.image_decode_mode,
-        image_process_config=config.image_depth_obs_process,
-    )
-    robot = registe_image_obs(
-        robot,
-        color_config,
-        image_obs_name=config.image_color_obs_name,
-        log_throttle_sec=config.log_throttle_sec,
-    )
-    robot = registe_image_obs(
-        robot,
-        depth_config,
-        image_obs_name=config.image_depth_obs_name,
-        log_throttle_sec=config.log_throttle_sec,
     )
 
     robot = registe_tianyi_tcp_pose_obs(

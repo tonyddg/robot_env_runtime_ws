@@ -246,6 +246,11 @@ def launch_setup(context, *args, **kwargs):
             "config.profile_path": profile_path,
             "config.execution.mode": execution_mode,
             "config.main.arm_motor_list": topology.arm_motor_list,
+            "config.cameras.head.is_enable": camera_observations,
+            "config.cameras.left.is_enable": camera_observations,
+            "config.cameras.right.is_enable": (
+                camera_observations and arm_type == "bimanual"
+            ),
             "config.main.left_robotiq_gripper_control_root_name": (
                 "robotiq_gripper_control_left"
                 if "left" in topology.gripper_sides
@@ -312,7 +317,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "camera_observations",
             default_value="true",
-            description="true 同时启用 color+depth，false 使用无相机 profile",
+            description=(
+                "true 启用 head+left color/depth，bimanual 额外启用 right；"
+                "false 使用无相机 profile"
+            ),
         ),
         DeclareLaunchArgument(
             "arm_state_source",

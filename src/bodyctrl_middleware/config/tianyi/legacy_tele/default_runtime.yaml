@@ -4,11 +4,6 @@ tianyi_legacy_tele:
     config.execution.mode: single
     config.execution.enable_timing: true
 
-    config.main.image_decode_mode: async
-    config.main.image_is_compress: false
-    config.main.image_color_topic_name: "camera/color/image_raw"
-    config.main.image_depth_topic_name: "camera/depth/image_raw"
-
     config.record.ask_before_save: true
     config.record.ask_before_next_episode: true
     config.record.flush_policy: finalize

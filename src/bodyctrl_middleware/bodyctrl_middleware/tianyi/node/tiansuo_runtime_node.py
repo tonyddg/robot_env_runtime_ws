@@ -25,6 +25,10 @@ from bodyctrl_middleware.tianyi.plugin.tianyi_base import (
     TianyiBaseConfig,
     tianyi_base,
 )
+from bodyctrl_middleware.tianyi.plugin.tianyi_camera import (
+    TianyiCamerasConfig,
+    tianyi_camera,
+)
 from bodyctrl_middleware.tianyi.plugin.tianyi_main import (
     TianyiMainConfig,
     tianyi_main,
@@ -75,6 +79,7 @@ class Config(BaseModel):
         description="RobotEnv profile 路径；相对路径基于 bodyctrl_middleware share",
     )
     main: TiansuoMainConfig = RosField(default_factory=TiansuoMainConfig)
+    cameras: TianyiCamerasConfig = RosField(default_factory=TianyiCamerasConfig)
     base: TianyiBaseConfig = RosField(default_factory=TianyiBaseConfig)
     tele_tiansuo: TiansuoRuntimeConfig = RosField(
         default_factory=TiansuoRuntimeConfig,
@@ -111,6 +116,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     logger = executor.get_logger()
     robot = RobotPlugin("tianyi", description="Tianyi with Tiansuo teleoperation")
     robot = tianyi_main(config.main, robot)
+    robot = tianyi_camera(config.cameras, robot)
     robot = tianyi_base(config.base, robot)
     robot = tianyi_tele_tiansuo(robot, config.tele_tiansuo)
 

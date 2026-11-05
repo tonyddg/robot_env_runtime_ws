@@ -11,6 +11,10 @@ from bodyctrl_middleware.tianyi.plugin.tianyi_main import (
     TianyiMainConfig,
     tianyi_main,
 )
+from bodyctrl_middleware.tianyi.plugin.tianyi_camera import (
+    TianyiCamerasConfig,
+    tianyi_camera,
+)
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_tcp_pose_obs import (
     registe_tianyi_tcp_pose_obs,
 )
@@ -23,21 +27,16 @@ from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.testing import FakeClock, FakeLogger, FakeRosNode, FakeStateSource
 
 from fake_image import (
-    COLOR_SHAPE,
-    cache_value,
-    color_config,
-    depth_config,
-    make_color_msg,
-    make_depth_msg,
+    make_color_frame,
+    make_depth_frame,
 )
 
 TCP_FRAME = "left_tcp_link"
 
-# 真机默认配置：彩色 640x480 reduce2 解码成 320x240；
-# 深度保持 270x480。假图使用同样的原始尺寸。
+# 默认 raw 配置不做 reduce、裁剪或缩放。
 COLOR_SOURCE_SHAPE = (480, 640, 3)
 DEPTH_SOURCE_SHAPE = (270, 480)
-COLOR_OBS_SHAPE = (240, 320, 3)
+COLOR_OBS_SHAPE = COLOR_SOURCE_SHAPE
 DEPTH_OBS_SHAPE = (270, 480, 1)
 
 
@@ -77,11 +76,12 @@ def _arm_values(count: int | None = None) -> np.ndarray:
 
 
 def _plugin(config: TianyiMainConfig | None = None) -> RobotPlugin:
-    """按 node 的显式组装方式创建基础 Tianyi plugin."""
-    return tianyi_main(
+    """按 node 的显式组装方式创建 main + camera plugin."""
+    robot = tianyi_main(
         TianyiMainConfig() if config is None else config,
         RobotPlugin("tianyi"),
     )
+    return tianyi_camera(TianyiCamerasConfig(), robot)
 
 
 def _view(clock: FakeClock, samples: dict) -> StateView:
@@ -97,15 +97,11 @@ def _view(clock: FakeClock, samples: dict) -> StateView:
 
 
 def _plugin_sources(clock: FakeClock) -> dict:
-    """按插件的默认配置构造 qpos / color / depth / odom 四个假 state."""
+    """Construct fake qpos, head camera, and odom states."""
     return {
         "qpos_state": _arm_values(),
-        "color_state": cache_value(
-            make_color_msg(COLOR_SOURCE_SHAPE), color_config(),
-        ),
-        "depth_state": cache_value(
-            make_depth_msg(DEPTH_SOURCE_SHAPE), depth_config(),
-        ),
+        "head_color_state": make_color_frame(COLOR_SOURCE_SHAPE),
+        "head_depth_state": make_depth_frame(DEPTH_SOURCE_SHAPE)[..., None],
         "odom_state": np.zeros(3, dtype = float),
     }
 
@@ -170,8 +166,8 @@ def test_tcp_observation_uses_ctx_logger(monkeypatch) -> None:
     [
         ("qpos", "qpos_state", None, np.float32),
         ("eef_pose", "qpos_state", (4, 4), np.float32),
-        ("color", "color_state", COLOR_OBS_SHAPE, np.uint8),
-        ("depth", "depth_state", DEPTH_OBS_SHAPE, np.uint16),
+        ("head_color", "head_color_state", COLOR_OBS_SHAPE, np.uint8),
+        ("head_depth", "head_depth_state", DEPTH_OBS_SHAPE, np.uint16),
     ],
 )
 def test_observation_builds_with_fake_state(

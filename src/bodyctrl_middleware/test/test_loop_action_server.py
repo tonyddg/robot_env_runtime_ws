@@ -85,8 +85,11 @@ class _ActionHarness:
             )
         )
 
-    def result(self, goal_handle):
-        return self.spin_until(goal_handle.get_result_async()).result
+    def result(self, goal_handle, timeout: float = 5.0):
+        return self.spin_until(
+            goal_handle.get_result_async(),
+            timeout=timeout,
+        ).result
 
     def close(self) -> None:
         self.server.shutdown()

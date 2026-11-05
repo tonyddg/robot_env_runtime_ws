@@ -148,8 +148,11 @@ logger 的所有权和传递路径：
 
 天轶能力由插件组合而成：
 
-- `tianyi/plugin/tianyi_main.py`：真机手臂、相机、TCP pose、实际夹爪观测、
+- `tianyi/plugin/tianyi_main.py`：真机手臂、TCP pose、实际夹爪观测、
   手臂 managed controller 与固定身体 reset。
+- `tianyi/plugin/tianyi_camera.py`：head/left/right 三路相机；默认 raw 图像，
+  camera 模式下 head+left 必选，bimanual 额外启用 right；观测名为
+  `head_color/head_depth`、`left_color/left_depth`、`right_color/right_depth`。
 - `tianyi/plugin/tianyi_base.py`：差速底盘、odom 与底盘 reset。
 - `tianyi/plugin/tianyi_tele_legacy.py`：legacy 遥操输入、遥操速度、停止信号和
   tele-follow reset。

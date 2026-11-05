@@ -3,8 +3,12 @@ observations:
   - qpos
   - left_gripper_openness
   - right_gripper_openness
-  - color
-  - depth
+  - head_color
+  - head_depth
+  - left_color
+  - left_depth
+  - right_color
+  - right_depth
   - eef_pose
   - odom
 actions:

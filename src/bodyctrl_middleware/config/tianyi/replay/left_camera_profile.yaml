@@ -2,8 +2,10 @@ robot: tianyi
 observations:
   - qpos
   - left_gripper_openness
-  - color
-  - depth
+  - head_color
+  - head_depth
+  - left_color
+  - left_depth
   - eef_pose
   - odom
 actions:

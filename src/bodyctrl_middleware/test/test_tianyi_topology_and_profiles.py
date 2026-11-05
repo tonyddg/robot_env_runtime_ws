@@ -15,6 +15,10 @@ from bodyctrl_middleware.tianyi.plugin.tianyi_base import (
     TianyiBaseConfig,
     tianyi_base,
 )
+from bodyctrl_middleware.tianyi.plugin.tianyi_camera import (
+    TianyiCamerasConfig,
+    tianyi_camera,
+)
 from bodyctrl_middleware.tianyi.plugin.tianyi_main import (
     TianyiMainConfig,
     tianyi_main,
@@ -39,7 +43,12 @@ def _topology(name: str) -> TianyiTopologyConfig:
     return load_topology(PROFILE_ROOT / "topology" / f"{name}.yaml")
 
 
-def _robot(runtime: str, topology: TianyiTopologyConfig) -> RobotPlugin:
+def _robot(
+    runtime: str,
+    topology: TianyiTopologyConfig,
+    *,
+    enable_camera: bool,
+) -> RobotPlugin:
     main = TianyiMainConfig(
         arm_motor_list=topology.arm_motor_list,
         body_manual_reset_name=(
@@ -59,7 +68,12 @@ def _robot(runtime: str, topology: TianyiTopologyConfig) -> RobotPlugin:
         ),
     )
     base = TianyiBaseConfig()
+    cameras = TianyiCamerasConfig()
+    cameras.head.is_enable = enable_camera
+    cameras.left.is_enable = enable_camera
+    cameras.right.is_enable = enable_camera and topology.name == "bimanual"
     robot = tianyi_main(main, RobotPlugin("tianyi"))
+    robot = tianyi_camera(cameras, robot)
     robot = tianyi_base(base, robot)
     if runtime == "legacy":
         robot = tianyi_tele_legacy(
@@ -147,15 +161,29 @@ def test_every_profile_compiles_with_its_runtime_plugin(
     )
     profile = load_profile(profile_path)
     compiled = ProfileCompiler(
-        PluginRegistry([_robot(runtime, topology)])
+        PluginRegistry([
+            _robot(
+                runtime,
+                topology,
+                enable_camera=camera_mode == "camera",
+            )
+        ])
     ).compile(profile)
 
     assert compiled.robot == "tianyi"
     assert "qpos" in compiled.observations
     assert "eef_pose" in compiled.observations
     assert "odom" in compiled.observations
-    assert ("color" in compiled.observations) is (camera_mode == "camera")
-    assert ("depth" in compiled.observations) is (camera_mode == "camera")
+    assert ("head_color" in compiled.observations) is (camera_mode == "camera")
+    assert ("head_depth" in compiled.observations) is (camera_mode == "camera")
+    assert ("left_color" in compiled.observations) is (camera_mode == "camera")
+    assert ("left_depth" in compiled.observations) is (camera_mode == "camera")
+    assert ("right_color" in compiled.observations) is (
+        camera_mode == "camera" and topology_name == "bimanual"
+    )
+    assert ("right_depth" in compiled.observations) is (
+        camera_mode == "camera" and topology_name == "bimanual"
+    )
     assert ("left_gripper_openness" in compiled.observations) is True
     assert ("right_gripper_openness" in compiled.observations) is (
         topology_name == "bimanual"
