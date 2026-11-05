@@ -1,0 +1,34 @@
+robot: tianyi
+observations:
+  - qpos
+  - left_gripper_openness
+  - eef_pose
+  - odom
+actions:
+  arm:
+    controller: arm
+    indices: [0, 1, 2, 3, 4, 5, 6]
+    scale: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+  base:
+    controller: base
+    indices: [7, 8]
+    scale: [0.5, 1.5]
+  left_gripper:
+    controller: left_gripper
+    indices: [9]
+    scale: 1.0
+reset:
+  - base_reset
+  - body_reset
+runtime:
+  control_period: 0.1
+  overrun_tolerance: 0.05
+  reset_timeout: 30.0
+  state_ready_timeout: 10.0
+  service_timeout: 2.0
+  observation_poll_period: 0.02
+  observation_warn_after: 0.05
+  observation_error_after: 0.1
+  on_wait_failure: hold
+  hold_limit: 10
+  hold_on_step_overrun: false

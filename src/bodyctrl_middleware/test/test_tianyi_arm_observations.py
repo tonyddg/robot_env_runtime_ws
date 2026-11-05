@@ -1,4 +1,4 @@
-"""tianyi_arm 插件：注册期懒加载、每个观测可构建、FK 位姿与 odom 组合正确."""
+"""tianyi_main 插件：注册期懒加载、每个观测可构建、FK 位姿与 odom 组合正确."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ import pytest
 
 import bodyctrl_middleware.tianyi.runtime.registe_tianyi_tcp_pose_obs as tcp_module
 from bodyctrl_middleware.tianyi.hardware.model import build_state_vectors, create_robot_model
-from bodyctrl_middleware.tianyi.plugin.tianyi_arm import TianyiArmConfig, tianyi_arm
+from bodyctrl_middleware.tianyi.plugin.tianyi_main import (
+    TianyiMainConfig,
+    tianyi_main,
+)
 from bodyctrl_middleware.tianyi.runtime.registe_tianyi_tcp_pose_obs import (
     registe_tianyi_tcp_pose_obs,
 )
@@ -30,13 +33,12 @@ from fake_image import (
 
 TCP_FRAME = "left_tcp_link"
 
-# 真机默认配置：彩色 640x480（reduce2 解码成 320x240）裁剪成 224x224，
-# 深度 480x270 裁剪成 256x256 再缩放到 128x128；假图用同样的原始尺寸，
-# 保证默认裁剪 + 缩放路径真的被覆盖到
+# 真机默认配置：彩色 640x480 reduce2 解码成 320x240；
+# 深度保持 270x480。假图使用同样的原始尺寸。
 COLOR_SOURCE_SHAPE = (480, 640, 3)
 DEPTH_SOURCE_SHAPE = (270, 480)
-COLOR_OBS_SHAPE = (224, 224, 3)
-DEPTH_OBS_SHAPE = (128, 128, 1)
+COLOR_OBS_SHAPE = (240, 320, 3)
+DEPTH_OBS_SHAPE = (270, 480, 1)
 
 
 @pytest.fixture(scope = "module", autouse = True)
@@ -70,8 +72,16 @@ def _ctx(clock: FakeClock, logger = NULL_LOGGER) -> ComponentContext:
 
 def _arm_values(count: int | None = None) -> np.ndarray:
     """按默认被控关节数构造一组关节位置（值 = 0.01 * 下标）."""
-    size = len(TianyiArmConfig().arm_motor_list) if count is None else int(count)
+    size = len(TianyiMainConfig().arm_motor_list) if count is None else int(count)
     return np.array([0.01 * index for index in range(size)], dtype = float)
+
+
+def _plugin(config: TianyiMainConfig | None = None) -> RobotPlugin:
+    """按 node 的显式组装方式创建基础 Tianyi plugin."""
+    return tianyi_main(
+        TianyiMainConfig() if config is None else config,
+        RobotPlugin("tianyi"),
+    )
 
 
 def _view(clock: FakeClock, samples: dict) -> StateView:
@@ -118,7 +128,7 @@ def test_registration_defers_urdf_load(monkeypatch) -> None:
         return _StubModel()
 
     monkeypatch.setattr(tcp_module, "create_robot_model", counting)
-    plugin = tianyi_arm(TianyiArmConfig())
+    plugin = _plugin()
     assert calls == [], "RobotPlugin 注册期不应加载 URDF"
     assert "eef_pose" in plugin.observations
     plugin.observations["eef_pose"].factory(_ctx(FakeClock()), {})
@@ -143,7 +153,7 @@ def test_tcp_observation_uses_ctx_logger(monkeypatch) -> None:
     plugin = RobotPlugin("t")
     registe_tianyi_tcp_pose_obs(
         plugin,
-        motor_id_to_idx = tuple(TianyiArmConfig().arm_motor_list),
+        motor_id_to_idx = tuple(TianyiMainConfig().arm_motor_list),
         tianyi_arm_qpos_state_name = "qpos_state",
         log_throttle_sec = 3.0,
     )
@@ -172,7 +182,7 @@ def test_observation_builds_with_fake_state(
 ) -> None:
     """每个插件观测都能用假 state 构建，且 shape / dtype 符合声明（回归：FK 观测曾整体抛错）."""
     clock = FakeClock()
-    plugin = tianyi_arm(TianyiArmConfig())
+    plugin = _plugin()
     sources = _plugin_sources(clock)
     observation = plugin.observations[obs_name].factory(_ctx(clock), sources)
     samples = {state_name: sources[state_name]}
@@ -181,7 +191,7 @@ def test_observation_builds_with_fake_state(
         samples["odom_state"] = sources["odom_state"]
     out = np.asarray(observation.build(_view(clock, samples)))
     if expected_shape is None:
-        assert out.shape == (len(TianyiArmConfig().arm_motor_list),)
+        assert out.shape == (len(TianyiMainConfig().arm_motor_list),)
     else:
         assert out.shape == expected_shape
     assert out.dtype == expected_dtype
@@ -190,7 +200,7 @@ def test_observation_builds_with_fake_state(
 def test_eef_pose_matches_direct_forward_kinematics() -> None:
     """eef_pose 与直接调用 forward_kinematics 的结果一致（含 4x4 齐次矩阵结构）."""
     clock = FakeClock()
-    plugin = tianyi_arm(TianyiArmConfig())
+    plugin = _plugin()
     values = _arm_values()
     observation = plugin.observations["eef_pose"].factory(_ctx(clock), {})
     out = np.asarray(observation.build(_view(clock, {
@@ -200,7 +210,7 @@ def test_eef_pose_matches_direct_forward_kinematics() -> None:
 
     model = tcp_module.create_robot_model()
     model_ctx = model.create_context()
-    motor_ids = tuple(TianyiArmConfig().arm_motor_list)
+    motor_ids = tuple(TianyiMainConfig().arm_motor_list)
     status = {motor_id: float(value) for motor_id, value in zip(motor_ids, values)}
     q = build_state_vectors(status, model.get_q_default())
     loc, rot = model_ctx.forward_kinematics(q, TCP_FRAME)
@@ -216,7 +226,7 @@ def test_eef_pose_composes_odom_pose() -> None:
     """给 odom_state_name 时输出是 base pose 与底盘平面位姿的组合（world pose）."""
     clock = FakeClock()
     plugin = RobotPlugin("t")
-    motor_ids = tuple(TianyiArmConfig().arm_motor_list)
+    motor_ids = tuple(TianyiMainConfig().arm_motor_list)
     registe_tianyi_tcp_pose_obs(
         plugin,
         motor_id_to_idx = motor_ids,
@@ -259,7 +269,7 @@ def test_eef_pose_composes_odom_pose() -> None:
 def test_eef_pose_rejects_wrong_arm_state_length() -> None:
     """arm state 长度与 motor_id_to_idx 不一致时给出明确错误（而不是静默错位）."""
     clock = FakeClock()
-    plugin = tianyi_arm(TianyiArmConfig())
+    plugin = _plugin()
     observation = plugin.observations["eef_pose"].factory(_ctx(clock), {})
     with pytest.raises(RuntimeError, match = "不同"):
         observation.build(_view(clock, {"qpos_state": _arm_values(count = 7)}))

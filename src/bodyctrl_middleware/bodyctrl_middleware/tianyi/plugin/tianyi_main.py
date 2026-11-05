@@ -40,29 +40,59 @@ from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
 class TianyiMainConfig(BaseModel):
     """Tianyi hardware, action, camera, and fixed-reset configuration."""
 
-    arm_controller_name: str = RosField("arm", read_only=True)
+    arm_controller_name: str = RosField(
+        "arm",
+        read_only=True,
+        description="手臂 controller 名称，对应 profile actions 中的 controller",
+    )
     arm_motor_list: list[int] = RosField(
         default_factory=lambda: list(LEFT_ARM_MOTOR_IDS + RIGHT_ARM_MOTOR_IDS),
         read_only=True,
+        description="被控手臂电机 ID 顺序，决定 qpos、action 和 reset 的维度顺序",
     )
-    arm_warning_tracking_error: float = RosField(0.05, ge=0.0, read_only=True)
-    arm_max_tracking_error: float = RosField(0.1, ge=0.0, read_only=True)
+    arm_warning_tracking_error: float = RosField(
+        0.05,
+        ge=0.0,
+        read_only=True,
+        description="手臂触发跟踪误差告警的阈值，单位 rad",
+    )
+    arm_max_tracking_error: float = RosField(
+        0.1,
+        ge=0.0,
+        read_only=True,
+        description="手臂允许的最大跟踪误差，单位 rad",
+    )
     arm_max_action_dis: list[float] = RosField(
         default_factory=lambda: [0.3],
         read_only=True,
+        description="单个控制周期允许的最大手臂动作位移；长度为 1 时所有关节共用",
     )
     arm_rel_qpos_source: Literal["expect", "current"] = RosField(
         "expect",
         read_only=True,
+        description="相对动作基准：expect 使用上一条期望位置，current 使用当前位置",
     )
-    arm_qpos_obs_name: str = RosField("qpos", read_only=True)
+    arm_qpos_obs_name: str = RosField(
+        "qpos",
+        read_only=True,
+        description="实际手臂关节位置 observation 名称",
+    )
 
     image_color_topic_name: str = RosField(
         "camera/color/image_raw/compressed",
         read_only=True,
+        description="彩色相机图像 topic",
     )
-    image_color_obs_name: str = RosField("color", read_only=True)
-    image_color_reduce_decode: bool = RosField(True, read_only=True)
+    image_color_obs_name: str = RosField(
+        "color",
+        read_only=True,
+        description="彩色图像 observation 名称",
+    )
+    image_color_reduce_decode: bool = RosField(
+        True,
+        read_only=True,
+        description="彩色压缩图是否使用 reduce2 解码以降低分辨率",
+    )
     image_color_obs_process: ImageProcessConfig = RosField(
         default_factory=lambda: ImageProcessConfig(
             is_clip_image=False,
@@ -70,13 +100,19 @@ class TianyiMainConfig(BaseModel):
             clip_rx=272,
             clip_ly=8,
             clip_ry=232,
-        )
+        ),
+        description="彩色图像裁剪和缩放参数",
     )
     image_depth_topic_name: str = RosField(
         "camera/depth/image_raw/compressedDepth",
         read_only=True,
+        description="深度相机图像 topic",
     )
-    image_depth_obs_name: str = RosField("depth", read_only=True)
+    image_depth_obs_name: str = RosField(
+        "depth",
+        read_only=True,
+        description="深度图像 observation 名称",
+    )
     image_depth_obs_process: ImageProcessConfig = RosField(
         default_factory=lambda: ImageProcessConfig(
             is_clip_image=False,
@@ -87,51 +123,99 @@ class TianyiMainConfig(BaseModel):
             is_resize_image=False,
             resize_target_x=128,
             resize_target_y=128,
-        )
+        ),
+        description="深度图像裁剪和缩放参数",
     )
-    image_is_compress: bool = RosField(True, read_only=True)
+    image_is_compress: bool = RosField(
+        True,
+        read_only=True,
+        description="相机消息是否为压缩图像；false 时按 sensor_msgs/Image 处理",
+    )
     image_decode_mode: Literal["sync", "async", "cache"] = RosField(
         "cache",
         read_only=True,
+        description="图像解码时机：sync 回调内解码，async 异步解码，cache 获取 obs 时解码",
     )
 
     fk_default_motor_id: list[int] = RosField(
         default_factory=list,
         read_only=True,
+        description="计算 TCP pose 时用于补全缺失关节的默认电机 ID 列表",
     )
     fk_default_motor_qpos: list[float] = RosField(
         default_factory=list,
         read_only=True,
+        description="与 fk_default_motor_id 对应的默认关节位置，单位 rad",
     )
-    fk_tcp_frame_name: str = RosField("left_tcp_link", read_only=True)
-    fk_odom_state_name: str = RosField("odom_state", read_only=True)
-    fk_eef_pose_obs_name: str = RosField("eef_pose", read_only=True)
+    fk_tcp_frame_name: str = RosField(
+        "left_tcp_link",
+        read_only=True,
+        description="正运动学计算 eef_pose 使用的 TCP frame 名称",
+    )
+    fk_odom_state_name: str = RosField(
+        "odom_state",
+        read_only=True,
+        description="与 TCP pose 组合为世界位姿的 odom state 名称；空字符串表示不组合",
+    )
+    fk_eef_pose_obs_name: str = RosField(
+        "eef_pose",
+        read_only=True,
+        description="末端位姿 observation 名称",
+    )
 
-    body_manual_reset_name: str = RosField("body_reset", read_only=True)
+    body_manual_reset_name: str = RosField(
+        "body_reset",
+        read_only=True,
+        description="固定身体 reset capability 名称",
+    )
 
     left_robotiq_gripper_control_root_name: str = RosField(
         "robotiq_gripper_control_left",
         read_only=True,
+        description="左 robotiq 控制节点 root 名称；空字符串表示禁用左夹爪",
     )
     right_robotiq_gripper_control_root_name: str = RosField(
         "",
         read_only=True,
+        description="右 robotiq 控制节点 root 名称；空字符串表示禁用右夹爪",
     )
 
-    warn_after: float = RosField(0.05, ge=0.0, read_only=True)
-    error_after: float = RosField(0.1, ge=0.0, read_only=True)
-    qos_reliability: str = RosField("best_effort", read_only=True)
-    qos_depth: int = RosField(1, ge=1, read_only=True)
-    log_throttle_sec: int = RosField(10, ge=0, read_only=True)
+    warn_after: float = RosField(
+        0.05,
+        ge=0.0,
+        read_only=True,
+        description="状态和观测进入 warn 状态前的允许延迟，单位秒",
+    )
+    error_after: float = RosField(
+        0.1,
+        ge=0.0,
+        read_only=True,
+        description="状态和观测进入 error 状态前的最大延迟，单位秒",
+    )
+    qos_reliability: str = RosField(
+        "best_effort",
+        read_only=True,
+        description="非图像订阅 QoS 可靠性：best_effort 或 reliable",
+    )
+    qos_depth: int = RosField(
+        1,
+        ge=1,
+        read_only=True,
+        description="非图像订阅队列深度，通常保持 1 以只取最新状态",
+    )
+    log_throttle_sec: int = RosField(
+        10,
+        ge=0,
+        read_only=True,
+        description="图像解码诊断日志节流周期，单位秒；0 表示每次记录",
+    )
 
 
 def tianyi_main(
     config: Optional[TianyiMainConfig] = None,
     robot: Optional[RobotPlugin] = None,
-    *,
-    register_body_reset: bool = True,
 ) -> RobotPlugin:
-    """Register non-tele Tianyi capabilities and optional fixed reset."""
+    """Register canonical Tianyi hardware capabilities."""
     if config is None:
         config = TianyiMainConfig()
     if robot is None:
@@ -166,12 +250,11 @@ def tianyi_main(
         tianyi_arm_qpos_state_name=qpos_state_name,
     )
 
-    if register_body_reset:
-        robot = registe_tianyi_fix_body_manual_reset(
-            robot,
-            reset_name=config.body_manual_reset_name,
-            motor_name_list=tuple(config.arm_motor_list),
-        )
+    robot = registe_tianyi_fix_body_manual_reset(
+        robot,
+        reset_name=config.body_manual_reset_name,
+        motor_name_list=tuple(config.arm_motor_list),
+    )
 
     color_config = ImageStateAdapterConfig(
         image_topic=config.image_color_topic_name,

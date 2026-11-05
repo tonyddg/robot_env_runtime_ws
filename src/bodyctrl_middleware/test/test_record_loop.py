@@ -183,6 +183,17 @@ def test_build_record_meta_and_action_meta(tmp_path) -> None:
     assert action_meta["arm_interpolate_max_action_dis"] == [0.3]
     assert action_meta["arm_interpolate_rel_qpos_source"] == "expect"
 
+    class _MainConfig(BaseModel):
+        arm_max_action_dis: list = [0.5]
+        arm_rel_qpos_source: str = "current"
+
+    new_action_meta = build_action_meta(
+        meta["profile"],
+        _MainConfig(),
+    )
+    assert new_action_meta["arm_interpolate_max_action_dis"] == [0.5]
+    assert new_action_meta["arm_interpolate_rel_qpos_source"] == "current"
+
     # 生成的 episode 里能读到这些 meta
     env = FakeEnv()
     assert collect_once(env, policy, 0, tmp_path, meta = meta, action_meta = action_meta) is True

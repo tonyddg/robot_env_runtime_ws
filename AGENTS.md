@@ -136,28 +136,26 @@ logger 的所有权和传递路径：
 
 ## 天轶链路
 
-全身遥操作/回放主入口：
+策略 runtime 主入口：
 
-- `tianyi_wholebody_tele_node` ->
-  `bodyctrl_middleware/tianyi/node/wholebody_tele_node.py`
-- profile：`config/tianyi/wholebody_tele.yaml` 或
-  `config/tianyi/wholebody_replay.yaml`
+- `tianyi_legacy_tele_runtime_node`：legacy 遥操作，支持 `single / record`
+- `tianyi_tiansuo_runtime_node`：Tiansuo 遥操作，支持 `single / record`
+- `tianyi_replay_runtime_node`：episode 回放，支持 `single / record / action`
+- `tianyi/node/common/`：共享配置、执行后端和 policy factory，不定义 executable
 - launch：`launch/wholebody_node.launch.py`
-
-双臂遥操作主入口：
-
-- `tianyi_bimanual_tele_node` ->
-  `bodyctrl_middleware/tianyi/node/bimanual_tele_node.py`
-- profile：`config/tianyi/bimanual_tele.yaml`
-- launch：`launch/bimanual_tele_node.launch.py`
+- 配置：`config/tianyi/<runtime>/default_runtime.yaml` 与
+  `<left|bimanual>_<camera|no_camera>_profile.yaml`
 
 天轶能力由插件组合而成：
 
-- `tianyi/plugin/tianyi_arm.py`：真机手臂、遥操臂、相机、TCP pose、停止信号、
-  手臂 managed controller 与身体 reset。
-- `tianyi/plugin/tianyi_base.py`：差速底盘、遥操速度、odom 与底盘 reset。
-- `tianyi/plugin/tianyi_arm_only.py`：兼容旧接口的双臂模式；新功能优先落在
-  `tianyi_arm.py`。
+- `tianyi/plugin/tianyi_main.py`：真机手臂、相机、TCP pose、实际夹爪观测、
+  手臂 managed controller 与固定身体 reset。
+- `tianyi/plugin/tianyi_base.py`：差速底盘、odom 与底盘 reset。
+- `tianyi/plugin/tianyi_tele_legacy.py`：legacy 遥操输入、遥操速度、停止信号和
+  tele-follow reset。
+- `tianyi/plugin/tianyi_tele_tiansuo.py`：Tiansuo 遥操输入、遥操夹爪和 reset。
+- `tianyi/bridge/arm_state_reflect_node.py`：control 侧手臂状态降频桥，保持原始
+  `header.stamp` 并只发布新样本；runtime 可通过 `/arm/status` remap 使用。
 - `tianyi/runtime/registe_*.py` 和 `common/runtime/registe_*.py`：把 ROS 资源
   与 state/controller/observation/reset capability 注册到 `RobotPlugin`。
 
@@ -236,16 +234,24 @@ package 内 `pytest.ini` 已禁用与当前 venv 不兼容的 ROS pytest 插件
 ```bash
 source install/setup.bash
 ros2 launch bodyctrl_middleware wholebody_node.launch.py \
-  control_node_only:=false \
-  wholebody_node_params_path:=config/tianyi/wholebody_tele_node/tele_policy.yaml
+  startup_mode:=full \
+  runtime:=legacy \
+  execution_mode:=record \
+  arm_type:=left \
+  camera_observations:=true
 
 ros2 run bodyctrl_middleware input_service
 ```
 
-注意 `wholebody_node.launch.py` 的 `control_node_only` 默认值是 `true`；默认只
-启动 Control Node，不会启动 policy runtime。根目录 `readme.md` 中的
-`wholebody_tele_node.launch.py` 名称已过时，实际文件名是
-`wholebody_node.launch.py`。
+record 的默认保存目录优先级为显式 `config.record.save_root` 参数、环境变量
+`ROBOTRUNTIME_DEFAULT_RECORD_SAVE_ROOT`、`/ros2_ws/output`。环境变量必须是绝对路径，
+并且需要在启动前导出；单独的 `.env` 文件不会被 ROS launch 自动加载。
+
+注意 `wholebody_node.launch.py` 的 `startup_mode` 默认值是 `control_only`。
+`runtime_only` 只启动 policy runtime；`full` 在本机同时启动两侧。
+`arm_state_source:=reflect` 时，control 侧启动 reflect node，runtime 侧将
+`/arm/status` remap 到 `/arm/status/reflect`。`action` 仅允许与
+`runtime:=replay` 组合，且 action 模式不写 episode。
 
 这些 launch 会连接并可能驱动真实硬件。没有明确的实机测试授权时，不启动会发送
 运动命令的节点；优先使用 `robot_env_runtime/testing` 中的 fake clock、fake

@@ -1,20 +1,13 @@
-# example_robot profile：选择本次运行需要的能力 + runtime 参数。
-#
-# Profile 只负责三件事：observation selection / action routing / runtime 参数；
-# 机器人硬件细节（消息编解码、索引、标定）留在 RobotPlugin 里。
 robot: tianyi
-
 observations:
   - qpos
+  - tele_qpos
   - left_gripper_openness
-
-  # - color
-  # - depth
-
   - eef_pose
   - odom
-
-# 归一化 action（每维 ∈ [-1, 1]）如何路由到 controller。
+  - tele_vel
+  - stop_tele
+  - tele_left_gripper_openness
 actions:
   arm:
     controller: arm
@@ -28,22 +21,19 @@ actions:
     controller: left_gripper
     indices: [9]
     scale: 1.0
-
-reset: 
-  # 底盘先还原再初始化手部
+reset:
   - base_reset
-  - body_reset
-
+  - fixed_body_manual_reset
+  - tiansuo_reset
 runtime:
   control_period: 0.1
   overrun_tolerance: 0.05
   reset_timeout: 30.0
   state_ready_timeout: 10.0
   service_timeout: 2.0
-  observation_poll_period: 0.02
+  observation_poll_period: 0.01
   observation_warn_after: 0.05
   observation_error_after: 0.1
-
-  on_wait_failure: "hold"
+  on_wait_failure: hold
   hold_limit: 10
   hold_on_step_overrun: false

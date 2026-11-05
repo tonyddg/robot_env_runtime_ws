@@ -215,7 +215,7 @@ class BodyManualResetNode(Node):
 
     class Config(BaseModel):
 
-        state_delay_tol: float = RosField(0.2, ge = 0.0, description = "容许状态延迟")
+        state_delay_tol: float = RosField(0.5, ge = 0.0, description = "容许状态延迟")
         body_qpos_tol: float = RosField(0.1, ge = 0.0, description = "身体关节位置容许误差")
 
         # 节点配置

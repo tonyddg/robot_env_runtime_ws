@@ -123,13 +123,24 @@ def build_action_meta(
             meta["observations"] = jsonable(observations)
 
     if plugin_config is not None:
-        for key in (
-            "arm_interpolate_max_action_dis",
-            "arm_interpolate_rel_qpos_source",
-        ):
-            value = getattr(plugin_config, key, None)
+        metadata_fields = {
+            "arm_interpolate_max_action_dis": (
+                "arm_interpolate_max_action_dis",
+                "arm_max_action_dis",
+            ),
+            "arm_interpolate_rel_qpos_source": (
+                "arm_interpolate_rel_qpos_source",
+                "arm_rel_qpos_source",
+            ),
+        }
+        for output_key, candidate_keys in metadata_fields.items():
+            value = None
+            for candidate in candidate_keys:
+                value = getattr(plugin_config, candidate, None)
+                if value is not None:
+                    break
             if value is not None:
-                meta[key] = jsonable(value)
+                meta[output_key] = jsonable(value)
 
     return {key: value for key, value in meta.items() if value is not None}
 

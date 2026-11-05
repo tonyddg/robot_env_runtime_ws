@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
-
 import pytest
 
 from bodyctrl_middleware.record import CycleTiming, collect_once
@@ -123,13 +121,28 @@ def test_collect_once_debug_timing_off_is_silent(tmp_path) -> None:
 
 
 def test_run_tele_loop_prints_timing() -> None:
-    """不采集数据时的遥操循环也能打点（节点里 record.enable=false 的路径）."""
-    from bodyctrl_middleware.tianyi.node.wholebody_tele_node import _run_tele_loop
+    """single 执行模式也能打点."""
+    from bodyctrl_middleware.tianyi.node.common.execution import (
+        RuntimeSession,
+        SingleExecution,
+    )
 
     logger = _Logger()
     env = FakeEnv()
     policy = FakePolicy(steps = 2)
-    _run_tele_loop(env, policy, logger, True)
+    execution = SingleExecution(
+        RuntimeSession(
+            executor = None,
+            env = env,
+            policy = policy,
+            logger = logger,
+            profile_path = "test.yaml",
+            plugin_config = None,
+            reset_kwargs = {},
+        ),
+        enable_timing = True,
+    )
+    execution.run()
 
     lines = [message for message in logger.messages if "[cycle-timing]" in message]
     assert any("setup:" in message for message in lines)
@@ -139,11 +152,26 @@ def test_run_tele_loop_prints_timing() -> None:
 
 
 def test_run_tele_loop_silent_without_debug() -> None:
-    """遥操循环默认不打点."""
-    from bodyctrl_middleware.tianyi.node.wholebody_tele_node import _run_tele_loop
+    """single 执行模式默认不打点."""
+    from bodyctrl_middleware.tianyi.node.common.execution import (
+        RuntimeSession,
+        SingleExecution,
+    )
 
     logger = _Logger()
-    _run_tele_loop(FakeEnv(), FakePolicy(steps = 2), logger, False)
+    execution = SingleExecution(
+        RuntimeSession(
+            executor = None,
+            env = FakeEnv(),
+            policy = FakePolicy(steps = 2),
+            logger = logger,
+            profile_path = "test.yaml",
+            plugin_config = None,
+            reset_kwargs = {},
+        ),
+        enable_timing = False,
+    )
+    execution.run()
     assert logger.messages == []
 
 
@@ -187,15 +215,37 @@ def test_collect_once_debug_timing_marks_hold_cycles(tmp_path) -> None:
 
 
 def test_run_tele_loop_hold_shape() -> None:
-    """遥操循环在 hold 周期派发空动作并继续等同一个 future（不重新推理）."""
-    module = importlib.import_module(
-        "bodyctrl_middleware.tianyi.node.wholebody_tele_node"
+    """single 模式在 hold 周期派发空动作并复用同一个 future."""
+    from bodyctrl_middleware.tianyi.node.common.execution import (
+        RuntimeSession,
+        SingleExecution,
     )
 
+    class _KeepMetricsEnv(FakeEnv):
+        """Ignore the final cleanup reset so loop metrics remain observable."""
+
+        def reset(self, **kwargs):
+            if self.resets == 0:
+                return super().reset(**kwargs)
+            self.stopped = False
+            return self._last_obs
+
     logger = _Logger()
-    env = FakeEnv(hold_cycles = (1, 2))
+    env = _KeepMetricsEnv(hold_cycles = (1, 2))
     policy = FakePolicy(steps = 2)
-    module._run_tele_loop(env, policy, logger, True)
+    execution = SingleExecution(
+        RuntimeSession(
+            executor = None,
+            env = env,
+            policy = policy,
+            logger = logger,
+            profile_path = "test.yaml",
+            plugin_config = None,
+            reset_kwargs = {},
+        ),
+        enable_timing = True,
+    )
+    execution.run()
 
     assert env.hold_steps == 2
     assert policy.infer_count == 3      # 2 个真实动作 + 1 次被丢弃的预取

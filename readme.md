@@ -16,8 +16,14 @@ vscode 下通过分栏命令行采集数据
 # 加载环境变量
 source install/setup.bash
 
-# 控制节点
-ros2 launch bodyctrl_middleware wholebody_tele_node.launch.py wholebody_node_params_path:=/home/nvidia/robot_env_runtime_ws/src/bodyctrl_middleware/config/tianyi/wholebody_tele_node/tele_policy.yaml
+# 控制节点 + legacy 数采
+export ROBOTRUNTIME_DEFAULT_RECORD_SAVE_ROOT=/home/ubuntu/robot_env_runtime_ws/output
+ros2 launch bodyctrl_middleware wholebody_node.launch.py \
+  startup_mode:=full \
+  runtime:=legacy \
+  execution_mode:=record \
+  arm_type:=left \
+  camera_observations:=true
 
 # 命令行输入转发
 ros2 run bodyctrl_middleware input_service 

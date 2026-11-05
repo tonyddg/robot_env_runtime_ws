@@ -232,23 +232,23 @@ def test_tele_policy_routes_arm_base_and_gripper_actions() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "arm_dim", "gripper_actions"),
+    ("relative_path", "arm_dim", "gripper_actions"),
     [
-        ("wholebody_tiansuo_left.yaml", 7, ["left_gripper"]),
-        ("wholebody_tiansuo_right.yaml", 7, ["right_gripper"]),
+        ("tiansuo_tele/left_camera_profile.yaml", 7, ["left_gripper"]),
+        ("tiansuo_tele/left_no_camera_profile.yaml", 7, ["left_gripper"]),
         (
-            "wholebody_tiansuo_bimanual.yaml",
+            "tiansuo_tele/bimanual_camera_profile.yaml",
             14,
             ["left_gripper", "right_gripper"],
         ),
     ],
 )
 def test_tiansuo_profiles_have_ordered_reset_and_contiguous_actions(
-    name: str,
+    relative_path: str,
     arm_dim: int,
     gripper_actions: list[str],
 ) -> None:
-    path = PACKAGE_ROOT / "config" / "tianyi" / name
+    path = PACKAGE_ROOT / "config" / "tianyi" / relative_path
     with path.open(encoding="utf-8") as handle:
         profile = yaml.safe_load(handle)
 

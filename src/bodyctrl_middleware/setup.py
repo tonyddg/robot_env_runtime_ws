@@ -13,9 +13,11 @@ setup(
         ('share/' + package_name, ['package.xml']),
 
         ('share/' + package_name + '/config', glob('config/*.yaml')),
-        ('share/' + package_name + '/config/tianyi', glob('config/tianyi/*.yaml')),
-        ('share/' + package_name + '/config/tianyi/wholebody_tele_node', glob('config/tianyi/wholebody_tele_node/*.yaml')),
-        ('share/' + package_name + '/config/tianyi/wholebody_tiansuo_node', glob('config/tianyi/wholebody_tiansuo_node/*.yaml')),
+        ('share/' + package_name + '/config/tianyi/topology', glob('config/tianyi/topology/*.yaml')),
+        ('share/' + package_name + '/config/tianyi/legacy_tele', glob('config/tianyi/legacy_tele/*.yaml')),
+        ('share/' + package_name + '/config/tianyi/tiansuo_tele', glob('config/tianyi/tiansuo_tele/*.yaml')),
+        ('share/' + package_name + '/config/tianyi/replay', glob('config/tianyi/replay/*.yaml')),
+        ('share/' + package_name + '/config/tianyi/tiansuo_control', glob('config/tianyi/tiansuo_control/*.yaml')),
         
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ],
@@ -37,12 +39,12 @@ setup(
             "tianyi_interpolate_test_node = bodyctrl_middleware.tianyi.test_node.interpolate_test_node:main",
             "tiansuo_tele_node = bodyctrl_middleware.tiansuo.control_node.tiansuo_tele_node:main",
 
-            "tianyi_wholebody_tele_node = bodyctrl_middleware.tianyi.node.wholebody_tele_node:main",
-            "tianyi_wholebody_tiansuo_node = bodyctrl_middleware.tianyi.node.wholebody_tiansuo_node:main",
-            "tianyi_wholebody_tele_action_node = bodyctrl_middleware.tianyi.node.wholebody_tele_action_node:main",
+            "tianyi_legacy_tele_runtime_node = bodyctrl_middleware.tianyi.node.legacy_tele_runtime_node:main",
+            "tianyi_tiansuo_runtime_node = bodyctrl_middleware.tianyi.node.tiansuo_runtime_node:main",
+            "tianyi_replay_runtime_node = bodyctrl_middleware.tianyi.node.replay_runtime_node:main",
 
             "tianyi_arm_ready_monitor_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_ready_monitor_node:main",
-            "tianyi_arm_state_reflect_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_state_reflect_node:main",
+            "tianyi_arm_state_reflect_node = bodyctrl_middleware.tianyi.bridge.arm_state_reflect_node:main",
 
             "diff_base_reset = bodyctrl_middleware.common.control_node.diff_base_reset:main",
 
