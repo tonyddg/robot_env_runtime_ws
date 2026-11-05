@@ -15,6 +15,7 @@ setup(
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/config/tianyi', glob('config/tianyi/*.yaml')),
         ('share/' + package_name + '/config/tianyi/wholebody_tele_node', glob('config/tianyi/wholebody_tele_node/*.yaml')),
+        ('share/' + package_name + '/config/tianyi/wholebody_tiansuo_node', glob('config/tianyi/wholebody_tiansuo_node/*.yaml')),
         
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ],
@@ -37,6 +38,7 @@ setup(
             "tiansuo_tele_node = bodyctrl_middleware.tiansuo.control_node.tiansuo_tele_node:main",
 
             "tianyi_wholebody_tele_node = bodyctrl_middleware.tianyi.node.wholebody_tele_node:main",
+            "tianyi_wholebody_tiansuo_node = bodyctrl_middleware.tianyi.node.wholebody_tiansuo_node:main",
             "tianyi_wholebody_tele_action_node = bodyctrl_middleware.tianyi.node.wholebody_tele_action_node:main",
 
             "tianyi_arm_ready_monitor_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_ready_monitor_node:main",

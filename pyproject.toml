@@ -8,6 +8,8 @@ dependencies = [
     "empy==3.3.4",
     "h5py>=3.16.0",
     "lark==1.1.1",
+    # 覆盖 ros2 的 opencv
+    "opencv-python>=5.0.0.93",
     "pin>=4.1.0",
     "pydantic>=2.13.4",
     # "pyyaml>=6.0.3",

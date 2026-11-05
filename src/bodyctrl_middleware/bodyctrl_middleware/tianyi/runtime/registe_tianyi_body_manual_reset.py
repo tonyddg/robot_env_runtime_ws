@@ -79,13 +79,13 @@ class TianyiFixedBodyManualResetAdapter(ResetServiceAdapter):
     def build_request(self, states: StateView, ctx: ResetContext) -> BodyManualReset.Request:
         target_pos_list = ctx.params.get("body_manual_reset_target_pos_list", self.default_target_pos_list)
         motor_name_list = ctx.params.get("body_manual_reset_motor_name_list", self.default_motor_name_list)
-        if target_pos_list is None and motor_name_list is None:
+        if target_pos_list is None:
             return BodyManualReset.Request()
-        elif target_pos_list is None or motor_name_list is None:
+        elif target_pos_list is not None and motor_name_list is not None:
+            req = _make_reset_target_req(motor_name_list, target_pos_list)
+            return req
+        else:
             raise ValueError(f"target_pos_list {target_pos_list} 或 motor_name_list {motor_name_list} 缺失")
-
-        req = _make_reset_target_req(motor_name_list, target_pos_list)
-        return req
 
 class TianyiTeleBodyManualResetAdapter(ResetServiceAdapter):
 

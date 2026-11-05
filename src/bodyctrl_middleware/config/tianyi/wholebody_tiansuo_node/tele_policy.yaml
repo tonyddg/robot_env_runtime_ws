@@ -1,0 +1,17 @@
+tianyi_wholebody_tiansuo:
+  ros__parameters:
+    config.arm.tiansuo.reset_timeout: 120.0
+    config.record.enable: true
+    config.record.ask_before_save: true
+    config.record.ask_before_next_episode: true
+    config.record.save_root: "/home/nvidia/robot_env_runtime_ws/output"
+    config.record.flush_policy: "finalize"
+    config.record.write_chunk_rows: 512
+    config.record.max_steps: 6000
+    config.record.buffer_warn_bytes: 268435456
+    config.record.compress_method: "gzip"
+    config.record.confirm_timeout: 120.0
+    config.record.confirm_on_unavailable: "keep"
+    config.record.stop_before_confirm: true
+
+    config.debug_timing: true

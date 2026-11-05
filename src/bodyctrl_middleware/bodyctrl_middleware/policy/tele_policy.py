@@ -62,7 +62,9 @@ class TeleConfig:
             raw_action = data
             last_raw_action = last_data
 
-        action = np.array(raw_action, copy = True)
+        action = np.atleast_1d(np.array(raw_action, copy = True))
+        raw_action = np.atleast_1d(raw_action)
+        last_raw_action = np.atleast_1d(last_raw_action)
         action[self.delta_mask] = (raw_action - last_raw_action)[self.delta_mask]
         if self.action_scale is not None:
             action = action / self.action_scale

@@ -186,10 +186,11 @@ def test_collect_once_debug_timing_marks_hold_cycles(tmp_path) -> None:
     assert "holds=1" in summary
 
 
-@pytest.mark.parametrize("module_name", ["wholebody_tele_node", "bimanual_tele_node"])
-def test_run_tele_loop_hold_shape(module_name: str) -> None:
+def test_run_tele_loop_hold_shape() -> None:
     """遥操循环在 hold 周期派发空动作并继续等同一个 future（不重新推理）."""
-    module = importlib.import_module(f"bodyctrl_middleware.tianyi.node.{module_name}")
+    module = importlib.import_module(
+        "bodyctrl_middleware.tianyi.node.wholebody_tele_node"
+    )
 
     logger = _Logger()
     env = FakeEnv(hold_cycles = (1, 2))

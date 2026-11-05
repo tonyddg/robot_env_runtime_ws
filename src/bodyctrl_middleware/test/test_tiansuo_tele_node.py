@@ -8,10 +8,13 @@ import numpy as np
 import pytest
 
 from bodyctrl_middleware.tiansuo.control_node.tiansuo_tele_node import (
+    BaseControlConfig,
     TiansuoTeleConfig,
     TiansuoTeleNode,
+    _base_inputs,
     _integrate_speed,
     parse_act_dict,
+    project_joystick_to_base_inputs,
 )
 from bodyctrl_middleware.tiansuo.hardware.constants import (
     convert_tiansuo_arm_position,
@@ -45,21 +48,26 @@ class CapturePublisher:
 class FakeTeleTiensuo:
     def __init__(self, state: dict | None = None) -> None:
         self.state = {} if state is None else state
+        self._pending = True
         self.positions: list[list[float]] = []
-        self.exit_calls: list[object] = []
+        self.exit_calls = 0
         self.closed = False
 
-    def act_dict(self) -> dict:
+    def poll_state(self) -> dict | None:
+        if not self._pending:
+            return None
+        self._pending = False
         return self.state
 
     def update(self, state: dict) -> None:
         self.state = state
+        self._pending = True
 
     def set_position(self, position: list[float]) -> None:
         self.positions.append(list(position))
 
-    def exit_any_sync(self, mode: object) -> None:
-        self.exit_calls.append(mode)
+    def exit_sync(self) -> None:
+        self.exit_calls += 1
 
     def close(self) -> None:
         self.closed = True
@@ -205,6 +213,45 @@ def test_integrates_acceleration_deadzone_brake_and_speed_limit() -> None:
     assert limited == pytest.approx(1.0)
 
 
+def test_projection_mapping_normalizes_direction_and_supports_rotation() -> None:
+    config = BaseControlConfig(
+        mapping_mode = "projection",
+        linear_direction_xy = [3.0, 4.0],
+        angular_rotation_deg = 90,
+    )
+    assert config.linear_direction_xy == pytest.approx([0.6, 0.8])
+
+    linear, angular = project_joystick_to_base_inputs(
+        np.array([0.8, 0.6]),
+        [1.0, 0.0],
+        90,
+    )
+    assert linear == pytest.approx(0.8)
+    assert angular == pytest.approx(0.6)
+
+    linear, angular = project_joystick_to_base_inputs(
+        np.array([0.8, 0.6]),
+        [1.0, 0.0],
+        270,
+    )
+    assert linear == pytest.approx(0.8)
+    assert angular == pytest.approx(-0.6)
+
+
+def test_axis_mapping_is_unchanged_and_invalid_direction_is_rejected() -> None:
+    config = BaseControlConfig(mapping_mode = "axis")
+    assert _base_inputs(np.array([0.2, -0.3]), config) == pytest.approx((0.2, -0.3))
+
+    with pytest.raises(ValueError, match = "zero vector"):
+        BaseControlConfig(mapping_mode = "projection", linear_direction_xy = [0.0, 0.0])
+
+    with pytest.raises(ValueError, match = "finite"):
+        BaseControlConfig(
+            mapping_mode = "projection",
+            linear_direction_xy = [float("nan"), 1.0],
+        )
+
+
 def test_node_publishes_bimanual_teleop_and_transitions_to_ready(
     rclpy_context: list[TiansuoTeleNode],
 ) -> None:
@@ -253,14 +300,23 @@ def test_base_integrates_and_emergency_button_zeroes_velocity(
 ) -> None:
     clock = ManualClock()
     tele = FakeTeleTiensuo(_act_dict(left_joystick = (1.0, -1.0)))
-    node = _make_node(rclpy_context, tele = tele, clock = clock)
+    node = _make_node(
+        rclpy_context,
+        tele = tele,
+        clock = clock,
+        config = TiansuoTeleConfig(base = BaseControlConfig(mapping_mode = "axis")),
+    )
     node._on_tele_timer()
 
     clock.advance(0.1)
     tele.update(_act_dict(left_joystick = (1.0, -1.0)))
     node._on_tele_timer()
-    assert node._cmd_vel_pub.messages[-1].linear.x == pytest.approx(0.05)
-    assert node._cmd_vel_pub.messages[-1].angular.z == pytest.approx(-0.08)
+    assert node._cmd_vel_pub.messages[-1].linear.x == pytest.approx(
+        node.config.base.max_linear_acceleration * 0.1
+    )
+    assert node._cmd_vel_pub.messages[-1].angular.z == pytest.approx(
+        -node.config.base.max_angular_acceleration * 0.1
+    )
 
     clock.advance(0.1)
     tele.update(_act_dict(left_joystick = (0.0, 0.0)))
@@ -277,7 +333,7 @@ def test_base_integrates_and_emergency_button_zeroes_velocity(
     assert node._cmd_vel_pub.messages[-1].angular.z == 0.0
 
 
-def test_stale_state_faults_and_stop_establishes_new_epoch(
+def test_stale_state_warns_and_stop_establishes_new_epoch(
     rclpy_context: list[TiansuoTeleNode],
 ) -> None:
     clock = ManualClock()
@@ -295,7 +351,7 @@ def test_stale_state_faults_and_stop_establishes_new_epoch(
 
     clock.advance(node.config.state_timeout + 0.01)
     node._on_tele_timer()
-    assert node.control_state == ControlState.FAULTED
+    assert node.control_state == ControlState.STOPPED
 
 
 def test_malformed_state_faults(
@@ -343,18 +399,18 @@ def test_reset_requires_released_then_pressed_button(
     clock.advance(1.0 / node.config.control_rate)
     tele.update(_act_dict(left_button3 = 1.0))
     node._on_tele_timer()
-    assert tele.exit_calls == []
+    assert tele.exit_calls == 0
 
     clock.advance(1.0 / node.config.control_rate)
     tele.update(_act_dict(left_button3 = 0.0))
     node._on_tele_timer()
-    assert tele.exit_calls == []
+    assert tele.exit_calls == 0
 
     clock.advance(1.0 / node.config.control_rate)
     tele.update(_act_dict(left_button3 = 1.0))
     node._on_tele_timer()
 
-    assert len(tele.exit_calls) == 1
+    assert tele.exit_calls == 1
     assert node.control_state == ControlState.READY
     assert node.control_epoch == ready_epoch + 1
 

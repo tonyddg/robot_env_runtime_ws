@@ -1,0 +1,49 @@
+robot: tianyi
+
+observations:
+  - qpos
+  - left_gripper_openness
+
+  - tele_qpos
+  # - color
+  # - depth
+  - eef_pose
+  - odom
+  - tele_vel
+  - stop_tele
+  - tele_left_gripper_openness
+
+actions:
+  arm:
+    controller: arm
+    indices: [0, 1, 2, 3, 4, 5, 6]
+    scale: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+  base:
+    controller: base
+    indices: [7, 8]
+    scale: [0.5, 1.5]
+  left_gripper:
+    controller: left_gripper
+    indices: [9]
+    scale: 1.0
+
+reset:
+  - base_reset
+  - fixed_body_manual_reset
+  - tiansuo_reset
+
+runtime:
+  control_period: 0.1
+  overrun_tolerance: 0.05
+  reset_timeout: 30.0
+  state_ready_timeout: 10.0
+  service_timeout: 2.0
+  observation_poll_period: 0.01
+  observation_warn_after: 0.05
+  observation_error_after: 0.1
+  on_wait_failure: hold
+  hold_limit: 10
+  hold_on_step_overrun: false
+
+# ros2 launch bodyctrl_middleware wholebody_node.launch.py tele_backend:=tiansuo control_node_only:=True
+# ros2 service call /tiansuo_tele/reset bodyctrl_middleware_interface/srv/TiansuoReset "{position: [-0.7854,0.5236,-0.5236,-0.7854,-0.5236,0.0,0.0,-0.7854,-0.5236,0.5236,-0.7854,0.5236,0.0,0.0]}"

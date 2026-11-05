@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable, Literal, Mapping, Optional
 
 import numpy as np
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 import rclpy
 from geometry_msgs.msg import Twist, Vector3
@@ -30,10 +30,7 @@ from bodyctrl_middleware.tiansuo.hardware.constants import (
     convert_tiansuo_arm_position,
     trigger_to_openness,
 )
-from bodyctrl_middleware.tiansuo.hardware.tiansuo2_pro import (
-    Exit_SyncXtele_Mode,
-    TeleTiensuo,
-)
+from bodyctrl_middleware.tiansuo.hardware.tiansuo_client import TiansuoClient
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
 
 ArmSide = Literal["left", "right", "bimanual"]
@@ -76,20 +73,35 @@ class ArmCalibrationConfig(BaseModel):
 class BaseControlConfig(BaseModel):
     """摇杆加速度映射与积分限幅。"""
 
+    mapping_mode: Literal["axis", "projection"] = RosField(
+        "projection", read_only = True,
+        description = "axis: joystick[0/1] 直接作为线/角输入; projection: 投影到配置方向",
+    )
+    linear_direction_xy: list[float] = RosField(
+        default_factory = lambda: [1.0, 0.0],
+        min_length = 2,
+        max_length = 2,
+        read_only = True,
+        description = "projection 模式的正线速度方向，读取后自动归一化",
+    )
+    angular_rotation_deg: Literal[90, 270] = RosField(
+        270, read_only = True,
+        description = "projection 模式正角速度方向相对正线速度方向的旋转角度",
+    )
     deadzone: float = RosField(
         0.1, ge = 0.0, lt = 1.0, read_only = True,
         description = "摇杆绝对输入不超过该值时主动刹车",
     )
     max_linear_acceleration: float = RosField(
-        0.5, ge = 0.0, read_only = True,
+        0.3, ge = 0.0, read_only = True,
         description = "最大线加速度与减速度, m/s^2",
     )
     max_angular_acceleration: float = RosField(
-        0.8, ge = 0.0, read_only = True,
+        0.4, ge = 0.0, read_only = True,
         description = "最大角加速度与减速度, rad/s^2",
     )
     max_linear_speed: float = RosField(
-        1.0, ge = 0.0, read_only = True,
+        0.5, ge = 0.0, read_only = True,
         description = "最大线速度, m/s",
     )
     max_angular_speed: float = RosField(
@@ -101,24 +113,36 @@ class BaseControlConfig(BaseModel):
         description = "单次回调允许用于积分的最大时间步长, 防止执行器停顿后积分跳变",
     )
 
+    @model_validator(mode = "after")
+    def normalize_direction(self):
+        direction = np.asarray(self.linear_direction_xy, dtype = np.float64)
+        if not np.isfinite(direction).all():
+            raise ValueError("linear_direction_xy must be finite")
+        norm = float(np.linalg.norm(direction))
+        if norm <= 1e-12:
+            raise ValueError("linear_direction_xy must not be a zero vector")
+        self.linear_direction_xy = (direction / norm).tolist()
+        return self
+
 
 class TiansuoTeleConfig(BaseModel):
     """``tiansuo_tele_node`` 的 ROS 参数。"""
 
     tiansuo_ip: str = RosField(
-        "10.11.17.191", min_length = 1, read_only = True,
+        "10.11.57.214", min_length = 1, read_only = True,
         description = "天梭 2 Pro 工控机 IP",
     )
     root_name: str = RosField(
         "tiansuo_tele", min_length = 1, read_only = True,
         description = "遥操作话题、状态与服务根路径",
     )
+    # 使用较低的频率, 保证遥操作读取可靠性, 对实效性要求较低
     control_rate: float = RosField(
-        60.0, gt = 0.0, read_only = True,
+        20.0, gt = 0.0, read_only = True,
         description = "遥操作读取与消息发送频率, Hz",
     )
     status_pub_rate: float = RosField(
-        50.0, gt = 0.0, read_only = True,
+        20.0, gt = 0.0, read_only = True,
         description = "ControlStatus 发布频率, Hz",
     )
     state_timeout: float = RosField(
@@ -282,6 +306,49 @@ def _integrate_speed(
     return float(np.clip(next_speed, -max_speed, max_speed))
 
 
+def project_joystick_to_base_inputs(
+    joystick: np.ndarray,
+    direction_xy: list[float],
+    rotation_deg: Literal[90, 270],
+) -> tuple[float, float]:
+    """Project a 2-D joystick vector onto linear/angular unit directions."""
+    stick = np.asarray(joystick, dtype = np.float64)
+    if stick.shape != (2,) or not np.isfinite(stick).all():
+        raise ValueError("joystick must contain two finite values")
+
+    direction = np.asarray(direction_xy, dtype = np.float64)
+    if direction.shape != (2,) or not np.isfinite(direction).all():
+        raise ValueError("direction_xy must contain two finite values")
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1e-12:
+        raise ValueError("direction_xy must not be a zero vector")
+    direction /= norm
+
+    if rotation_deg == 90:
+        angular_direction = np.array([-direction[1], direction[0]])
+    elif rotation_deg == 270:
+        angular_direction = np.array([direction[1], -direction[0]])
+    else:
+        raise ValueError("rotation_deg must be 90 or 270")
+
+    linear = float(np.clip(np.dot(stick, direction), -1.0, 1.0))
+    angular = float(np.clip(np.dot(stick, angular_direction), -1.0, 1.0))
+    return linear, angular
+
+
+def _base_inputs(
+    joystick: np.ndarray,
+    config: BaseControlConfig,
+) -> tuple[float, float]:
+    if config.mapping_mode == "axis":
+        return float(joystick[0]), float(joystick[1])
+    return project_joystick_to_base_inputs(
+        joystick,
+        config.linear_direction_xy,
+        config.angular_rotation_deg,
+    )
+
+
 class TiansuoTeleNode(Node):
     """读取天梭状态并桥接到 ROS，同时提供 managed stop/reset。"""
 
@@ -359,9 +426,7 @@ class TiansuoTeleNode(Node):
         self._closed = False
 
         if tele_agent is None:
-            self.tele_agent = TeleTiensuo(
-                config = {"basic": {"tiansuo_ip": self.config.tiansuo_ip}}
-            )
+            self.tele_agent = TiansuoClient(self.config.tiansuo_ip)
         else:
             self.tele_agent = tele_agent
 
@@ -439,8 +504,9 @@ class TiansuoTeleNode(Node):
         else:
             joystick = frame.joystick[side]
             base = self.config.base
+            linear_input, angular_input = _base_inputs(joystick, base)
             self._base_velocity[0] = _integrate_speed(
-                stick = float(joystick[0]),
+                stick = linear_input,
                 current_speed = float(self._base_velocity[0]),
                 dt = dt,
                 deadzone = base.deadzone,
@@ -448,7 +514,7 @@ class TiansuoTeleNode(Node):
                 max_speed = base.max_linear_speed,
             )
             self._base_velocity[1] = _integrate_speed(
-                stick = float(joystick[1]),
+                stick = angular_input,
                 current_speed = float(self._base_velocity[1]),
                 dt = dt,
                 deadzone = base.deadzone,
@@ -471,7 +537,7 @@ class TiansuoTeleNode(Node):
             return
 
         try:
-            self.tele_agent.exit_any_sync(Exit_SyncXtele_Mode.NotBack)
+            self.tele_agent.exit_sync()
         except Exception as exc:
             self._fail(f"退出天梭同步模式失败: {exc}")
             return
@@ -496,15 +562,17 @@ class TiansuoTeleNode(Node):
             return
 
         try:
-            data = self.tele_agent.act_dict()
+            new_data = self.tele_agent.poll_state()
         except Exception as exc:
             self._fail(f"读取天梭状态失败: {exc}")
             return
 
-        if data is not self._last_payload:
-            self._last_payload = data
-            if isinstance(data, Mapping) and len(data) > 0:
+        if new_data is not None:
+            self._last_payload = new_data
+            if isinstance(new_data, Mapping) and len(new_data) > 0:
                 self._last_payload_time = now
+
+        data = self._last_payload
 
         if self._csm.state == ControlState.INITIALIZING:
             if not isinstance(data, Mapping) or not data:
@@ -514,8 +582,12 @@ class TiansuoTeleNode(Node):
             self._last_payload_time is None
             or now - self._last_payload_time > self.config.state_timeout
         ):
-            self._fail("天梭状态超过 state_timeout 未更新")
-            return
+            # self._fail(f"天梭状态超过 {self.config.state_timeout}s 未更新")
+            # 状态没有更新时仅抛出警告不直接退出
+            if self._last_payload_time is not None:
+                self.get_logger().warn(f"天梭状态超过 {(now - self._last_payload_time) * 1000:.3f}ms 未更新", throttle_duration_sec = 1)
+            else:
+                return
 
         try:
             frame = parse_act_dict(data)

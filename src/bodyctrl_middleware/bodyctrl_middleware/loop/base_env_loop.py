@@ -377,4 +377,5 @@ class BaseEnvLoop:
                     f"{type(exc).__name__}: {exc}"
                 )
             finally:
+                self.logger.info(f"self.timing.enabled: {self.timing.enabled}, self.timing._count: {self.timing._count}")
                 self.timing.log_summary()

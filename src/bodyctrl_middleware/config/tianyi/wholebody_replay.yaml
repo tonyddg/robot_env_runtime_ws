@@ -6,11 +6,12 @@ robot: tianyi
 
 observations:
   - qpos
+  - left_gripper_openness
 
-  - color
-  - depth
+  # - color
+  # - depth
+
   - eef_pose
-
   - odom
 
 # 归一化 action（每维 ∈ [-1, 1]）如何路由到 controller。
@@ -23,6 +24,10 @@ actions:
     controller: base
     indices: [7, 8]
     scale: [0.5, 1.5]
+  left_gripper:
+    controller: left_gripper
+    indices: [9]
+    scale: 1.0
 
 reset: 
   # 底盘先还原再初始化手部
