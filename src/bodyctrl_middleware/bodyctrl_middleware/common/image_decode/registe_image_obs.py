@@ -23,11 +23,13 @@ from robot_env_runtime.ros2.qos import make_qos
 # 相机解码器
 from bodyctrl_middleware.common.image_decode.decode_normal_compress_color import decode_normal_compress_color, decode_normal_compress_color_reduce2
 from bodyctrl_middleware.common.image_decode.decode_orbbec_compress_depth import decode_orbbec_compress_depth
+from bodyctrl_middleware.common.image_decode.decode_realsense_compress_depth import decode_realsense_compress_depth
 from bodyctrl_middleware.common.image_decode.decode_image import decode_image
 
 DECODER_DICT = dict(
     normal_compress_color = decode_normal_compress_color,
     orbbec_compress_depth = decode_orbbec_compress_depth,
+    realsense_compress_depth = decode_realsense_compress_depth,
     normal_compress_color_reduce2 = decode_normal_compress_color_reduce2,
 )
 

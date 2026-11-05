@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import numpy as np
+import pytest
+
+from bodyctrl_middleware.common.image_decode.decode_realsense_compress_depth import (
+    decode_realsense_compress_depth,
+)
 from bodyctrl_middleware.tianyi.plugin.tianyi_camera import (
     TianyiCamerasConfig,
     _topics,
@@ -18,12 +24,12 @@ def test_default_cameras_use_raw_topics_and_named_observations() -> None:
         "/camera/depth/image_raw",
     )
     assert _topics(config.right) == (
-        "/camera_rs1/color/image_raw",
-        "/camera_rs1/depth/image_raw",
+        "/camera_rs1/camera_rs1/color/image_rect_raw",
+        "/camera_rs1/camera_rs1/depth/image_rect_raw",
     )
     assert _topics(config.left) == (
-        "/camera_rs2/color/image_raw",
-        "/camera_rs2/depth/image_raw",
+        "/camera_rs2/camera_rs2/color/image_rect_raw",
+        "/camera_rs2/camera_rs2/depth/image_rect_raw",
     )
     assert config.head.image_is_compress is False
 
@@ -57,3 +63,18 @@ def test_compressed_topics_are_selected_together() -> None:
         "/camera/color/image_raw/compressed",
         "/camera/depth/image_raw/compressedDepth",
     )
+
+    config = TianyiCamerasConfig()
+    config.right.image_is_compress = True
+    assert _topics(config.right) == (
+        "/camera_rs1/camera_rs1/color/image_rect_raw/compressed",
+        "/camera_rs1/camera_rs1/depth/image_rect_raw/compressedDepth",
+    )
+
+
+def test_realsense_compressed_depth_decoder_is_explicit_todo() -> None:
+    with pytest.raises(NotImplementedError, match="not implemented"):
+        decode_realsense_compress_depth(
+            "16UC1; compressedDepth",
+            np.zeros(1, dtype=np.uint8),
+        )

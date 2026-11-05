@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from bodyctrl_middleware.common.image_decode.registe_image_obs import (
     ImageProcessConfig,
@@ -23,10 +23,25 @@ class ImageConfig(BaseModel):
         read_only=True,
         description="是否启用该相机及其 color/depth observations",
     )
-    image_topic_root_name: str = RosField(
-        "camera",
+    image_color_topic: str = RosField(
+        "/camera/color/image_raw",
         read_only=True,
-        description="相机 topic 根名称，例如 /camera 或 /camera_rs1",
+        description="raw 彩色图像 topic",
+    )
+    image_color_compress_topic: str = RosField(
+        "/camera/color/image_raw/compressed",
+        read_only=True,
+        description="压缩彩色图像 topic",
+    )
+    image_depth_topic: str = RosField(
+        "/camera/depth/image_raw",
+        read_only=True,
+        description="raw 深度图像 topic",
+    )
+    image_depth_compress_topic: str = RosField(
+        "/camera/depth/image_raw/compressedDepth",
+        read_only=True,
+        description="压缩深度图像 topic",
     )
     image_color_obs_name: str = RosField(
         "head_color",
@@ -56,6 +71,14 @@ class ImageConfig(BaseModel):
             is_resize_image=False,
         ),
         description="深度图像裁剪和缩放参数，默认不处理",
+    )
+    image_depth_compress_decoder: str = RosField(
+        "orbbec_compress_depth",
+        read_only=True,
+        description=(
+            "压缩深度图像解码协议；wrist RealSense 预留 "
+            "realsense_compress_depth，当前会明确抛出未实现异常"
+        ),
     )
     image_is_compress: bool = RosField(
         False,
@@ -97,24 +120,52 @@ class ImageConfig(BaseModel):
         description="图像解码诊断日志节流周期，单位秒；0 表示每次记录",
     )
 
+    @model_validator(mode="after")
+    def _validate_topics(self) -> "ImageConfig":
+        if self.image_is_compress:
+            selected = {
+                "image_color_compress_topic": self.image_color_compress_topic,
+                "image_depth_compress_topic": self.image_depth_compress_topic,
+            }
+        else:
+            selected = {
+                "image_color_topic": self.image_color_topic,
+                "image_depth_topic": self.image_depth_topic,
+            }
+        empty = [name for name, value in selected.items() if not value.strip()]
+        if empty:
+            raise ValueError(f"camera topic fields must not be empty: {empty}")
+        return self
+
 
 def _image_config(
     *,
-    root_name: str,
+    color_topic: str,
+    color_compress_topic: str,
+    depth_topic: str,
+    depth_compress_topic: str,
     color_obs_name: str,
     depth_obs_name: str,
+    depth_compress_decoder: str = "orbbec_compress_depth",
 ) -> ImageConfig:
     return ImageConfig(
         is_enable=True,
-        image_topic_root_name=root_name,
+        image_color_topic=color_topic,
+        image_color_compress_topic=color_compress_topic,
+        image_depth_topic=depth_topic,
+        image_depth_compress_topic=depth_compress_topic,
         image_color_obs_name=color_obs_name,
         image_depth_obs_name=depth_obs_name,
+        image_depth_compress_decoder=depth_compress_decoder,
     )
 
 
 def _head_camera_config() -> ImageConfig:
     return _image_config(
-        root_name="/camera",
+        color_topic="/camera/color/image_raw",
+        color_compress_topic="/camera/color/image_raw/compressed",
+        depth_topic="/camera/depth/image_raw",
+        depth_compress_topic="/camera/depth/image_raw/compressedDepth",
         color_obs_name="head_color",
         depth_obs_name="head_depth",
     )
@@ -122,17 +173,33 @@ def _head_camera_config() -> ImageConfig:
 
 def _right_camera_config() -> ImageConfig:
     return _image_config(
-        root_name="/camera_rs1",
+        color_topic="/camera_rs1/camera_rs1/color/image_rect_raw",
+        color_compress_topic=(
+            "/camera_rs1/camera_rs1/color/image_rect_raw/compressed"
+        ),
+        depth_topic="/camera_rs1/camera_rs1/depth/image_rect_raw",
+        depth_compress_topic=(
+            "/camera_rs1/camera_rs1/depth/image_rect_raw/compressedDepth"
+        ),
         color_obs_name="right_color",
         depth_obs_name="right_depth",
+        depth_compress_decoder="realsense_compress_depth",
     )
 
 
 def _left_camera_config() -> ImageConfig:
     return _image_config(
-        root_name="/camera_rs2",
+        color_topic="/camera_rs2/camera_rs2/color/image_rect_raw",
+        color_compress_topic=(
+            "/camera_rs2/camera_rs2/color/image_rect_raw/compressed"
+        ),
+        depth_topic="/camera_rs2/camera_rs2/depth/image_rect_raw",
+        depth_compress_topic=(
+            "/camera_rs2/camera_rs2/depth/image_rect_raw/compressedDepth"
+        ),
         color_obs_name="left_color",
         depth_obs_name="left_depth",
+        depth_compress_decoder="realsense_compress_depth",
     )
 
 
@@ -154,13 +221,9 @@ class TianyiCamerasConfig(BaseModel):
 
 
 def _topics(config: ImageConfig) -> tuple[str, str]:
-    root = config.image_topic_root_name.rstrip("/")
     if config.image_is_compress:
-        return (
-            f"{root}/color/image_raw/compressed",
-            f"{root}/depth/image_raw/compressedDepth",
-        )
-    return f"{root}/color/image_raw", f"{root}/depth/image_raw"
+        return config.image_color_compress_topic, config.image_depth_compress_topic
+    return config.image_color_topic, config.image_depth_topic
 
 
 def _adapter_config(
@@ -208,7 +271,7 @@ def _register_camera(
         topic=depth_topic,
         dtype="uint16",
         channels=1,
-        decoder="orbbec_compress_depth",
+        decoder=config.image_depth_compress_decoder,
         process=config.image_depth_obs_process,
         config=config,
     )
