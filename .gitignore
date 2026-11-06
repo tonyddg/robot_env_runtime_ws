@@ -4,6 +4,6 @@ install
 log
 output
 
-note.md
+.env
 
 __pycache__
