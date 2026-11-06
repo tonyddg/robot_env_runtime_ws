@@ -90,7 +90,13 @@ from robot_env_runtime.extension.reset import (
     ResetStrategy,
     SequentialResetStrategy,
 )
-from robot_env_runtime.logging import LoggerLike, NULL_LOGGER, NullLogger
+from robot_env_runtime.logging import (
+    FilteredLogger,
+    LoggerLike,
+    LogLevel,
+    NULL_LOGGER,
+    NullLogger,
+)
 from robot_env_runtime.extension.ros2 import (
     ACCEPTING_STATES,
     AsyncRosTopicStateSource,
@@ -152,8 +158,10 @@ __all__ = [
     "ControllerValidationError",
     "CycleState",
     "ExecutorHost",
+    "FilteredLogger",
     "HoldReason",
     "InferenceFuture",
+    "LogLevel",
     "LoggerLike",
     "NullActionReport",
     "NullActionStatus",

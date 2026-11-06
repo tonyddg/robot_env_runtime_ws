@@ -19,7 +19,7 @@ from robot_env_runtime.core.clock import Clock
 from robot_env_runtime.core.errors import ConfigError, ServiceCallError
 from robot_env_runtime.core.snapshot import StateSample, StateSnapshot
 from robot_env_runtime.core.state_view import StateInput, StateView
-from robot_env_runtime.logging import LoggerLike
+from robot_env_runtime.logging import LoggerLike, LogLevel
 
 
 class CycleState(Enum):
@@ -180,6 +180,7 @@ class RuntimeSettings:
     on_wait_failure: str = "fault"
     hold_limit: int = 10
     hold_on_step_overrun: bool = False
+    logger_level: LogLevel = "warn"
 
     def __post_init__(self) -> None:
         """校验数值合法性."""
@@ -202,6 +203,11 @@ class RuntimeSettings:
             )
         if int(self.hold_limit) < 1:
             raise ConfigError("runtime.hold_limit must be >= 1")
+        if self.logger_level not in ("debug", "info", "warn", "error"):
+            raise ConfigError(
+                "runtime.logger_level must be one of "
+                f"debug/info/warn/error, got {self.logger_level!r}"
+            )
 
 
 class HoldReason(str, Enum):

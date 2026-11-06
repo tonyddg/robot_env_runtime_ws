@@ -184,7 +184,12 @@ runtime:
   on_wait_failure: hold         # fault（默认）| hold
   hold_limit: 10                # 连续软失败达到该次数改为 fault（>= 1）
   hold_on_step_overrun: false   # 是否把 StepOverrunError 也计入软失败
+  logger_level: warn            # debug | info | warn（默认）| error
 ```
+
+`logger_level` 只过滤 `ComponentContext.logger` 及其 child logger；Runtime node、
+RobotEnv、action 和录制等外围 logger 不受影响。默认 `warn`，因此组件正常
+`debug/info` 不输出，但 warning 和 error 保留。
 
 严格模式（默认）行为与不开 hold 时完全一致：首次失败即 latch fault + 抛异常。
 

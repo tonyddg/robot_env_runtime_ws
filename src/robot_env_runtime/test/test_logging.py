@@ -7,8 +7,15 @@ from types import SimpleNamespace
 import pytest
 
 from robot_env_runtime.config.builder import RuntimeBuilder
+from robot_env_runtime.config.loader import load_profile_mapping
+from robot_env_runtime.core.errors import ConfigError
 from robot_env_runtime.core.types import RuntimeSettings
-from robot_env_runtime.logging import NULL_LOGGER, LoggerLike, NullLogger
+from robot_env_runtime.logging import (
+    FilteredLogger,
+    NULL_LOGGER,
+    LoggerLike,
+    NullLogger,
+)
 from robot_env_runtime.testing import (
     FakeClock,
     FakeExecutorHost,
@@ -59,6 +66,72 @@ def test_component_context_uses_child_logger() -> None:
     )
 
     assert ctx.logger.name == "runtime.camera"
+
+
+def test_filtered_logger_applies_minimum_level_and_preserves_kwargs() -> None:
+    parent = FakeLogger("runtime")
+    logger = FilteredLogger(parent.get_child("camera"), "warn")
+
+    assert logger.debug("debug") is False
+    assert logger.info("info") is False
+    assert logger.warn("warn", throttle_duration_sec=2.0) is True
+    assert logger.error("error") is True
+    assert parent.calls == [
+        ("warn", "warn", {"throttle_duration_sec": 2.0}),
+        ("error", "error", {}),
+    ]
+
+
+def test_filtered_child_inherits_level_without_filtering_root_logger() -> None:
+    parent = FakeLogger("runtime")
+    builder = RuntimeBuilder()
+    compiled = SimpleNamespace(
+        settings=RuntimeSettings(control_period=0.1),
+    )
+
+    ctx = builder._context(
+        "camera",
+        FakeRosNode(),
+        FakeClock(),
+        parent,
+        compiled,
+    )
+
+    assert parent.info("outside logger remains enabled") is True
+    assert ctx.logger.info("component info hidden") is False
+    assert ctx.logger.warn("component warning") is True
+    assert parent.messages("info") == ["outside logger remains enabled"]
+    assert parent.messages("warn") == ["component warning"]
+
+
+def test_runtime_logger_level_defaults_to_warn_and_allows_override() -> None:
+    profile = load_profile_mapping({
+        "robot": "test",
+        "observations": ["x"],
+        "actions": {},
+        "runtime": {"control_period": 0.1},
+    })
+    assert profile.runtime.logger_level == "warn"
+
+    profile = load_profile_mapping({
+        "robot": "test",
+        "observations": ["x"],
+        "actions": {},
+        "runtime": {"control_period": 0.1, "logger_level": "info"},
+    })
+    assert profile.runtime.to_core().logger_level == "info"
+
+
+def test_runtime_settings_rejects_unknown_logger_level() -> None:
+    with pytest.raises(ConfigError, match="logger_level"):
+        RuntimeSettings(control_period=0.1, logger_level="verbose")  # type: ignore[arg-type]
+    with pytest.raises(ConfigError):
+        load_profile_mapping({
+            "robot": "test",
+            "observations": ["x"],
+            "actions": {},
+            "runtime": {"control_period": 0.1, "logger_level": "verbose"},
+        })
 
 
 def test_rclpy_child_loggers_keep_throttle_scopes_separate() -> None:

@@ -112,6 +112,8 @@ logger 的所有权和传递路径：
    的一对一包装函数。
 3. 可选 logger 只在 API 入口处归一化一次：
    `logger = NULL_LOGGER if logger is None else logger`。归一化后不再做空判断。
+   Profile 的 `runtime.logger_level` 只过滤 `ComponentContext.logger` 及其 child，
+   默认 `warn`；node、RobotEnv、action、record 等外围 logger 不受影响。
 4. 需要节流时直接把 `throttle_duration_sec` 传给原始 logger，由 rclpy 或测试
    logger 实现处理；不要在业务代码中额外维护时间窗口。
 5. 不同逻辑来源应有独立 child logger。特别是彩色图、深度图、TCP、controller

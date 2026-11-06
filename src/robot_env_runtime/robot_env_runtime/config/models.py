@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from robot_env_runtime.core.types import RuntimeSettings
+from robot_env_runtime.logging import LogLevel
 
 
 class RuntimeSettingsModel(BaseModel):
@@ -23,6 +24,7 @@ class RuntimeSettingsModel(BaseModel):
     on_wait_failure: Literal["fault", "hold"] = Field(default="fault")
     hold_limit: int = Field(default=10, ge=1)
     hold_on_step_overrun: bool = Field(default=False)
+    logger_level: LogLevel = Field(default="warn")
 
     model_config = ConfigDict(extra="forbid")
 
@@ -49,6 +51,7 @@ class RuntimeSettingsModel(BaseModel):
             on_wait_failure=self.on_wait_failure,
             hold_limit=self.hold_limit,
             hold_on_step_overrun=self.hold_on_step_overrun,
+            logger_level=self.logger_level,
         )
 
 
