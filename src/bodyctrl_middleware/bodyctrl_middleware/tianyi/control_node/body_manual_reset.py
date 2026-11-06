@@ -52,7 +52,7 @@ class BodyTargetConfig(BaseModel):
 
     head_target: PartTargetConfig = RosField(
         default_factory = lambda: PartTargetConfig(
-            target_pos_list = [0.0, 0.0, 0.0],
+            target_pos_list = [0.0, -0.3, 0.0],
             motor_name_list = [1, 2, 3],
         )
     )
