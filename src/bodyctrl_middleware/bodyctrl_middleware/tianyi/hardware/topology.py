@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 import yaml
 
@@ -18,14 +19,6 @@ _EXPECTED_ARM_DOF: dict[str, int] = {
 
 
 @dataclass(frozen=True)
-class TianyiResetPoses:
-    """Named arm postures used by the reset control node."""
-
-    liftup: list[float]
-    liftdown: list[float]
-
-
-@dataclass(frozen=True)
 class TianyiTopologyConfig:
     """Hardware details shared by runtime and control nodes."""
 
@@ -33,7 +26,7 @@ class TianyiTopologyConfig:
     arm_motor_list: list[int]
     control_motor_kp_list: list[float]
     control_motor_kd_list: list[float]
-    reset_motor_pos_list: TianyiResetPoses
+    reset_postures: dict[str, list[float]]
     gripper_sides: list[GripperSide]
     control_mode: Literal["pos", "pd"] = "pd"
 
@@ -42,7 +35,22 @@ class TianyiTopologyConfig:
         """Validate a parsed topology mapping."""
         try:
             name = str(value["name"])
-            reset_raw = value["reset_motor_pos_list"]
+            reset_raw = value["reset_postures"]
+            if not isinstance(reset_raw, Mapping) or not reset_raw:
+                raise ValueError("reset_postures must be a non-empty mapping")
+            reset_postures: dict[str, list[float]] = {}
+            for posture_name, positions in reset_raw.items():
+                if not isinstance(posture_name, str) or not posture_name:
+                    raise ValueError(
+                        "reset posture names must be non-empty strings"
+                    )
+                if not isinstance(positions, list):
+                    raise ValueError(
+                        f"reset posture {posture_name!r} must be a list"
+                    )
+                reset_postures[posture_name] = [
+                    float(item) for item in positions
+                ]
             config = cls(
                 name=name,  # type: ignore[arg-type]
                 arm_motor_list=[int(item) for item in value["arm_motor_list"]],
@@ -52,10 +60,7 @@ class TianyiTopologyConfig:
                 control_motor_kd_list=[
                     float(item) for item in value["control_motor_kd_list"]
                 ],
-                reset_motor_pos_list=TianyiResetPoses(
-                    liftup=[float(item) for item in reset_raw["liftup"]],
-                    liftdown=[float(item) for item in reset_raw["liftdown"]],
-                ),
+                reset_postures=reset_postures,
                 gripper_sides=list(value["gripper_sides"]),
                 control_mode=str(value.get("control_mode", "pd")),  # type: ignore[arg-type]
             )
@@ -72,13 +77,15 @@ class TianyiTopologyConfig:
                 f"unsupported control_mode: {self.control_mode!r}"
             )
         expected = _EXPECTED_ARM_DOF[self.name]
-        fields = {
+        fields: dict[str, list[Any]] = {
             "arm_motor_list": self.arm_motor_list,
             "control_motor_kp_list": self.control_motor_kp_list,
             "control_motor_kd_list": self.control_motor_kd_list,
-            "reset_motor_pos_list.liftup": self.reset_motor_pos_list.liftup,
-            "reset_motor_pos_list.liftdown": self.reset_motor_pos_list.liftdown,
         }
+        fields.update({
+            f"reset_postures.{name}": positions
+            for name, positions in self.reset_postures.items()
+        })
         wrong = {
             field_name: len(values)
             for field_name, values in fields.items()
