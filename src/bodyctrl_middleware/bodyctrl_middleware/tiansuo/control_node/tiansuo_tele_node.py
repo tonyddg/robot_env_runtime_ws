@@ -89,23 +89,23 @@ class BaseControlConfig(BaseModel):
         description = "projection 模式正角速度方向相对正线速度方向的旋转角度",
     )
     deadzone: float = RosField(
-        0.1, ge = 0.0, lt = 1.0, read_only = True,
+        0.3, ge = 0.0, lt = 1.0, read_only = True,
         description = "摇杆绝对输入不超过该值时主动刹车",
     )
     max_linear_acceleration: float = RosField(
-        0.3, ge = 0.0, read_only = True,
+        0.15, ge = 0.0, read_only = True,
         description = "最大线加速度与减速度, m/s^2",
     )
     max_angular_acceleration: float = RosField(
-        0.4, ge = 0.0, read_only = True,
+        0.1, ge = 0.0, read_only = True,
         description = "最大角加速度与减速度, rad/s^2",
     )
     max_linear_speed: float = RosField(
-        0.5, ge = 0.0, read_only = True,
+        0.3, ge = 0.0, read_only = True,
         description = "最大线速度, m/s",
     )
     max_angular_speed: float = RosField(
-        1.5, ge = 0.0, read_only = True,
+        0.2, ge = 0.0, read_only = True,
         description = "最大角速度, rad/s",
     )
     max_integration_dt: float = RosField(

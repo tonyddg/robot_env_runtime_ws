@@ -13,7 +13,7 @@ actions:
   base:
     controller: base
     indices: [14, 15]
-    scale: [0.5, 1.5]
+    scale: [0.3, 0.2]
   left_gripper:
     controller: left_gripper
     indices: [16]
