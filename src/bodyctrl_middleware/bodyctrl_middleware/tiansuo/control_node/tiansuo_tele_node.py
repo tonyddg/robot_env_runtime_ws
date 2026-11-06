@@ -105,7 +105,7 @@ class BaseControlConfig(BaseModel):
         description = "最大线速度, m/s",
     )
     max_angular_speed: float = RosField(
-        0.2, ge = 0.0, read_only = True,
+        0.1, ge = 0.0, read_only = True,
         description = "最大角速度, rad/s",
     )
     max_integration_dt: float = RosField(
