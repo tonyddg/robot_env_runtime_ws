@@ -2,8 +2,9 @@ name: left
 arm_motor_list: [11, 12, 13, 14, 15, 16, 17]
 control_motor_kp_list: [200.0, 200.0, 200.0, 200.0, 80.0, 80.0, 80.0]
 control_motor_kd_list: [30.0, 30.0, 30.0, 30.0, 5.0, 5.0, 5.0]
-reset_motor_pos_list:
+reset_postures:
   liftup: [-0.7854, 0.5236, -0.5236, -0.7854, -0.5236, 0.0, 0.0]
   liftdown: [0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0]
+  nature: [-0.2, 0.2, 0.2, -1.4, -1.4, -0.2, 0.1]
 gripper_sides: [left]
 control_mode: pd

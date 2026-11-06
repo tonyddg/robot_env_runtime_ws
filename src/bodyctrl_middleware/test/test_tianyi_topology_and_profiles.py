@@ -100,19 +100,40 @@ def test_topologies_define_consistent_hardware_dimensions() -> None:
 
     assert len(left.arm_motor_list) == 7
     assert left.gripper_sides == ["left"]
+    assert "nature" in left.reset_postures
     assert len(bimanual.arm_motor_list) == 14
     assert bimanual.gripper_sides == ["left", "right"]
     for topology in (left, bimanual):
         assert len(topology.control_motor_kp_list) == len(topology.arm_motor_list)
         assert len(topology.control_motor_kd_list) == len(topology.arm_motor_list)
-        assert len(topology.reset_motor_pos_list.liftup) == len(topology.arm_motor_list)
-        assert len(topology.reset_motor_pos_list.liftdown) == len(topology.arm_motor_list)
+        assert topology.reset_postures
+        for positions in topology.reset_postures.values():
+            assert len(positions) == len(topology.arm_motor_list)
 
 
 def test_topology_rejects_partial_control_arrays() -> None:
     raw = yaml.safe_load((PROFILE_ROOT / "topology" / "left.yaml").read_text())
     raw["control_motor_kp_list"] = raw["control_motor_kp_list"][:-1]
     with pytest.raises(ValueError, match="requires 7 values"):
+        TianyiTopologyConfig.model_validate(raw)
+
+
+def test_topology_loads_every_reset_posture_dynamically() -> None:
+    raw = yaml.safe_load((PROFILE_ROOT / "topology" / "left.yaml").read_text())
+    raw["reset_postures"]["custom"] = [0.0] * 7
+
+    topology = TianyiTopologyConfig.model_validate(raw)
+
+    assert topology.reset_postures["custom"] == [0.0] * 7
+    assert set(topology.reset_postures) == {"liftup", "liftdown", "nature", "custom"}
+
+
+@pytest.mark.parametrize("reset_postures", [{}, {"bad": []}, {"": [0.0] * 7}])
+def test_topology_rejects_invalid_reset_posture_mappings(reset_postures) -> None:
+    raw = yaml.safe_load((PROFILE_ROOT / "topology" / "left.yaml").read_text())
+    raw["reset_postures"] = reset_postures
+
+    with pytest.raises(ValueError):
         TianyiTopologyConfig.model_validate(raw)
 
 

@@ -7,8 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from bodyctrl_middleware.tianyi.hardware.topology import load_topology
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 LAUNCH_PATH = (
-    Path(__file__).resolve().parents[1]
+    PACKAGE_ROOT
     / "launch"
     / "wholebody_node.launch.py"
 )
@@ -49,3 +52,16 @@ def test_runtime_remaps_only_when_using_reflect() -> None:
         "reflect",
         "/custom/reflect",
     ) == [("/arm/status", "/custom/reflect")]
+
+
+def test_launch_selects_any_topology_reset_posture() -> None:
+    topology = load_topology(
+        PACKAGE_ROOT / "config" / "tianyi" / "topology" / "left.yaml"
+    )
+    module = _launch_module()
+
+    assert module._select_reset_posture(topology, "nature") == (
+        topology.reset_postures["nature"]
+    )
+    with pytest.raises(RuntimeError, match="available"):
+        module._select_reset_posture(topology, "missing")

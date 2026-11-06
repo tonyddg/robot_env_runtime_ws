@@ -117,6 +117,16 @@ def make_arm_state_reflect_node(
     )
 
 
+def _select_reset_posture(topology, posture_name: str) -> list[float]:
+    """Select one topology-defined reset posture or report available names."""
+    if posture_name not in topology.reset_postures:
+        raise RuntimeError(
+            f"unknown reset_posture_type {posture_name!r}; "
+            f"available: {sorted(topology.reset_postures)}"
+        )
+    return list(topology.reset_postures[posture_name])
+
+
 def launch_setup(context, *args, **kwargs):
     """Build the selected startup mode."""
     del args, kwargs
@@ -164,10 +174,8 @@ def launch_setup(context, *args, **kwargs):
     nodes = []
     if launch_control:
         reset_posture_type = _perform(context, "reset_posture_type")
-        if reset_posture_type not in ("liftup", "liftdown"):
-            raise RuntimeError("reset_posture_type must be liftup or liftdown")
-        reset_motor_pos_list = getattr(
-            topology.reset_motor_pos_list,
+        reset_motor_pos_list = _select_reset_posture(
+            topology,
             reset_posture_type,
         )
         nodes.extend([
@@ -340,7 +348,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "reset_posture_type",
             default_value="liftup",
-            description="初始化姿态: liftup / liftdown",
+            description="初始化姿态名称，必须存在于 topology reset_postures",
         ),
         DeclareLaunchArgument(
             "profile_path",
