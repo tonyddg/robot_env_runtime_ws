@@ -4,6 +4,11 @@ tianyi_tiansuo_runtime:
     config.execution.mode: single
     config.execution.enable_timing: true
 
+    config.base_reset_sampling.enable: true
+    config.base_reset_sampling.x_range: [-0.1, 0.1]
+    config.base_reset_sampling.y_range: [-0.4, 0.4]
+    config.base_reset_sampling.yaw_range: [-0.3, 0.3]
+
     config.tele_tiansuo.reset_timeout: 120.0
     config.record.ask_before_save: true
     config.record.ask_before_next_episode: true

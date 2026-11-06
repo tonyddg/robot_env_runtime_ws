@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
+import h5py
 import pytest
 from pydantic import ValidationError
 
@@ -20,6 +23,7 @@ from bodyctrl_middleware.tianyi.node.common.execution import (
     ExecutionOptions,
     RecordExecution,
     RuntimeSession,
+    SingleExecution,
     make_execution,
 )
 from harness import FakeEnv, FakePolicy
@@ -125,6 +129,55 @@ def test_record_execution_writes_episode_and_closes_confirmation(
 
     assert list(tmp_path.glob("trajectory_*/episode_0000.h5py"))
     assert closed == [True]
+
+
+def test_single_execution_samples_first_reset_and_uses_final_target(
+    tmp_path: Path,
+) -> None:
+    session = replace(
+        _session(tmp_path),
+        env=FakeEnv(),
+        policy=FakePolicy(steps=1),
+        reset_kwargs_factory=lambda episode_index: {
+            "target_reset_point": [1.0, 2.0, 0.3],
+        },
+        final_reset_kwargs={
+            "target_reset_point": [0.0, 0.0, 0.0],
+        },
+    )
+
+    SingleExecution(session, enable_timing=False).run()
+
+    assert session.env.seen_reset_kwargs == [
+        {"target_reset_point": [1.0, 2.0, 0.3]},
+        {"target_reset_point": [0.0, 0.0, 0.0]},
+    ]
+
+
+def test_record_execution_saves_actual_reset_kwargs(tmp_path: Path) -> None:
+    session = replace(
+        _session(tmp_path),
+        reset_kwargs_factory=lambda episode_index: {
+            "target_reset_point": [0.2, -0.3, 0.1],
+        },
+    )
+    execution = RecordExecution(
+        session,
+        config=RecordConfig(
+            save_root=str(tmp_path),
+            max_steps=1,
+        ),
+        enable_timing=False,
+    )
+
+    execution.run()
+
+    episode = next(tmp_path.glob("trajectory_*/episode_0000.h5py"))
+    with h5py.File(episode, "r") as handle:
+        meta = json.loads(handle.attrs["meta"])
+    assert meta["reset_kwargs"] == {
+        "target_reset_point": [0.2, -0.3, 0.1],
+    }
 
 
 def test_action_mode_creates_server_but_no_record_writer(

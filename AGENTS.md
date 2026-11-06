@@ -185,6 +185,11 @@ runtime delta action
 `body_manual_reset` 是“多关节组移动/保持”控制节点，不等于通用机器人 reset
 框架；runtime 侧通过 `BodyManualReset` service 与 `ControlStatus` 判断完成。
 
+Tiansuo tele node 支持 `base_reset_sampling`：每次 episode 的 base reset 从
+`x_range/y_range/yaw_range` 独立均匀采样 `[x, y, yaw]`，最终 cleanup reset 使用
+`final_target_reset_point`。实际 `target_reset_point` 写入该 episode 的 root meta
+`reset_kwargs`，便于追踪实际初始位置。
+
 ## Profile 与新增能力
 
 Profile 的 compiler 会校验未知名称、重复项、维度、scale、action index 连续覆盖

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from bodyctrl_middleware.action import LoopActionServer, make_env_loop_operation
@@ -36,6 +36,21 @@ class RuntimeSession:
     profile_path: str
     plugin_config: Any
     reset_kwargs: Mapping[str, Any]
+    reset_kwargs_factory: Optional[
+        Callable[[int], Mapping[str, Any]]
+    ] = None
+    final_reset_kwargs: Mapping[str, Any] = field(default_factory=dict)
+
+
+def _episode_reset_kwargs(
+    session: RuntimeSession,
+    episode_index: int,
+) -> dict[str, Any]:
+    """Merge static reset parameters with dynamic episode overrides."""
+    kwargs = dict(session.reset_kwargs)
+    if session.reset_kwargs_factory is not None:
+        kwargs.update(dict(session.reset_kwargs_factory(episode_index)))
+    return kwargs
 
 
 @dataclass(frozen=True)
@@ -76,8 +91,10 @@ class SingleExecution:
             enable_timing=self._enable_timing,
             timing_tag="single loop",
         )
-        loop.loop(reset_kwargs=dict(self._session.reset_kwargs))
-        self._session.env.reset()
+        loop.loop(
+            reset_kwargs=_episode_reset_kwargs(self._session, 0)
+        )
+        self._session.env.reset(**dict(self._session.final_reset_kwargs))
 
     def close(self) -> None:
         """Release resources; single mode owns no extra resources."""
@@ -148,7 +165,21 @@ class RecordExecution:
             debug_timing=self._enable_timing,
             logger=self._session.logger.get_child("record"),
             reset_kwargs=dict(self._session.reset_kwargs),
+            reset_kwargs_factory=self._session.reset_kwargs_factory,
+            final_reset_kwargs=dict(self._session.final_reset_kwargs),
+            episode_meta_factory=self._episode_meta,
         )
+
+    def _episode_meta(
+        self,
+        episode_index: int,
+        reset_kwargs: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Add the actual per-episode reset parameters to root metadata."""
+        del episode_index
+        meta = dict(self._meta)
+        meta["reset_kwargs"] = dict(reset_kwargs)
+        return meta
 
     def close(self) -> None:
         """Close the mode-owned confirmation provider once."""

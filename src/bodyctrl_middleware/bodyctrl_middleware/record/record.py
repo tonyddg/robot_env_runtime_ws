@@ -346,7 +346,14 @@ def collect_multi(
     debug_timing: bool = False,
     logger: LoggerLike | None = None,
     # 调用方可以通过 reset_kwargs 注入额外参数给 env.reset()
-    reset_kwargs: Optional[dict[str, Any]] = None
+    reset_kwargs: Optional[dict[str, Any]] = None,
+    reset_kwargs_factory: Optional[
+        Callable[[int], Mapping[str, Any]]
+    ] = None,
+    final_reset_kwargs: Optional[Mapping[str, Any]] = None,
+    episode_meta_factory: Optional[
+        Callable[[int, Mapping[str, Any]], Mapping[str, Any]]
+    ] = None,
 ) -> int:
     """
     连续采集多个 episode，返回成功保存的数量.
@@ -355,6 +362,9 @@ def collect_multi(
     - runtime 一旦 latch fault 就停止（``STOPPED`` 不算：下一轮 ``reset()`` 会恢复）；
     - 只有 ``ask_before_next_episode=True`` 时才会在每轮结束后询问是否继续
       （默认跑完一轮就退出，避免无人值守时无休止采集）；此时无法取得输入 → 不继续。
+    - ``reset_kwargs_factory(episode_index)`` 可为每轮生成额外 reset 参数；
+    - 用户结束采集后的 cleanup reset 使用 ``final_reset_kwargs``；
+    - ``episode_meta_factory`` 可把本次实际 reset 参数写入 episode meta。
     """
     logger = NULL_LOGGER if logger is None else logger
     save_root = Path(save_root)
@@ -366,10 +376,20 @@ def collect_multi(
     saved = 0
 
     while True:
+        episode_reset_kwargs = dict(reset_kwargs or {})
+        if reset_kwargs_factory is not None:
+            episode_reset_kwargs.update(
+                dict(reset_kwargs_factory(episode_index))
+            )
+        episode_meta = (
+            meta
+            if episode_meta_factory is None
+            else episode_meta_factory(episode_index, episode_reset_kwargs)
+        )
         try:
             is_saved = collect_once(
                 env, policy, episode_index, save_dir,
-                meta = meta, action_meta = action_meta,
+                meta = episode_meta, action_meta = action_meta,
                 batch_size = batch_size, ask_before_save = ask_before_save,
                 confirm = confirm, on_unavailable = on_unavailable,
                 stop_before_confirm = stop_before_confirm,
@@ -382,7 +402,7 @@ def collect_multi(
                 buffer_warn_bytes = buffer_warn_bytes,
                 debug_timing = debug_timing,
                 logger = logger,
-                reset_kwargs = reset_kwargs
+                reset_kwargs = episode_reset_kwargs
             )
         except ConfirmUnavailableError as exc:
             if exc.saved:
@@ -407,7 +427,12 @@ def collect_multi(
             logger = logger,
         )
         if not should_continue:
-            env.reset(**(reset_kwargs or {}))  # 正常数据采集时进行复位
+            cleanup_kwargs = (
+                reset_kwargs
+                if final_reset_kwargs is None
+                else final_reset_kwargs
+            )
+            env.reset(**dict(cleanup_kwargs or {}))
             break
 
     logger.info(f"数据采集结束, 共保存 {saved} 条 episode")

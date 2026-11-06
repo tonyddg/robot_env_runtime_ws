@@ -147,6 +147,47 @@ def test_collect_multi_creates_trajectory_dir_and_numbers_episodes(tmp_path) -> 
     assert env.resets == 1
 
 
+def test_collect_multi_uses_episode_reset_factory_and_final_fixed_target(
+    tmp_path,
+) -> None:
+    env = FakeEnv()
+    policy = FakePolicy(steps=1)
+    factory_calls: list[int] = []
+    continue_calls = {"count": 0}
+
+    def reset_factory(episode_index: int):
+        factory_calls.append(episode_index)
+        return {
+            "target_reset_point": [float(episode_index), 0.0, 0.0],
+        }
+
+    def confirm(prompt: str) -> bool:
+        assert "继续" in prompt
+        continue_calls["count"] += 1
+        return continue_calls["count"] == 1
+
+    saved = collect_multi(
+        env,
+        policy,
+        tmp_path,
+        episode_start=3,
+        ask_before_next_episode=True,
+        confirm=confirm,
+        reset_kwargs_factory=reset_factory,
+        final_reset_kwargs={
+            "target_reset_point": [0.0, 0.0, 0.0],
+        },
+    )
+
+    assert saved == 2
+    assert factory_calls == [3, 4]
+    assert env.seen_reset_kwargs == [
+        {"target_reset_point": [3.0, 0.0, 0.0]},
+        {"target_reset_point": [4.0, 0.0, 0.0]},
+        {"target_reset_point": [0.0, 0.0, 0.0]},
+    ]
+
+
 def test_build_record_meta_and_action_meta(tmp_path) -> None:
     """meta 组装：profile YAML + plugin 配置 + policy 描述；action_meta 取 route/scale."""
     profile_path = tmp_path / "profile.yaml"

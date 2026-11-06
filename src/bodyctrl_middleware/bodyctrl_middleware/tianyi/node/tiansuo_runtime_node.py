@@ -21,6 +21,10 @@ from bodyctrl_middleware.tianyi.node.common.execution import (
 from bodyctrl_middleware.tianyi.node.common.policy_factory import (
     make_tiansuo_policy,
 )
+from bodyctrl_middleware.tianyi.node.common.reset_sampling import (
+    BaseResetSamplingConfig,
+    BaseResetTargetSampler,
+)
 from bodyctrl_middleware.tianyi.plugin.tianyi_base import (
     TianyiBaseConfig,
     tianyi_base,
@@ -88,6 +92,9 @@ class Config(BaseModel):
         default_factory=SingleRecordExecutionConfig,
     )
     record: TiansuoRecordConfig = RosField(default_factory=TiansuoRecordConfig)
+    base_reset_sampling: BaseResetSamplingConfig = RosField(
+        default_factory=BaseResetSamplingConfig,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -139,6 +146,20 @@ def main(argv: Optional[list[str]] = None) -> None:
             f"gc_threshold={tuning['gc_threshold']} "
             f"switch_interval={tuning['switch_interval_sec']:.4f}s"
         )
+        reset_kwargs_factory = None
+        final_reset_kwargs = {}
+        if config.base_reset_sampling.enable:
+            sampler = BaseResetTargetSampler(config.base_reset_sampling)
+
+            def reset_kwargs_factory(episode_index: int):
+                sampled = sampler.reset_kwargs(episode_index)
+                logger.info(
+                    f"tele episode {episode_index} base reset target: "
+                    f"{sampled['target_reset_point']}"
+                )
+                return sampled
+
+            final_reset_kwargs = sampler.final_reset_kwargs()
         session = RuntimeSession(
             executor=executor,
             env=env,
@@ -147,6 +168,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             profile_path=profile_path,
             plugin_config=config,
             reset_kwargs=reset_kwargs,
+            reset_kwargs_factory=reset_kwargs_factory,
+            final_reset_kwargs=final_reset_kwargs,
         )
         execution = make_execution(
             config.execution.mode,
