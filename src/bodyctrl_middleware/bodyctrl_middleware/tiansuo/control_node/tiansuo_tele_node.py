@@ -93,7 +93,7 @@ class BaseControlConfig(BaseModel):
         description = "摇杆绝对输入不超过该值时主动刹车",
     )
     max_linear_acceleration: float = RosField(
-        0.15, ge = 0.0, read_only = True,
+        0.05, ge = 0.0, read_only = True,
         description = "最大线加速度与减速度, m/s^2",
     )
     max_angular_acceleration: float = RosField(
@@ -101,7 +101,7 @@ class BaseControlConfig(BaseModel):
         description = "最大角加速度与减速度, rad/s^2",
     )
     max_linear_speed: float = RosField(
-        0.3, ge = 0.0, read_only = True,
+        0.1, ge = 0.0, read_only = True,
         description = "最大线速度, m/s",
     )
     max_angular_speed: float = RosField(
