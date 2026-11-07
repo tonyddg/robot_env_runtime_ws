@@ -4,3 +4,7 @@ tiansuo_tele_node:
     config.base_side: "left"
     config.button_side: "left"
     config.reset_confirm_side: "left"
+    config.gripper_trigger_mode: "toggle"
+    config.gripper_trigger_high_threshold: 0.8
+    config.gripper_trigger_low_threshold: 0.4
+    config.gripper_trigger_initial_openness: 1.0

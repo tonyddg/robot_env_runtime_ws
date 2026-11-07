@@ -31,6 +31,7 @@ from bodyctrl_middleware.tiansuo.hardware.constants import (
     trigger_to_openness,
 )
 from bodyctrl_middleware.tiansuo.hardware.tiansuo_client import TiansuoClient
+from bodyctrl_middleware.tiansuo.hardware.trigger import TriggerToggleState
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamBridge
 
 ArmSide = Literal["left", "right", "bimanual"]
@@ -173,6 +174,22 @@ class TiansuoTeleConfig(BaseModel):
         True, read_only = True,
         description = "是否发布 /arm/<side> 原始 7 维关节数据",
     )
+    gripper_trigger_mode: Literal["continuous", "toggle"] = RosField(
+        "toggle", read_only = True,
+        description = "夹爪 trigger 模式：continuous 连续映射，toggle 边沿翻转",
+    )
+    gripper_trigger_high_threshold: float = RosField(
+        0.8, ge = 0.0, le = 1.0, read_only = True,
+        description = "toggle 模式下触发翻转的 trigger 高阈值",
+    )
+    gripper_trigger_low_threshold: float = RosField(
+        0.2, ge = 0.0, le = 1.0, read_only = True,
+        description = "toggle 模式下重新武装 trigger 的低阈值",
+    )
+    gripper_trigger_initial_openness: float = RosField(
+        1.0, ge = -1.0, le = 1.0, read_only = True,
+        description = "toggle 模式下初始夹爪 openness，只允许 -1 或 1",
+    )
 
     left_arm_calibration: ArmCalibrationConfig = RosField(
         default_factory = ArmCalibrationConfig,
@@ -181,6 +198,22 @@ class TiansuoTeleConfig(BaseModel):
         default_factory = ArmCalibrationConfig,
     )
     base: BaseControlConfig = RosField(default_factory = BaseControlConfig)
+
+    @model_validator(mode = "after")
+    def validate_trigger_toggle(self):
+        """Validate toggle threshold ordering and endpoint initial value."""
+        if not (
+            self.gripper_trigger_low_threshold
+            < self.gripper_trigger_high_threshold
+        ):
+            raise ValueError(
+                "gripper trigger low threshold must be below high threshold"
+            )
+        if self.gripper_trigger_initial_openness not in (-1.0, 1.0):
+            raise ValueError(
+                "gripper trigger initial openness must be -1 or 1"
+            )
+        return self
 
 
 @dataclass(frozen = True)
@@ -423,6 +456,14 @@ class TiansuoTeleNode(Node):
         self._last_payload_time: Optional[float] = None
         self._latest_frame: Optional[ParsedActDict] = None
         self._reset_button_armed = False
+        self._gripper_toggle_states = {
+            side: TriggerToggleState(
+                high_threshold = self.config.gripper_trigger_high_threshold,
+                low_threshold = self.config.gripper_trigger_low_threshold,
+                initial_openness = self.config.gripper_trigger_initial_openness,
+            )
+            for side in self._gripper_sides
+        }
         self._closed = False
 
         if tele_agent is None:
@@ -485,7 +526,13 @@ class TiansuoTeleNode(Node):
 
         for side in self._gripper_sides:
             gripper_msg = Float32()
-            gripper_msg.data = trigger_to_openness(frame.trigger[side])
+            if self.config.gripper_trigger_mode == "continuous":
+                openness = trigger_to_openness(frame.trigger[side])
+            else:
+                openness = self._gripper_toggle_states[side].update(
+                    frame.trigger[side]
+                )
+            gripper_msg.data = openness
             self._gripper_pubs[side].publish(gripper_msg)
 
         selected_button = frame.button[self.config.button_side]

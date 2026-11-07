@@ -6,6 +6,7 @@ import copy
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from bodyctrl_middleware.tiansuo.control_node.tiansuo_tele_node import (
     BaseControlConfig,
@@ -21,6 +22,7 @@ from bodyctrl_middleware.tiansuo.hardware.constants import (
     tianyi_arm_limits,
     trigger_to_openness,
 )
+from bodyctrl_middleware.tiansuo.hardware.trigger import TriggerToggleState
 from bodyctrl_middleware_interface.srv import TiansuoReset
 from robot_env_runtime.control_node import ControlState
 from std_srvs.srv import Trigger
@@ -77,6 +79,8 @@ def _act_dict(
     *,
     left_button3: float = 0.0,
     left_joystick: tuple[float, float] = (0.0, 0.0),
+    left_trigger: float = 0.0,
+    right_trigger: float = 0.25,
 ) -> dict:
     return {
         "timestamp": 1,
@@ -86,7 +90,7 @@ def _act_dict(
                 "right": [0.2] * 7,
             }
         },
-        "trigger": {"left": 0.0, "right": 0.25},
+        "trigger": {"left": left_trigger, "right": right_trigger},
         "joystick": {
             "left": list(left_joystick),
             "right": [0.0, 0.0],
@@ -145,6 +149,8 @@ def _tick(node: TiansuoTeleNode, clock: ManualClock, tele: FakeTeleTiensuo) -> N
     tele.update(_act_dict(
         left_button3 = float(tele.state.get("button", {}).get("left", [0, 0, 0])[2]),
         left_joystick = tuple(tele.state["joystick"]["left"]),
+        left_trigger = float(tele.state["trigger"]["left"]),
+        right_trigger = float(tele.state["trigger"]["right"]),
     ))
     node._on_tele_timer()
 
@@ -171,6 +177,34 @@ def test_trigger_to_openness_maps_and_clips() -> None:
     assert trigger_to_openness(1.0) == pytest.approx(-1.0)
     assert trigger_to_openness(-1.0) == pytest.approx(1.0)
     assert trigger_to_openness(2.0) == pytest.approx(-1.0)
+
+
+def test_trigger_toggle_requires_release_and_flips_once() -> None:
+    state = TriggerToggleState()
+
+    assert state.update(1.0) == pytest.approx(1.0)
+    assert state.update(0.2) == pytest.approx(1.0)
+    assert state.update(0.8) == pytest.approx(-1.0)
+    assert state.update(1.0) == pytest.approx(-1.0)
+    assert state.update(0.5) == pytest.approx(-1.0)
+    assert state.update(0.0) == pytest.approx(-1.0)
+    assert state.update(0.9) == pytest.approx(1.0)
+
+
+def test_trigger_toggle_rejects_invalid_config_and_values() -> None:
+    with pytest.raises(ValueError, match="thresholds"):
+        TriggerToggleState(high_threshold=0.2, low_threshold=0.2)
+    with pytest.raises(ValueError, match="initial openness"):
+        TriggerToggleState(initial_openness=0.0)
+    with pytest.raises(ValueError, match="finite"):
+        TriggerToggleState().update(float("nan"))
+    with pytest.raises(ValidationError, match="low threshold"):
+        TiansuoTeleConfig(
+            gripper_trigger_high_threshold=0.2,
+            gripper_trigger_low_threshold=0.2,
+        )
+    with pytest.raises(ValidationError, match="initial openness"):
+        TiansuoTeleConfig(gripper_trigger_initial_openness=0.0)
 
 
 def test_parse_act_dict_accepts_documented_shape() -> None:
@@ -257,7 +291,12 @@ def test_node_publishes_bimanual_teleop_and_transitions_to_ready(
 ) -> None:
     clock = ManualClock()
     tele = FakeTeleTiensuo(_act_dict())
-    node = _make_node(rclpy_context, tele = tele, clock = clock)
+    node = _make_node(
+        rclpy_context,
+        tele = tele,
+        clock = clock,
+        config = TiansuoTeleConfig(gripper_trigger_mode = "continuous"),
+    )
 
     node._on_tele_timer()
 
@@ -270,6 +309,38 @@ def test_node_publishes_bimanual_teleop_and_transitions_to_ready(
     assert node._button_pubs[0].messages[-1].data is True
     assert node._button_pubs[1].messages[-1].data is False
     assert node._cmd_vel_pub.messages[-1].linear.x == 0.0
+
+
+def test_node_defaults_to_toggle_gripper_trigger(
+    rclpy_context: list[TiansuoTeleNode],
+) -> None:
+    clock = ManualClock()
+    tele = FakeTeleTiensuo(_act_dict(left_trigger = 0.0, right_trigger = 0.25))
+    node = _make_node(rclpy_context, tele = tele, clock = clock)
+
+    node._on_tele_timer()
+    assert node.config.gripper_trigger_mode == "toggle"
+    assert node._gripper_pubs["left"].messages[-1].data == pytest.approx(1.0)
+    assert node._gripper_pubs["right"].messages[-1].data == pytest.approx(1.0)
+
+    clock.advance(1.0 / node.config.control_rate)
+    tele.update(_act_dict(left_trigger = 0.9, right_trigger = 0.25))
+    node._on_tele_timer()
+    assert node._gripper_pubs["left"].messages[-1].data == pytest.approx(-1.0)
+    assert node._gripper_pubs["right"].messages[-1].data == pytest.approx(1.0)
+
+    clock.advance(1.0 / node.config.control_rate)
+    tele.update(_act_dict(left_trigger = 1.0, right_trigger = 0.25))
+    node._on_tele_timer()
+    assert node._gripper_pubs["left"].messages[-1].data == pytest.approx(-1.0)
+
+    clock.advance(1.0 / node.config.control_rate)
+    tele.update(_act_dict(left_trigger = 0.0, right_trigger = 0.25))
+    node._on_tele_timer()
+    clock.advance(1.0 / node.config.control_rate)
+    tele.update(_act_dict(left_trigger = 1.0, right_trigger = 0.25))
+    node._on_tele_timer()
+    assert node._gripper_pubs["left"].messages[-1].data == pytest.approx(1.0)
 
 
 def test_node_can_disable_raw_arm_topic(

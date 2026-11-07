@@ -190,6 +190,10 @@ Tiansuo tele node 支持 `base_reset_sampling`：每次 episode 的 base reset �
 `final_target_reset_point`。实际 `target_reset_point` 写入该 episode 的 root meta
 `reset_kwargs`，便于追踪实际初始位置。
 
+Tiansuo 夹爪 trigger 默认使用 `toggle`：每侧必须先回落到 low threshold，再越过
+high threshold 才翻转一次 openness；按住 trigger 不会连续翻转。连续映射仍可通过
+`gripper_trigger_mode: continuous` 启用。
+
 ## Profile 与新增能力
 
 Profile 的 compiler 会校验未知名称、重复项、维度、scale、action index 连续覆盖
