@@ -26,7 +26,10 @@ from robot_env_runtime.extension.ros2.service_reset import (
     RosServiceResetStrategy,
 )
 from robot_env_interface.msg import ControlStatus
-from robot_env_runtime.extension.ros2.protocol import (ControlStatusAdapter,)
+from robot_env_runtime.extension.ros2.protocol import (
+    CONTROL_STATUS_SUBSCRIBER_QOS,
+    ControlStatusAdapter,
+)
 
 def _make_reset_target_req(
     # 被控电机 id
@@ -170,6 +173,7 @@ def _regiset_tianyi_body_manual_reset_control_state(
             msg_type = ControlStatus,
             adapter = ControlStatusAdapter(),
             logger = ctx.logger,
+            qos = CONTROL_STATUS_SUBSCRIBER_QOS,
         )
 
     robot_plugin.state(

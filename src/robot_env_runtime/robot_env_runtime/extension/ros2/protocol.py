@@ -23,6 +23,7 @@ from robot_env_runtime.core.types import (
     ServiceCaller,
 )
 from robot_env_runtime.extension.ros2.state_adapter import RosStateAdapter, stamp_to_seconds
+from robot_env_runtime.ros2.qos import make_qos
 
 
 class ControlState(IntEnum):
@@ -37,6 +38,12 @@ class ControlState(IntEnum):
 
 
 ACCEPTING_STATES: tuple[ControlState, ...] = (ControlState.READY, ControlState.ACTIVE)
+
+# ControlStatus is a periodic latest-state stream. Publishers keep reliability for
+# compatibility with existing consumers, while runtime subscriptions prefer the
+# newest sample and never build a backlog of stale states.
+CONTROL_STATUS_PUBLISHER_QOS = make_qos(depth=10, reliability="reliable")
+CONTROL_STATUS_SUBSCRIBER_QOS = make_qos(depth=1, reliability="best_effort")
 
 
 def _verify_msg_constants() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from rclpy.qos import HistoryPolicy, ReliabilityPolicy
 
 from robot_env_runtime.control_node import (
     ControlStateMachine,
@@ -65,6 +66,16 @@ def test_periodic_timer_republishes_current_snapshot() -> None:
     assert fired == 1
     assert len(node.published(TOPIC)) == before + 1
     assert publisher.publish_failures == 0
+
+
+def test_publisher_uses_reliable_depth_ten_default_qos() -> None:
+    """The periodic writer remains compatible with reliable consumers."""
+    node, _, _ = _make()
+    publisher = node.publisher(TOPIC)
+    assert publisher is not None
+    assert publisher.qos.reliability == ReliabilityPolicy.RELIABLE
+    assert publisher.qos.history == HistoryPolicy.KEEP_LAST
+    assert publisher.qos.depth == 10
 
 
 def test_on_initialized_only_from_initializing() -> None:

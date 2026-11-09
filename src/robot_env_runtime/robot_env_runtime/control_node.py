@@ -31,9 +31,12 @@ from typing import Any, Callable, Optional
 
 from robot_env_interface.msg import ControlStatus
 
-from robot_env_runtime.extension.ros2.protocol import ACCEPTING_STATES, ControlState
+from robot_env_runtime.extension.ros2.protocol import (
+    ACCEPTING_STATES,
+    CONTROL_STATUS_PUBLISHER_QOS,
+    ControlState,
+)
 from robot_env_runtime.logging import LoggerLike
-from robot_env_runtime.ros2.qos import make_qos
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,9 @@ class ControlStatusPublisher:
         self._stamp = bool(stamp)
         self._provider: Callable[[], ControlStatusSnapshot] | None = None
         self._publisher = node.create_publisher(
-            ControlStatus, topic, make_qos(depth=10) if qos is None else qos
+            ControlStatus,
+            topic,
+            CONTROL_STATUS_PUBLISHER_QOS if qos is None else qos,
         )
         self._timer = node.create_timer(1.0 / rate, self._on_timer) if autostart else None
         self._closed = False

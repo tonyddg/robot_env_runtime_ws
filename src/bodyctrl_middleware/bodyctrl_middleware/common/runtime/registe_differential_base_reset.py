@@ -17,7 +17,10 @@ from robot_env_runtime.extension.ros2.service_reset import (
     RosServiceResetStrategy,
 )
 from robot_env_interface.msg import ControlStatus
-from robot_env_runtime.extension.ros2.protocol import (ControlStatusAdapter,)
+from robot_env_runtime.extension.ros2.protocol import (
+    CONTROL_STATUS_SUBSCRIBER_QOS,
+    ControlStatusAdapter,
+)
 
 class DifferentialBaseManualResetAdapter(ResetServiceAdapter):
 
@@ -69,6 +72,7 @@ def registe_differential_base_manual_reset(
             msg_type = ControlStatus,
             adapter = ControlStatusAdapter(),
             logger = ctx.logger,
+            qos = CONTROL_STATUS_SUBSCRIBER_QOS,
         )
 
     def reset_factory(ctx: Any, states: Mapping[str, Any]) -> RosServiceResetStrategy:

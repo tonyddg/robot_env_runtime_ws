@@ -31,6 +31,7 @@ from robot_env_runtime.extension.ros2.async_topic_state import AsyncRosTopicStat
 from robot_env_runtime.extension.ros2.controller_adapter import RosControllerAdapter
 from robot_env_runtime.extension.ros2.image_state import CompressedImageAdapter
 from robot_env_runtime.extension.ros2.protocol import (
+    CONTROL_STATUS_SUBSCRIBER_QOS,
     ControlStatusAdapter,
     LegacyProtocol,
     ManagedControlProtocol,
@@ -306,6 +307,7 @@ def create_example_robot_plugin(
             msg_type=ControlStatus,
             adapter=ControlStatusAdapter(),
             logger=ctx.logger,
+            qos=CONTROL_STATUS_SUBSCRIBER_QOS,
         )
 
     def gripper_state_factory(ctx: Any) -> RosTopicStateSource:

@@ -18,6 +18,7 @@ from robot_env_runtime.ros2.services import RosTriggerCaller
 from robot_env_interface.msg import ControlStatus
 from robot_env_runtime.core.types import CommandContext
 from robot_env_runtime.extension.ros2.protocol import (
+    CONTROL_STATUS_SUBSCRIBER_QOS,
     ControlStatusAdapter,
     ManagedControlProtocol,
 )
@@ -28,6 +29,7 @@ from robot_env_runtime.ros2.context import ComponentContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
 from robot_env_runtime.ros2.qos import make_qos
+
 
 class RobotiqGripperControllerAdapter(RosControllerAdapter):
     def __init__(self):
@@ -107,7 +109,8 @@ def registe_robotiq_gripper_openness_control_and_obs(
             topic = status_topic_name,
             msg_type = ControlStatus,
             adapter = ControlStatusAdapter(),
-            logger = ctx.logger,            
+            logger = ctx.logger,
+            qos = CONTROL_STATUS_SUBSCRIBER_QOS,
         )
     def obs_state_factory(ctx: ComponentContext) -> RosTopicStateSource:
         return RosTopicStateSource(

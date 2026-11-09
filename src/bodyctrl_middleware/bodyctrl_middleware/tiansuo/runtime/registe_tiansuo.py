@@ -16,7 +16,10 @@ from robot_env_runtime.core.state_view import StateInput, StateView
 from robot_env_runtime.core.types import ResetContext
 from robot_env_runtime.extension.observation import ObservationSpec, TransformObservation
 from robot_env_runtime.extension.plugin import RobotPlugin
-from robot_env_runtime.extension.ros2.protocol import ControlStatusAdapter
+from robot_env_runtime.extension.ros2.protocol import (
+    CONTROL_STATUS_SUBSCRIBER_QOS,
+    ControlStatusAdapter,
+)
 from robot_env_runtime.extension.ros2.service_reset import (
     ManagedControlResetCompletionPolicy,
     ResetServiceAdapter,
@@ -577,6 +580,7 @@ def registe_tiansuo(
             msg_type=ControlStatus,
             adapter=ControlStatusAdapter(),
             logger=ctx.logger,
+            qos=CONTROL_STATUS_SUBSCRIBER_QOS,
         )
 
     robot_plugin.state(config.tianyi_reset_qpos_state_name, reset_qpos_factory)
