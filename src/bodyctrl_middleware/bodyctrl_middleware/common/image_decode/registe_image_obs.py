@@ -323,7 +323,7 @@ def registe_image_obs(
     robot_plugin: RobotPlugin,
     config: Optional[ImageStateAdapterConfig] = None,
 
-    image_obs_name: str = "iamge",
+    image_obs_name: str = "image",
     image_state_name: Optional[str] = None,
 
     # None 关闭诊断日志；0 表示每次打印；正数交给 ROS logger 原生节流
