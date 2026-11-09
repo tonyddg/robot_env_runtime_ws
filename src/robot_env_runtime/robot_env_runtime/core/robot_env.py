@@ -806,6 +806,23 @@ class RobotEnv:
                     continue
                 age = sample.age(snapshot.captured_at)
                 if age > state_input.max_age_sec:
+                    source = self._state_store.source(state_input.source)
+                    source_topic = getattr(source, "topic", None)
+                    snapshot_states = {
+                        snapshot_name: {
+                            "age": snapshot_sample.age(snapshot.captured_at),
+                            "sequence": snapshot_sample.sequence,
+                        }
+                        for snapshot_name in snapshot.names()
+                        if (
+                            snapshot_sample := snapshot.sample(snapshot_name)
+                        ) is not None
+                    }
+                    states_text = ", ".join(
+                        f"{snapshot_name}="
+                        f"{state['age']:.4f}s#{state['sequence']}"
+                        for snapshot_name, state in snapshot_states.items()
+                    )
                     received_age = max(
                         0.0,
                         snapshot.captured_at - sample.received_at,
@@ -828,13 +845,17 @@ class RobotEnv:
                         f"controller {name!r} state {state_input.source!r} is stale: "
                         f"age={age:.4f}s exceeds max_age_sec="
                         f"{state_input.max_age_sec}s "
-                        f"(sequence={sample.sequence}, "
+                        f"(source_topic={source_topic!r}, "
+                        f"sequence={sample.sequence}, "
                         f"received_age={received_age:.4f}s, "
                         f"source_age={source_age_text}, "
-                        f"decode={decode_sec:.6f}s)",
+                        f"decode={decode_sec:.6f}s, "
+                        f"snapshot_states=[{states_text}])",
                         details={
                             "controller": name,
                             "source": state_input.source,
+                            "source_topic": source_topic,
+                            "snapshot_states": snapshot_states,
                             "age": age,
                             "max_age_sec": state_input.max_age_sec,
                             "snapshot_captured_at": snapshot.captured_at,
