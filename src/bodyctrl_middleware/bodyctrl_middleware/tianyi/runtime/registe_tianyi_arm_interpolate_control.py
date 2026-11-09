@@ -17,12 +17,18 @@ from robot_env_runtime.extension.ros2.publisher_controller import RosPublisherCo
 from robot_env_runtime.ros2.services import RosTriggerCaller
 from robot_env_interface.msg import ControlStatus
 from robot_env_runtime.core.types import CommandContext, ControllerCheck, CommandRecord
+from robot_env_runtime.ros2.qos import make_qos
 from robot_env_runtime.extension.ros2.protocol import (
     ControlStatusAdapter,
     ManagedControlProtocol,
 )
 
 from dataclasses import dataclass, field
+
+
+_CONTROL_STATUS_QOS = make_qos(depth=1, reliability="best_effort")
+
+
 @dataclass
 class TianyiArmInterpolateAdapterConfig:
 
@@ -242,6 +248,7 @@ def registe_tianyi_arm_interpolate_control(
             msg_type = ControlStatus,
             adapter = ControlStatusAdapter(),
             logger = ctx.logger,
+            qos = _CONTROL_STATUS_QOS,
         )
 
     def controller_factory(ctx: ComponentContext, states: Mapping[str, Any]) -> RosPublisherController:
