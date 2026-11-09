@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 import time
 from typing import Any, Callable, Literal, Mapping, Optional
 
@@ -36,6 +37,7 @@ from bodyctrl_middleware.utility.pydantic_ros2_params import RosField, RosParamB
 
 ArmSide = Literal["left", "right", "bimanual"]
 SingleSide = Literal["left", "right"]
+ENV_TIANSUO_IP = "ROBOTRUNTIME_TIANSUO_IP"
 
 
 class ArmCalibrationConfig(BaseModel):
@@ -130,8 +132,11 @@ class TiansuoTeleConfig(BaseModel):
     """``tiansuo_tele_node`` 的 ROS 参数。"""
 
     tiansuo_ip: str = RosField(
-        "10.11.57.214", min_length = 1, read_only = True,
-        description = "天梭 2 Pro 工控机 IP",
+        "", min_length = 1, read_only = True, validate_default = True,
+        description = (
+            "天梭 2 Pro 工控机 IP；为空时读取环境变量 "
+            f"{ENV_TIANSUO_IP}"
+        ),
     )
     root_name: str = RosField(
         "tiansuo_tele", min_length = 1, read_only = True,
@@ -198,6 +203,22 @@ class TiansuoTeleConfig(BaseModel):
         default_factory = ArmCalibrationConfig,
     )
     base: BaseControlConfig = RosField(default_factory = BaseControlConfig)
+
+    @field_validator("tiansuo_ip", mode = "before")
+    @classmethod
+    def resolve_tiansuo_ip(cls, value: Any) -> str:
+        """Resolve an empty parameter from the deployment environment."""
+        configured = "" if value is None else str(value).strip()
+        if configured:
+            return configured
+
+        from_env = os.environ.get(ENV_TIANSUO_IP, "").strip()
+        if from_env:
+            return from_env
+        raise ValueError(
+            "tiansuo_ip is empty and "
+            f"{ENV_TIANSUO_IP} is not set"
+        )
 
     @model_validator(mode = "after")
     def validate_trigger_toggle(self):

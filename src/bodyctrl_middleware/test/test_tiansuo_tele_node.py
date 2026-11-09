@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from bodyctrl_middleware.tiansuo.control_node.tiansuo_tele_node import (
+    ENV_TIANSUO_IP,
     BaseControlConfig,
     TiansuoTeleConfig,
     TiansuoTeleNode,
@@ -73,6 +74,12 @@ class FakeTeleTiensuo:
 
     def close(self) -> None:
         self.closed = True
+
+
+@pytest.fixture(autouse = True)
+def _tiansuo_ip_environment(monkeypatch) -> None:
+    """Keep node tests independent from the developer's Tiansuo environment."""
+    monkeypatch.setenv(ENV_TIANSUO_IP, "10.11.10.20")
 
 
 def _act_dict(
@@ -205,6 +212,32 @@ def test_trigger_toggle_rejects_invalid_config_and_values() -> None:
         )
     with pytest.raises(ValidationError, match="initial openness"):
         TiansuoTeleConfig(gripper_trigger_initial_openness=0.0)
+
+
+def test_tiansuo_ip_uses_environment_when_config_is_empty(monkeypatch) -> None:
+    """Empty YAML-like config resolves the deployment environment value."""
+    monkeypatch.setenv(ENV_TIANSUO_IP, " 10.11.10.21 ")
+
+    config = TiansuoTeleConfig(tiansuo_ip = "")
+
+    assert config.tiansuo_ip == "10.11.10.21"
+
+
+def test_tiansuo_ip_explicit_config_overrides_environment(monkeypatch) -> None:
+    """An explicit endpoint remains the highest-priority source."""
+    monkeypatch.setenv(ENV_TIANSUO_IP, "10.11.10.21")
+
+    config = TiansuoTeleConfig(tiansuo_ip = " 10.11.10.22 ")
+
+    assert config.tiansuo_ip == "10.11.10.22"
+
+
+def test_tiansuo_ip_requires_config_or_environment(monkeypatch) -> None:
+    """Fail during config construction instead of connecting to a stale IP."""
+    monkeypatch.delenv(ENV_TIANSUO_IP, raising = False)
+
+    with pytest.raises(ValidationError, match = ENV_TIANSUO_IP):
+        TiansuoTeleConfig(tiansuo_ip = "")
 
 
 def test_parse_act_dict_accepts_documented_shape() -> None:

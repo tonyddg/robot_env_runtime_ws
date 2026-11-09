@@ -1,6 +1,6 @@
 tiansuo_tele_node:
   ros__parameters:
-    config.tiansuo_ip: "10.11.57.214"
+    config.tiansuo_ip: ""
     config.base_side: "left"
     config.button_side: "left"
     config.reset_confirm_side: "left"
