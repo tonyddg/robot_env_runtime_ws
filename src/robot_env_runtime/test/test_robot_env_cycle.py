@@ -219,6 +219,36 @@ def test_required_state_missing_and_stale_latch_fault() -> None:
     assert env.fault.kind == FAULT_REQUIRED_STATE
 
 
+def test_required_state_stale_reports_received_and_source_age() -> None:
+    """Stale 诊断区分消息接收延迟与消息自带时间戳偏早."""
+    clock = FakeClock(start=100.0)
+    controller = FakeController(
+        "arm",
+        input_dim=3,
+        clock=clock,
+        state_inputs={"arm": StateInput("arm", required=True, max_age_sec=0.05)},
+    )
+    source = FakeStateSource("arm", clock=clock, value=(0.0, 0.0, 0.0))
+    env = simple_env(clock=clock, controller=controller, source=source)
+    env.reset()
+
+    sample = source.push(
+        (0.0, 0.0, 0.0),
+        source_stamp=clock.now() - 0.5,
+    )
+    with pytest.raises(RequiredStateStaleError) as exc_info:
+        env.wait_for_step(FakeInferenceFuture(done=True, action=ACTION))
+
+    details = exc_info.value.details
+    assert details["sample"]["sequence"] == sample.sequence
+    assert details["age"] == pytest.approx(0.6)
+    assert details["received_age_sec"] == pytest.approx(0.1)
+    assert details["source_age_sec"] == pytest.approx(0.6)
+    assert details["decode_sec"] == pytest.approx(0.0)
+    assert "received_age=0.1000s" in str(exc_info.value)
+    assert "source_age=0.6000s" in str(exc_info.value)
+
+
 def test_observation_timeout_latches_fault_and_stops() -> None:
     """Observation 过期导致 step 失败并 latch fault."""
     clock = FakeClock(start=10.0)

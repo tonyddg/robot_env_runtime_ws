@@ -806,15 +806,42 @@ class RobotEnv:
                     continue
                 age = sample.age(snapshot.captured_at)
                 if age > state_input.max_age_sec:
+                    received_age = max(
+                        0.0,
+                        snapshot.captured_at - sample.received_at,
+                    )
+                    source_age = (
+                        None
+                        if sample.source_stamp is None
+                        else max(
+                            0.0,
+                            snapshot.captured_at - sample.source_stamp,
+                        )
+                    )
+                    decode_sec = max(0.0, sample.ready_at - sample.received_at)
+                    source_age_text = (
+                        "n/a"
+                        if source_age is None
+                        else f"{source_age:.4f}s"
+                    )
                     raise RequiredStateStaleError(
                         f"controller {name!r} state {state_input.source!r} is stale: "
                         f"age={age:.4f}s exceeds max_age_sec="
-                        f"{state_input.max_age_sec}s",
+                        f"{state_input.max_age_sec}s "
+                        f"(sequence={sample.sequence}, "
+                        f"received_age={received_age:.4f}s, "
+                        f"source_age={source_age_text}, "
+                        f"decode={decode_sec:.6f}s)",
                         details={
                             "controller": name,
                             "source": state_input.source,
                             "age": age,
                             "max_age_sec": state_input.max_age_sec,
+                            "snapshot_captured_at": snapshot.captured_at,
+                            "sample": sample.as_dict(),
+                            "received_age_sec": received_age,
+                            "source_age_sec": source_age,
+                            "decode_sec": decode_sec,
                         },
                     )
 
