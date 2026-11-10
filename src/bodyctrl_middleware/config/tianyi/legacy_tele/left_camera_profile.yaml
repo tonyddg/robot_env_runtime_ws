@@ -15,7 +15,7 @@ actions:
   arm:
     controller: arm
     indices: [0, 1, 2, 3, 4, 5, 6]
-    scale: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+    scale: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
   base:
     controller: base
     indices: [7, 8]

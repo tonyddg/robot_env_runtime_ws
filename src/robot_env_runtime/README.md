@@ -568,7 +568,7 @@ Profile 只负责三件事：
 robot: example_robot
 observations: [arm_qpos, front_rgb]
 actions:
-  arm: {controller: arm, indices: [0, 1, 2, 3, 4, 5, 6], scale: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]}
+  arm: {controller: arm, indices: [0, 1, 2, 3, 4, 5, 6], scale: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]}
 reset: home
 runtime:
   control_period: 0.1
