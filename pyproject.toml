@@ -26,11 +26,18 @@ robotiq = [
     "pyserial>=3.5",
 ]
 
+vla-policy = [
+    "vla-bc-policy-temporal",
+    "openpi-client",
+]
+
 [tool.uv]
 package = false
 
 [tool.uv.sources]
 robot-refactor = { git = "https://github.com/tonyddg/robot_refactor.git" }
+vla-bc-policy-temporal = { git = "https://github.com/tonyddg/vla_bc_policy_temporal.git" }
+openpi-client = { git = "https://github.com/tonyddg/openpi", subdirectory = "packages/openpi-client", branch = "vla-rl" }
 
 # colcon build 时使用 uv 提供的而不是安装在系统中的
 [dependency-groups]
