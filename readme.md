@@ -39,7 +39,7 @@ ros2 run web_video_server web_video_server
 4. 相机从曝光到发送到接受也需要消耗一定时间
 5. 相机在哪就在哪里控制，读取原始图像消息而不是 compress，最大程度降低图像延迟
 6. 数采时关闭所有无关程序
-7. 有高频消息时，降低 qos depth 或降低 python GLI 锁切换间隔
+7. 订阅高频非指令的控制状态或传感器消息时，以实时性、消息新鲜优先，应当使用低 qos depth 如 1 与 best_effort
 
 实现注意
 1. 使用 VLA 时, 对于质量较差的观测选择发出停止动作等待下一帧
