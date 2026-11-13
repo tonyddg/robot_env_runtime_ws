@@ -33,6 +33,14 @@ DECODER_DICT = dict(
     normal_compress_color_reduce2 = decode_normal_compress_color_reduce2,
 )
 
+RESIZE_METHODS = {
+    cv2.INTER_NEAREST,
+    cv2.INTER_LINEAR,
+    cv2.INTER_CUBIC,
+    cv2.INTER_AREA,
+    cv2.INTER_LANCZOS4,
+}
+
 def _msg_to_buffer(msg: CompressedImage) -> np.ndarray:
     """把 ``msg.data`` 归一化成 uint8 buffer."""
     raw = getattr(msg, "data", None)
@@ -67,10 +75,13 @@ class ImageProcessConfig(BaseModel):
         False, read_only = True, description = "获取 obs 时是否缩放图像 (先裁剪再缩放), 取 False 时配置中相关参数无效",
     )
     resize_target_x: int = RosField(
-        224, ge = 0, read_only = True, description = "目标图片宽度",
+        224, ge = 0, read_only = True, description = "缩放后的图片宽度",
     )
     resize_target_y: int = RosField(
-        224, ge = 0, read_only = True, description = "目标图片高度",
+        224, ge = 0, read_only = True, description = "缩放后的图片高度",
+    )
+    resize_method: int = RosField(
+        cv2.INTER_NEAREST, read_only = True, description = "图片缩放方法, 基于 cv2.INTER 相关常量",
     )
 
     @model_validator(mode = "after")
@@ -91,6 +102,11 @@ class ImageProcessConfig(BaseModel):
                 "is_resize_image=True 但目标尺寸为 0: "
                 f"resize_target_x={self.resize_target_x}, "
                 f"resize_target_y={self.resize_target_y}"
+            )
+        if self.resize_method not in RESIZE_METHODS:
+            raise ValueError(
+                f"不支持的 resize_method={self.resize_method!r}; "
+                f"可用值为 {sorted(RESIZE_METHODS)}"
             )
         return self
 
@@ -113,8 +129,7 @@ def _image_process(arr: np.ndarray, config: ImageProcessConfig, dtype: Any = Non
     if config.is_resize_image:
         res = cv2.resize(
             res, (config.resize_target_x, config.resize_target_y), 
-            # 默认缩小图片, 用于深度图
-            interpolation = cv2.INTER_NEAREST
+            interpolation = config.resize_method
         )
         if res.ndim == 2:
             # cv2.resize 对 (H, W, 1) 的单通道输入会丢掉通道维，补回来
