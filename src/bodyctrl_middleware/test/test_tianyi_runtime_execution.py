@@ -154,6 +154,27 @@ def test_single_execution_samples_first_reset_and_uses_final_target(
     ]
 
 
+def test_single_execution_passes_goal_to_policy(tmp_path: Path) -> None:
+    """SingleExecution goal_kwargs reach BaseEnvLoop and policy.reset."""
+    class GoalPolicy(FakePolicy):
+        def validate_goal(self, goal=None) -> bool:
+            return goal == {"prompt": "pick object"}
+
+    session = replace(
+        _session(tmp_path),
+        env=FakeEnv(),
+        policy=GoalPolicy(steps=1),
+    )
+
+    SingleExecution(
+        session,
+        enable_timing=False,
+        goal_kwargs={"prompt": "pick object"},
+    ).run()
+
+    assert session.policy.seen_goals[0] == {"prompt": "pick object"}
+
+
 def test_record_execution_saves_actual_reset_kwargs(tmp_path: Path) -> None:
     session = replace(
         _session(tmp_path),

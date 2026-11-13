@@ -65,3 +65,11 @@ def test_launch_selects_any_topology_reset_posture() -> None:
     )
     with pytest.raises(RuntimeError, match="available"):
         module._select_reset_posture(topology, "missing")
+
+
+def test_pi05_bc_runtime_is_registered_single_only() -> None:
+    module = _launch_module()
+    assert module.RUNTIME_CONFIG["pi05_bc"]["executable"] == (
+        "tianyi_pi05_bc_runtime_node"
+    )
+    assert module.EXECUTION_MODES["pi05_bc"] == ("single",)

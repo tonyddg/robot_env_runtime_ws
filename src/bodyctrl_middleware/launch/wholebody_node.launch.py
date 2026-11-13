@@ -29,11 +29,17 @@ RUNTIME_CONFIG = {
         "params": "config/tianyi/replay/default_runtime.yaml",
         "profile_dir": "config/tianyi/replay",
     },
+    "pi05_bc": {
+        "executable": "tianyi_pi05_bc_runtime_node",
+        "params": "config/tianyi/pi05_bc/default_runtime.yaml",
+        "profile_dir": "config/tianyi/pi05_bc",
+    },
 }
 EXECUTION_MODES = {
     "legacy": ("single", "record"),
     "tiansuo": ("single", "record"),
     "replay": ("single", "record", "action"),
+    "pi05_bc": ("single",),
 }
 STARTUP_MODES = ("control_only", "runtime_only", "full")
 ARM_STATE_SOURCES = ("raw", "reflect")
@@ -145,6 +151,8 @@ def launch_setup(context, *args, **kwargs):
         raise RuntimeError(
             f"unknown arm_type {arm_type!r}; available: left, bimanual"
         )
+    if runtime == "pi05_bc" and arm_type != "left":
+        raise RuntimeError("runtime:=pi05_bc currently supports arm_type:=left only")
     if arm_state_source not in ARM_STATE_SOURCES:
         raise RuntimeError(
             f"unknown arm_state_source {arm_state_source!r}; "
@@ -240,6 +248,10 @@ def launch_setup(context, *args, **kwargs):
                 f"{execution_mode!r}; available: {EXECUTION_MODES[runtime]}"
             )
         camera_observations = _as_bool(_perform(context, "camera_observations"))
+        if runtime == "pi05_bc" and not camera_observations:
+            raise RuntimeError(
+                "runtime:=pi05_bc requires camera_observations:=true"
+            )
         runtime_info = RUNTIME_CONFIG[runtime]
         camera_mode = "camera" if camera_observations else "no_camera"
         profile_path = _resolve_path(
@@ -310,12 +322,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "runtime",
             default_value="legacy",
-            description="策略 runtime: legacy / tiansuo / replay",
+            description="策略 runtime: legacy / tiansuo / replay / pi05_bc",
         ),
         DeclareLaunchArgument(
             "execution_mode",
             default_value="single",
-            description="执行方式: single / record; replay 额外支持 action",
+            description="执行方式: single / record; replay 额外支持 action; pi05_bc 仅 single",
         ),
         DeclareLaunchArgument(
             "arm_type",

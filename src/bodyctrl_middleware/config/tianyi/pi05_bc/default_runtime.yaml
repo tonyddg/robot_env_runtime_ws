@@ -1,0 +1,72 @@
+tianyi_pi05_bc_runtime:
+  ros__parameters:
+    config.profile_path: "config/tianyi/pi05_bc/left_camera_profile.yaml"
+    config.execution.mode: single
+    config.execution.enable_timing: true
+
+    config.policy.checkpoint_path: ""
+    config.policy.hparams_path: ""
+    config.policy.prompt: ""
+    config.policy.vla_host: "127.0.0.1"
+    config.policy.vla_port: 8000
+    config.policy.vla_api_key_env: "OPENPI_API_KEY"
+    config.policy.vla_response_key: "actions"
+    config.policy.vla_chunk_length: 10
+    config.policy.vla_replan_steps: 3
+    config.policy.bc_replan_steps: 1
+    config.policy.max_steps: 600
+    config.policy.vla_timeout_sec: 5.0
+    config.policy.vla_connect_timeout_sec: 30.0
+    config.policy.initial_gripper_open_threshold: 0.8
+    config.policy.allow_action_clip: true
+    config.policy.use_fast_predict: true
+    config.policy.use_amp: false
+    config.policy.device: "cuda"
+
+    config.cameras.head.is_enable: true
+    config.cameras.left.is_enable: true
+    config.cameras.right.is_enable: false
+
+    # Convert raw camera images to the model-side canonical resolution.
+    config.cameras.head.image_color_obs_process.is_clip_image: true
+    config.cameras.head.image_color_obs_process.clip_lx: 0
+    config.cameras.head.image_color_obs_process.clip_ly: 0
+    config.cameras.head.image_color_obs_process.clip_rx: 240
+    config.cameras.head.image_color_obs_process.clip_ry: 240
+    config.cameras.head.image_color_obs_process.is_resize_image: true
+    config.cameras.head.image_color_obs_process.resize_target_x: 224
+    config.cameras.head.image_color_obs_process.resize_target_y: 224
+    config.cameras.head.image_color_obs_process.resize_method: 3  # INTER_AREA
+
+    config.cameras.head.image_depth_obs_process.is_clip_image: true
+    config.cameras.head.image_depth_obs_process.clip_lx: 0
+    config.cameras.head.image_depth_obs_process.clip_ly: 0
+    config.cameras.head.image_depth_obs_process.clip_rx: 240
+    config.cameras.head.image_depth_obs_process.clip_ry: 240
+    config.cameras.head.image_depth_obs_process.is_resize_image: true
+    config.cameras.head.image_depth_obs_process.resize_target_x: 128
+    config.cameras.head.image_depth_obs_process.resize_target_y: 128
+    config.cameras.head.image_depth_obs_process.resize_method: 0  # NEAREST
+
+    config.cameras.left.image_color_obs_process.is_clip_image: true
+    config.cameras.left.image_color_obs_process.clip_lx: 92
+    config.cameras.left.image_color_obs_process.clip_ly: 0
+    config.cameras.left.image_color_obs_process.clip_rx: 332
+    config.cameras.left.image_color_obs_process.clip_ry: 240
+    config.cameras.left.image_color_obs_process.is_resize_image: true
+    config.cameras.left.image_color_obs_process.resize_target_x: 224
+    config.cameras.left.image_color_obs_process.resize_target_y: 224
+    config.cameras.left.image_color_obs_process.resize_method: 3  # INTER_AREA
+
+    config.cameras.left.image_depth_obs_process.is_clip_image: true
+    config.cameras.left.image_depth_obs_process.clip_lx: 92
+    config.cameras.left.image_depth_obs_process.clip_ly: 0
+    config.cameras.left.image_depth_obs_process.clip_rx: 332
+    config.cameras.left.image_depth_obs_process.clip_ry: 240
+    config.cameras.left.image_depth_obs_process.is_resize_image: true
+    config.cameras.left.image_depth_obs_process.resize_target_x: 128
+    config.cameras.left.image_depth_obs_process.resize_target_y: 128
+    config.cameras.left.image_depth_obs_process.resize_method: 0  # NEAREST
+
+    config.main.left_robotiq_gripper_control_root_name: "robotiq_gripper_control_left"
+    config.main.right_robotiq_gripper_control_root_name: ""

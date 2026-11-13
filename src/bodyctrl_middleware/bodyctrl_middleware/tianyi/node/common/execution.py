@@ -62,6 +62,7 @@ class ExecutionOptions:
     confirm: Optional[Callable[[str], Optional[bool]]] = None
     confirm_close: Optional[Callable[[], None]] = None
     action: Optional[ReplayActionConfig] = None
+    goal_kwargs: Optional[Mapping[str, Any]] = None
 
 
 class RuntimeExecution(Protocol):
@@ -77,10 +78,19 @@ class RuntimeExecution(Protocol):
 class SingleExecution:
     """Run one foreground control loop without recording."""
 
-    def __init__(self, session: RuntimeSession, *, enable_timing: bool) -> None:
+    def __init__(
+        self,
+        session: RuntimeSession,
+        *,
+        enable_timing: bool,
+        goal_kwargs: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         """Store the prepared runtime session and timing preference."""
         self._session = session
         self._enable_timing = enable_timing
+        self._goal_kwargs = (
+            None if goal_kwargs is None else dict(goal_kwargs)
+        )
 
     def run(self) -> None:
         """Run one foreground BaseEnvLoop."""
@@ -92,7 +102,8 @@ class SingleExecution:
             timing_tag="single loop",
         )
         loop.loop(
-            reset_kwargs=_episode_reset_kwargs(self._session, 0)
+            reset_kwargs=_episode_reset_kwargs(self._session, 0),
+            goal_kwargs=self._goal_kwargs,
         )
         self._session.env.reset(**dict(self._session.final_reset_kwargs))
 
@@ -245,7 +256,11 @@ def make_execution(
 ) -> RuntimeExecution:
     """Create the execution backend selected by startup configuration."""
     if mode == "single":
-        return SingleExecution(session, enable_timing=options.enable_timing)
+        return SingleExecution(
+            session,
+            enable_timing=options.enable_timing,
+            goal_kwargs=options.goal_kwargs,
+        )
     if mode == "record":
         if options.record is None:
             raise ValueError("record mode requires RecordConfig")

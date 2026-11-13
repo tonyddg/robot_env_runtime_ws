@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -236,6 +237,42 @@ def test_image_process_config_rejects_empty_clip_and_zero_resize() -> None:
         color_config(image_process_config = ImageProcessConfig(
             is_resize_image = True, resize_target_x = 0,
         ))
+    with pytest.raises(ValueError, match = "resize_method"):
+        color_config(image_process_config = ImageProcessConfig(
+            resize_method = 999,
+        ))
+
+
+def test_image_process_resize_method_is_applied() -> None:
+    """The configured OpenCV interpolation method must reach cv2.resize."""
+    from bodyctrl_middleware.common.image_decode.registe_image_obs import (
+        _image_process,
+    )
+
+    image = np.asarray([[0, 255], [255, 0]], dtype = np.uint8)
+    nearest = _image_process(
+        image,
+        ImageProcessConfig(
+            is_resize_image = True,
+            resize_target_x = 1,
+            resize_target_y = 1,
+            resize_method = cv2.INTER_NEAREST,
+        ),
+        np.uint8,
+    )
+    area = _image_process(
+        image,
+        ImageProcessConfig(
+            is_resize_image = True,
+            resize_target_x = 1,
+            resize_target_y = 1,
+            resize_method = cv2.INTER_AREA,
+        ),
+        np.uint8,
+    )
+    assert nearest.shape == area.shape == (1, 1, 1)
+    assert int(nearest.item()) == 0
+    assert int(area.item()) == 128
 
 
 def test_depth_resize_keeps_channel_dim() -> None:
