@@ -563,13 +563,23 @@ class DiffBaseResetNode(Node):
 
         self.interrupt_control()
         if self._csm.handle_reset_service(response):
-            # 再依据服务请求更新目标
-            is_success = self.set_target_point(np.array([
-                request.target_point.x, request.target_point.y, request.target_point.z
-            ]))
 
-            if not is_success:
-                self.fail("设置目标点失败")
+            is_success = True
+
+            # 再依据服务请求更新目标
+            if request.is_refresh_origin:
+                is_success = self.refresh_origin()
+
+            if is_success:
+                is_success = self.set_target_point(np.array([
+                    request.target_point.x, request.target_point.y, request.target_point.z
+                ]))
+
+                if not is_success:
+                    self.fail("设置目标点失败")
+                    response.success = False
+            else:
+                self.fail("重置原点失败")
                 response.success = False
 
         return response

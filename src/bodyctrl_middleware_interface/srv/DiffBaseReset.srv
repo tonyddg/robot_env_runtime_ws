@@ -1,4 +1,6 @@
 geometry_msgs/Vector3 target_point
+# 将当前位置设为原点
+bool is_refresh_origin
 ---
 bool success
 string message

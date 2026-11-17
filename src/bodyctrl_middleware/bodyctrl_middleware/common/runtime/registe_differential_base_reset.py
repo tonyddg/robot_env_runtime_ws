@@ -36,16 +36,18 @@ class DifferentialBaseManualResetAdapter(ResetServiceAdapter):
     @property
     def parameter_names(self) -> tuple[str, ...]:
         """允许 ``env.reset(**kwargs)`` 传入的参数名（默认 `()` = 不接受参数）."""
-        return ("target_reset_point", )
+        return ("target_reset_point", "is_refresh_base_origin")
 
     def build_request(self, states: StateView, ctx: ResetContext) -> DiffBaseReset.Request:
         target_reset_point = ctx.params.get("target_reset_point", (0, 0, 0))
+        is_refresh_base_origin = ctx.params.get("is_refresh_base_origin", False)
         req = DiffBaseReset.Request()
 
         req.target_point.x = float(target_reset_point[0])
         req.target_point.y = float(target_reset_point[1])
         req.target_point.z = float(target_reset_point[2])
-
+        req.is_refresh_origin = is_refresh_base_origin
+        
         return req
 
 def registe_differential_base_manual_reset(
