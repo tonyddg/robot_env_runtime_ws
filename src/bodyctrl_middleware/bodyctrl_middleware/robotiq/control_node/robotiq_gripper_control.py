@@ -68,6 +68,11 @@ class RobotiqGripperControl(Node):
             description = "当目标 posbit 与当前 posbit 差值小于该宽度则忽视指令, 避免重复发送指令",
         )
 
+        default_openness: float = RosField(
+            1.0, ge = -1.0, le = 1.0, read_only = True,
+            description = "reset 后默认的夹爪张开度",
+        )
+
     def __init__(
         self
     ):
@@ -99,6 +104,8 @@ class RobotiqGripperControl(Node):
             )
             if not self.gripper.isActivated():
                 self.gripper.resetActivate()
+            self._cmd_gripper(self.config.default_openness)
+
         except Exception as e:
             self._csm.fail(f"硬件异常: {e}")
             raise
@@ -272,6 +279,7 @@ class RobotiqGripperControl(Node):
             try:
                 if not self.gripper.isActivated():
                     self.gripper.resetActivate()
+                    self._cmd_gripper(self.config.default_openness)
                 self._csm.finish_reset()
 
             except Exception as e:
