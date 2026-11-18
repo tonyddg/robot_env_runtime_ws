@@ -10,7 +10,11 @@ import h5py
 import numpy as np
 import pytest
 
-from bodyctrl_middleware.record import EpisodeH5Writer, WRITER_VERSION
+from bodyctrl_middleware.record import (
+    EpisodeH5Writer,
+    PolicyTraceValue,
+    WRITER_VERSION,
+)
 from harness import ACTION_DIM, IMAGE_SHAPE, make_info, make_obs
 
 
@@ -535,3 +539,129 @@ def test_finalize_write_error_keeps_partial(tmp_path, monkeypatch) -> None:
         writer.finalize("policy_done", keep = True)
     assert writer.partial_path.exists()
     assert not path.exists()
+
+
+@pytest.mark.parametrize("flush_policy", ["batch", "finalize"])
+def test_policy_trace_flat_columns_align_with_actions(
+    tmp_path,
+    flush_policy: str,
+) -> None:
+    """任意点分 trace 字段写成 dataset，padding 行回填为类型占位值."""
+    path = tmp_path / f"episode_trace_{flush_policy}.h5py"
+    writer = EpisodeH5Writer(
+        path,
+        batch_size=1,
+        flush_policy=flush_policy,
+        init_capacity=8,
+    )
+    writer.append(
+        make_obs(0),
+        np.zeros(ACTION_DIM, dtype=np.float32),
+        None,
+        padding=True,
+    )
+    if flush_policy == "batch":
+        writer.flush()
+
+    writer.append(
+        make_obs(1),
+        np.full(ACTION_DIM, 0.1, dtype=np.float32),
+        make_info(1),
+        policy_trace={
+            "vla.chunk": np.arange(6, dtype=np.float32).reshape(2, 3),
+            "vla.index": PolicyTraceValue(
+                np.int32(0),
+                semantic="selected trajectory index",
+                unit="index",
+            ),
+            "bc.replanned": np.bool_(True),
+        },
+    )
+    writer.update_meta({"policy_metrics": {"schema_version": 1}})
+    writer.finalize("policy_done", keep=True)
+
+    with h5py.File(path, "r") as handle:
+        trace = handle["policy_trace"]
+        assert int(trace.attrs["schema_version"]) == 1
+        assert json.loads(trace.attrs["fields"]) == [
+            "bc.replanned",
+            "vla.chunk",
+            "vla.index",
+        ]
+        assert np.asarray(trace["vla.chunk"]).shape == (2, 2, 3)
+        assert np.isnan(np.asarray(trace["vla.chunk"])[0]).all()
+        assert np.asarray(trace["vla.chunk"])[1].tolist() == [
+            [0.0, 1.0, 2.0],
+            [3.0, 4.0, 5.0],
+        ]
+        assert np.asarray(trace["vla.index"]).tolist() == [-1, 0]
+        assert np.asarray(trace["bc.replanned"]).tolist() == [False, True]
+        assert trace["vla.chunk"].attrs["name"] == "vla.chunk"
+        assert json.loads(trace["vla.chunk"].attrs["spec"])["shape"] == [2, 3]
+        assert trace["vla.index"].attrs["semantic"] == (
+            "selected trajectory index"
+        )
+        assert trace["vla.index"].attrs["unit"] == "index"
+        assert json.loads(handle.attrs["meta"])["policy_metrics"] == {
+            "schema_version": 1,
+        }
+
+
+def test_policy_trace_schema_must_remain_stable(tmp_path) -> None:
+    """episode 中途增删字段或改变 shape/dtype 必须失败."""
+    writer = EpisodeH5Writer(tmp_path / "episode_trace_schema.h5py")
+    writer.append(
+        make_obs(0),
+        np.zeros(ACTION_DIM, dtype=np.float32),
+        None,
+        padding=True,
+    )
+    writer.append(
+        make_obs(1),
+        np.full(ACTION_DIM, 0.1, dtype=np.float32),
+        make_info(1),
+        policy_trace={"vla.chunk": np.zeros((2, 3), dtype=np.float32)},
+    )
+
+    with pytest.raises(ValueError, match="columns changed"):
+        writer.append(
+            make_obs(2),
+            np.full(ACTION_DIM, 0.2, dtype=np.float32),
+            make_info(2),
+            policy_trace={"vla.point": np.zeros(3, dtype=np.float32)},
+        )
+
+    with pytest.raises(ValueError, match="shape changed"):
+        writer.append(
+            make_obs(2),
+            np.full(ACTION_DIM, 0.2, dtype=np.float32),
+            make_info(2),
+            policy_trace={"vla.chunk": np.zeros((3, 3), dtype=np.float32)},
+        )
+    writer.abort()
+
+
+def test_policy_trace_rejects_invalid_names_and_dtypes(tmp_path) -> None:
+    """trace 字段使用点分标识符，并拒绝 object/string 叶节点."""
+    writer = EpisodeH5Writer(tmp_path / "episode_trace_invalid.h5py")
+    writer.append(
+        make_obs(0),
+        np.zeros(ACTION_DIM, dtype=np.float32),
+        None,
+        padding=True,
+    )
+    with pytest.raises(ValueError, match="invalid policy_trace"):
+        writer.append(
+            make_obs(1),
+            np.full(ACTION_DIM, 0.1, dtype=np.float32),
+            make_info(1),
+            policy_trace={"vla..chunk": np.zeros(2, dtype=np.float32)},
+        )
+    with pytest.raises(TypeError, match="numeric or boolean"):
+        writer.append(
+            make_obs(1),
+            np.full(ACTION_DIM, 0.1, dtype=np.float32),
+            make_info(1),
+            policy_trace={"vla.label": np.asarray(["pick"])},
+        )
+    writer.abort()

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol
 
-from bodyctrl_middleware.action import LoopActionServer, make_env_loop_operation
+from bodyctrl_middleware.action import (
+    LoopActionServer,
+    RecordOperationOptions,
+    make_env_loop_operation,
+    make_record_env_loop_operation,
+)
 from bodyctrl_middleware.loop import BaseEnvLoop
 from bodyctrl_middleware.record import (
     FLUSH_POLICIES,
@@ -16,6 +23,7 @@ from bodyctrl_middleware.record import (
     parse_extra_meta,
 )
 from bodyctrl_middleware.tianyi.node.common.config import (
+    ActionRecordConfig,
     ExecutionMode,
     RecordConfig,
     ReplayActionConfig,
@@ -24,6 +32,7 @@ from robot_env_runtime.logging import LoggerLike
 
 from robot_env_runtime.core.robot_env import RobotEnv, ExecutorHost
 from bodyctrl_middleware.policy.base import Policy
+
 
 @dataclass(frozen=True)
 class RuntimeSession:
@@ -62,7 +71,9 @@ class ExecutionOptions:
     confirm: Optional[Callable[[str], Optional[bool]]] = None
     confirm_close: Optional[Callable[[], None]] = None
     action: Optional[ReplayActionConfig] = None
+    action_record: Optional[ActionRecordConfig] = None
     goal_kwargs: Optional[Mapping[str, Any]] = None
+    first_action_max_wait_second: float = 10.0
 
 
 class RuntimeExecution(Protocol):
@@ -84,6 +95,7 @@ class SingleExecution:
         *,
         enable_timing: bool,
         goal_kwargs: Optional[Mapping[str, Any]] = None,
+        first_action_max_wait_second: float = 10.0,
     ) -> None:
         """Store the prepared runtime session and timing preference."""
         self._session = session
@@ -91,6 +103,11 @@ class SingleExecution:
         self._goal_kwargs = (
             None if goal_kwargs is None else dict(goal_kwargs)
         )
+        self._first_action_max_wait_second = float(
+            first_action_max_wait_second
+        )
+        if self._first_action_max_wait_second <= 0.0:
+            raise ValueError("first_action_max_wait_second must be positive")
 
     def run(self) -> None:
         """Run one foreground BaseEnvLoop."""
@@ -104,6 +121,7 @@ class SingleExecution:
         loop.loop(
             reset_kwargs=_episode_reset_kwargs(self._session, 0),
             goal_kwargs=self._goal_kwargs,
+            first_action_max_wait_second=self._first_action_max_wait_second,
         )
         self._session.env.reset(**dict(self._session.final_reset_kwargs))
 
@@ -202,7 +220,7 @@ class RecordExecution:
 
 
 class ActionExecution:
-    """Expose one replay loop as a ROS action server."""
+    """Expose one policy loop as a ROS action server."""
 
     def __init__(
         self,
@@ -210,15 +228,19 @@ class ActionExecution:
         *,
         config: ReplayActionConfig,
         enable_timing: bool,
+        goal_kwargs: Optional[Mapping[str, Any]] = None,
+        first_action_max_wait_second: float = 10.0,
     ) -> None:
-        """Create the replay action operation and action server."""
+        """Create the action operation and action server."""
         operation = make_env_loop_operation(
             session.env,
             session.policy,
             session.logger.get_child("loop"),
             enable_timing=enable_timing,
-            timing_tag="replay action loop",
+            timing_tag="action loop",
             default_reset_kwargs=dict(session.reset_kwargs),
+            default_goal_kwargs=goal_kwargs,
+            first_action_max_wait_second=first_action_max_wait_second,
         )
         self._server = LoopActionServer(
             node=session.executor.node,
@@ -234,15 +256,105 @@ class ActionExecution:
         self._closed = False
 
     def run(self) -> None:
-        """Serve replay goals until action shutdown."""
+        """Serve action goals until action shutdown."""
         self._logger.info(
-            f"replay action server ready: {self._name} "
+            f"action server ready: {self._name} "
             f"(resolved={self._node.resolve_topic_name(self._name)})"
         )
         self._server.serve_forever()
 
     def close(self) -> None:
         """Stop action serving and destroy ROS action resources once."""
+        if self._closed:
+            return
+        self._closed = True
+        self._server.shutdown()
+
+
+class ActionRecordExecution:
+    """Serve action goals and persist one HDF5 episode per goal."""
+
+    def __init__(
+        self,
+        session: RuntimeSession,
+        *,
+        action_config: ReplayActionConfig,
+        record_config: RecordConfig,
+        action_record_config: ActionRecordConfig,
+        enable_timing: bool,
+        goal_kwargs: Optional[Mapping[str, Any]] = None,
+        first_action_max_wait_second: float = 10.0,
+    ) -> None:
+        """Create a recording action operation and its ROS action server."""
+        if record_config.flush_policy not in FLUSH_POLICIES:
+            raise ValueError(
+                "config.record.flush_policy must be one of "
+                f"{FLUSH_POLICIES}, got {record_config.flush_policy!r}"
+            )
+        meta = build_record_meta(
+            session.profile_path,
+            session.plugin_config,
+            session.policy,
+            extra=parse_extra_meta(record_config.extra_meta_json),
+        )
+        action_meta = build_action_meta(
+            meta.get("profile"),
+            getattr(session.plugin_config, "main", session.plugin_config),
+        )
+        save_dir = (
+            Path(record_config.save_root)
+            / f"action_record_{time.time_ns()}"
+        )
+        operation = make_record_env_loop_operation(
+            session.env,
+            session.policy,
+            session.logger.get_child("record.loop"),
+            default_reset_kwargs=dict(session.reset_kwargs),
+            default_goal_kwargs=goal_kwargs,
+            options=RecordOperationOptions(
+                save_dir=save_dir,
+                meta=meta,
+                action_meta=action_meta,
+                episode_index_start=record_config.episode_index,
+                batch_size=record_config.batch_size,
+                compression=record_config.compress_method,
+                flush_policy=record_config.flush_policy,
+                write_chunk_rows=record_config.write_chunk_rows,
+                max_steps=record_config.max_steps,
+                buffer_warn_bytes=record_config.buffer_warn_bytes,
+                enable_timing=enable_timing,
+                timing_tag="action record loop",
+                write_policy_trace=action_record_config.write_policy_trace,
+                first_action_max_wait_second=(
+                    first_action_max_wait_second
+                ),
+            ),
+        )
+        self._server = LoopActionServer(
+            node=session.executor.node,
+            operation=operation,
+            action_name=action_config.name,
+            feedback_period=action_config.feedback_period,
+            feedback_provider=lambda: session.env.cycle_index,
+            logger=session.logger.get_child("action"),
+        )
+        self._node = session.executor.node
+        self._name = action_config.name
+        self._save_dir = save_dir
+        self._logger = session.logger
+        self._closed = False
+
+    def run(self) -> None:
+        """Serve action goals until shutdown."""
+        self._logger.info(
+            f"action record server ready: {self._name} "
+            f"(resolved={self._node.resolve_topic_name(self._name)}, "
+            f"save_dir={self._save_dir})"
+        )
+        self._server.serve_forever()
+
+    def close(self) -> None:
+        """Stop action serving and release ROS action resources."""
         if self._closed:
             return
         self._closed = True
@@ -260,6 +372,9 @@ def make_execution(
             session,
             enable_timing=options.enable_timing,
             goal_kwargs=options.goal_kwargs,
+            first_action_max_wait_second=(
+                options.first_action_max_wait_second
+            ),
         )
     if mode == "record":
         if options.record is None:
@@ -278,5 +393,31 @@ def make_execution(
             session,
             config=options.action,
             enable_timing=options.enable_timing,
+            goal_kwargs=options.goal_kwargs,
+            first_action_max_wait_second=(
+                options.first_action_max_wait_second
+            ),
+        )
+    if mode == "action_record":
+        if options.action is None:
+            raise ValueError(
+                "action_record mode requires ReplayActionConfig"
+            )
+        if options.record is None:
+            raise ValueError("action_record mode requires RecordConfig")
+        if options.action_record is None:
+            raise ValueError(
+                "action_record mode requires ActionRecordConfig"
+            )
+        return ActionRecordExecution(
+            session,
+            action_config=options.action,
+            record_config=options.record,
+            action_record_config=options.action_record,
+            enable_timing=options.enable_timing,
+            goal_kwargs=options.goal_kwargs,
+            first_action_max_wait_second=(
+                options.first_action_max_wait_second
+            ),
         )
     raise ValueError(f"unsupported execution mode: {mode!r}")

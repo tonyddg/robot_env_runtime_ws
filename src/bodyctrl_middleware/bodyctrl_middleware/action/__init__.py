@@ -10,6 +10,10 @@ from bodyctrl_middleware.action.contracts import (
 )
 from bodyctrl_middleware.action.loop_action_server import LoopActionServer
 from bodyctrl_middleware.action.operation import make_env_loop_operation
+from bodyctrl_middleware.action.record_operation import (
+    RecordOperationOptions,
+    make_record_env_loop_operation,
+)
 
 __all__ = [
     "GoalParseError",
@@ -17,7 +21,9 @@ __all__ = [
     "RunContext",
     "RunOperation",
     "RunResult",
+    "RecordOperationOptions",
     "classify_loop_reason",
     "decode_optional_json_object",
     "make_env_loop_operation",
+    "make_record_env_loop_operation",
 ]

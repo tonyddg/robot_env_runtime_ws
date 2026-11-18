@@ -10,7 +10,7 @@ from pydantic import BaseModel, field_validator
 
 from bodyctrl_middleware.utility.pydantic_ros2_params import RosField
 
-ExecutionMode = Literal["single", "record", "action"]
+ExecutionMode = Literal["single", "record", "action", "action_record"]
 DEFAULT_RECORD_SAVE_ROOT = "/ros2_ws/output"
 ENV_DEFAULT_RECORD_SAVE_ROOT = "ROBOTRUNTIME_DEFAULT_RECORD_SAVE_ROOT"
 
@@ -29,7 +29,7 @@ class ExecutionConfig(BaseModel):
         read_only=True,
         description=(
             "执行方式：single 单次前台循环，record 数据采集，"
-            "action 常驻 ROS action 服务"
+            "action 常驻 ROS action 服务，action_record 服务并记录每个 goal"
         ),
     )
     enable_timing: bool = RosField(
@@ -182,6 +182,16 @@ class ReplayActionConfig(BaseModel):
         gt=0.0,
         read_only=True,
         description="action feedback 发布周期，单位秒",
+    )
+
+
+class ActionRecordConfig(BaseModel):
+    """Action-server recording behavior applied to every goal."""
+
+    write_policy_trace: bool = RosField(
+        True,
+        read_only=True,
+        description="是否将 policy 提供的逐 action trace 写入 episode",
     )
 
 

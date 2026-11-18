@@ -50,6 +50,7 @@ class LoopStep:
     info: Mapping[str, Any]
     cycle_index: int
     future: InferenceFuture
+    policy_trace: Optional[Mapping[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -283,6 +284,10 @@ class BaseEnvLoop:
             return result
 
         action = np.array(last_action_future.get_action(), copy = True)
+        policy_trace = None
+        trace_getter = getattr(last_action_future, "get_policy_trace", None)
+        if callable(trace_getter):
+            policy_trace = trace_getter()
         obs, info = self.env.step(action)
         step_done_at = time.perf_counter()
 
@@ -295,6 +300,7 @@ class BaseEnvLoop:
             info = info,
             cycle_index = self._cycle_index(info, cur_step),
             future = action_infer_future,
+            policy_trace = policy_trace,
         )
         durations = {
             "wait": wait_done_at - cycle_started_at,

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 import bodyctrl_middleware.tianyi.node.common.execution as execution_module
 from bodyctrl_middleware.tianyi.node.common.config import (
+    ActionRecordConfig,
     DEFAULT_RECORD_SAVE_ROOT,
     ENV_DEFAULT_RECORD_SAVE_ROOT,
     ExecutionConfig,
@@ -77,6 +78,10 @@ def test_tele_nodes_reject_action_mode() -> None:
 def test_replay_accepts_action_mode() -> None:
     config = ExecutionConfig(mode="action")
     assert config.mode == "action"
+
+
+def test_pi05_action_record_defaults_to_policy_trace() -> None:
+    assert ActionRecordConfig().write_policy_trace is True
 
 
 def test_record_save_root_uses_environment_default(monkeypatch) -> None:
@@ -206,6 +211,7 @@ def test_action_mode_creates_server_but_no_record_writer(
     monkeypatch,
 ) -> None:
     created: list = []
+    operation_kwargs: list[dict] = []
 
     class FakeServer:
         def __init__(self, **kwargs) -> None:
@@ -226,10 +232,14 @@ def test_action_mode_creates_server_but_no_record_writer(
     class FakeExecutor:
         node = FakeNode()
 
+    def fake_make_operation(*args, **kwargs):
+        operation_kwargs.append(kwargs)
+        return lambda context: None
+
     monkeypatch.setattr(
         execution_module,
         "make_env_loop_operation",
-        lambda *args, **kwargs: lambda context: None,
+        fake_make_operation,
     )
     monkeypatch.setattr(execution_module, "LoopActionServer", FakeServer)
     monkeypatch.setattr(
@@ -253,6 +263,8 @@ def test_action_mode_creates_server_but_no_record_writer(
             enable_timing=False,
             record=RecordConfig(save_root=str(tmp_path)),
             action=ReplayActionConfig(name="/run"),
+            goal_kwargs={"prompt": "default prompt"},
+            first_action_max_wait_second=120.0,
         ),
     )
 
@@ -261,3 +273,70 @@ def test_action_mode_creates_server_but_no_record_writer(
     execution.close()
 
     assert created[0][1]["action_name"] == "/run"
+    assert operation_kwargs[0]["default_goal_kwargs"] == {
+        "prompt": "default prompt"
+    }
+    assert operation_kwargs[0]["first_action_max_wait_second"] == 120.0
+
+
+def test_action_record_mode_builds_recording_server(tmp_path, monkeypatch) -> None:
+    created: list[dict] = []
+    operation_options: list = []
+
+    class FakeServer:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
+
+        def serve_forever(self) -> None:
+            return
+
+        def shutdown(self) -> None:
+            return
+
+    class FakeNode:
+        def resolve_topic_name(self, name: str) -> str:
+            return name
+
+    class FakeExecutor:
+        node = FakeNode()
+
+    def fake_operation(*args, **kwargs):
+        operation_options.append(kwargs["options"])
+        return lambda context: None
+
+    monkeypatch.setattr(
+        execution_module,
+        "make_record_env_loop_operation",
+        fake_operation,
+    )
+    monkeypatch.setattr(execution_module, "LoopActionServer", FakeServer)
+    session = RuntimeSession(
+        executor=FakeExecutor(),
+        env=FakeEnv(),
+        policy=FakePolicy(steps=1),
+        logger=_Logger(),
+        profile_path=str(tmp_path / "profile.yaml"),
+        plugin_config=None,
+        reset_kwargs={},
+    )
+
+    execution = make_execution(
+        "action_record",
+        session,
+        ExecutionOptions(
+            enable_timing=True,
+            record=RecordConfig(save_root=str(tmp_path)),
+            action=ReplayActionConfig(name="/record"),
+            action_record=ActionRecordConfig(write_policy_trace=True),
+            goal_kwargs={"prompt": "record it"},
+            first_action_max_wait_second=120.0,
+        ),
+    )
+    execution.run()
+
+    assert execution.__class__.__name__ == "ActionRecordExecution"
+    assert created[0]["action_name"] == "/record"
+    options = operation_options[0]
+    assert options.write_policy_trace is True
+    assert options.first_action_max_wait_second == 120.0
+    assert str(options.save_dir).startswith(str(tmp_path))

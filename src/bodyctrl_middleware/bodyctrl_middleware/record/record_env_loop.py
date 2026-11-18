@@ -35,6 +35,8 @@ class RecordEnvLoop(BaseEnvLoop):
         max_steps: int = 0,
         enable_timing: bool = False,
         action_poll_period: float = 0.1,
+        require_policy_trace: bool = False,
+        timing_tag: Optional[str] = None,
     ) -> None:
         super().__init__(
             env,
@@ -42,12 +44,17 @@ class RecordEnvLoop(BaseEnvLoop):
             logger,
             enable_timing = enable_timing,
             action_poll_period = action_poll_period,
-            timing_tag = f"episode {episode_index}",
+            timing_tag = (
+                f"episode {episode_index}"
+                if timing_tag is None
+                else str(timing_tag)
+            ),
         )
         self.episode_index = int(episode_index)
         self.writer = writer
         self.logger = NULL_LOGGER if self.logger is None else self.logger
         self.max_steps = int(max_steps)
+        self.require_policy_trace = bool(require_policy_trace)
         self.first_obs: Optional[Any] = None
         self.recorded_steps = 0
         self.soft_fail_count = 0
@@ -61,12 +68,14 @@ class RecordEnvLoop(BaseEnvLoop):
         self,
         *,
         reset_kwargs: Optional[dict[str, Any]] = None,
+        goal_kwargs: Optional[dict[str, Any]] = None,
         wait_for_first_action: bool = True,
         first_action_max_wait_second: float = 10,
     ) -> LoopOutcome:
         """执行本轮 episode 的控制循环."""
         return self.loop(
             reset_kwargs = reset_kwargs,
+            goal_kwargs = goal_kwargs,
             wait_for_first_action = wait_for_first_action,
             first_action_max_wait_second = first_action_max_wait_second,
         )
@@ -110,10 +119,21 @@ class RecordEnvLoop(BaseEnvLoop):
         """写入一条正常数据行，并把 writer 开销作为 hook duration 上报."""
         if result.obs is None or result.action is None:
             raise RuntimeError("normal record cycle must contain observation and action")
+        if self.require_policy_trace and result.policy_trace is None:
+            raise RuntimeError("normal record cycle must contain policy_trace")
 
         hook_started_at = time.perf_counter()
         try:
-            self.writer.append(result.obs, result.action, result.info)
+            self.writer.append(
+                result.obs,
+                result.action,
+                result.info,
+                policy_trace = (
+                    result.policy_trace
+                    if self.require_policy_trace
+                    else None
+                ),
+            )
             self.recorded_steps += 1
         finally:
             durations["hook"] = time.perf_counter() - hook_started_at

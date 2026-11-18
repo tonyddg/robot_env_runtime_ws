@@ -8,6 +8,7 @@ import threading
 import numpy as np
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from bodyctrl_middleware.policy.pi05_bc.bc import load_dataset_config
 from bodyctrl_middleware.policy.pi05_bc.config import Pi05BCPolicyConfig
@@ -27,6 +28,9 @@ from bodyctrl_middleware.policy.pi05_bc.vla import normalize_vla_chunk
 from bodyctrl_middleware.policy.pi05_bc.vla import (
     OpenPiVlaClient,
     VlaInferenceTimeoutError,
+)
+from bodyctrl_middleware.tianyi.node.pi05_bc_runtime_node import (
+    Pi05BCExecutionConfig,
 )
 
 
@@ -80,9 +84,15 @@ class _FakeVla:
 
 
 class _FakeBC:
-    def __init__(self, dataset_config, observation_builder) -> None:
+    def __init__(
+        self,
+        dataset_config,
+        observation_builder,
+        chunk_rows: int = 1,
+    ) -> None:
         self.dataset_config = dataset_config
         self.observation_builder = observation_builder
+        self.chunk_rows = int(chunk_rows)
         self.calls = 0
         self.seen_trajectory_shapes: list[tuple[int, ...]] = []
         self.seen_trajectories: list[np.ndarray] = []
@@ -92,7 +102,7 @@ class _FakeBC:
         self.calls += 1
         self.seen_trajectory_shapes.append(tuple(trajectory.shape))
         self.seen_trajectories.append(trajectory.detach().cpu().numpy().copy())
-        return np.full((1, 9), 0.1, dtype=np.float32)
+        return np.full((self.chunk_rows, 9), 0.1, dtype=np.float32)
 
     def close(self) -> None:
         self.closed += 1
@@ -163,10 +173,24 @@ def _profile_path() -> str:
     )
 
 
-def _policy(*, max_steps: int = 10, vla_replan_steps: int = 3):
+def _policy(
+    *,
+    max_steps: int = 10,
+    vla_replan_steps: int = 3,
+    vla_prefetch_enabled: bool = True,
+    vla_prefetch_lead_steps: int = 1,
+    vla_prefetch_alignment: str = "boundary",
+    bc_replan_steps: int = 1,
+    bc_chunk_rows: int = 1,
+    vla_client=None,
+):
     dataset_config, builder = _components()
-    backend = _FakeBC(dataset_config, builder)
-    vla = _FakeVla()
+    backend = _FakeBC(
+        dataset_config,
+        builder,
+        chunk_rows=bc_chunk_rows,
+    )
+    vla = _FakeVla() if vla_client is None else vla_client
     config = Pi05BCPolicyConfig(
         checkpoint_path="fake.ckpt",
         hparams_path="fake.yaml",
@@ -174,7 +198,10 @@ def _policy(*, max_steps: int = 10, vla_replan_steps: int = 3):
         prompt="pick object",
         vla_chunk_length=10,
         vla_replan_steps=vla_replan_steps,
-        bc_replan_steps=1,
+        vla_prefetch_enabled=vla_prefetch_enabled,
+        vla_prefetch_lead_steps=vla_prefetch_lead_steps,
+        vla_prefetch_alignment=vla_prefetch_alignment,
+        bc_replan_steps=bc_replan_steps,
         max_steps=max_steps,
     )
     policy = Pi05BCTemporalPolicy(
@@ -184,6 +211,14 @@ def _policy(*, max_steps: int = 10, vla_replan_steps: int = 3):
         logger=_Logger(),
     )
     return policy, backend, vla, dataset_config
+
+
+def test_pi05_execution_config_accepts_action_modes_but_not_record() -> None:
+    assert Pi05BCExecutionConfig(mode="single").mode == "single"
+    assert Pi05BCExecutionConfig(mode="action").mode == "action"
+    assert Pi05BCExecutionConfig(mode="action_record").mode == "action_record"
+    with pytest.raises(ValidationError):
+        Pi05BCExecutionConfig(mode="record")
 
 
 def test_se2_relative_is_body_frame_backward_difference() -> None:
@@ -252,8 +287,11 @@ def test_policy_uses_fixed_vla_window_and_one_step_bc_replan() -> None:
         assert backend.seen_trajectories[3][0, :, 0].tolist() == [
             1.0, 2.0, 100.0, 101.0, 102.0,
         ]
-        assert vla.requests[0]["state"].shape == (1, 7)
-        assert vla.requests[0]["state"][0, -1] == pytest.approx(1.0)
+        assert vla.requests[0]["observation/state"].shape == (7,)
+        assert vla.requests[0]["observation/state"][-1] == pytest.approx(1.0)
+        assert vla.requests[0]["observation/image"].shape == (4, 4, 3)
+        assert vla.requests[0]["observation/wrist_image"].shape == (4, 4, 3)
+        assert vla.requests[0]["prompt"] == "pick object"
     finally:
         policy.close()
 
@@ -261,6 +299,358 @@ def test_policy_uses_fixed_vla_window_and_one_step_bc_replan() -> None:
 def test_policy_rejects_replan_beyond_vla_lookahead() -> None:
     with pytest.raises(ValueError, match="vla_replan_steps"):
         _policy(vla_replan_steps=9)
+
+
+@pytest.mark.parametrize("lead_steps", [0, 4])
+def test_policy_rejects_invalid_prefetch_lead_steps(lead_steps: int) -> None:
+    with pytest.raises(ValueError, match="vla_prefetch_lead_steps"):
+        _policy(
+            vla_replan_steps=3,
+            vla_prefetch_lead_steps=lead_steps,
+        )
+
+
+@pytest.mark.parametrize(
+    ("lead_steps", "expected_start_steps"),
+    [(1, [2]), (2, [1]), (3, [0, 3])],
+)
+def test_policy_prefetch_lead_steps_controls_start_timing(
+    lead_steps: int,
+    expected_start_steps: list[int],
+) -> None:
+    """lead 越大，越早触发下一 VLA chunk 的后台预取."""
+    policy, _, vla, _ = _policy(
+        vla_replan_steps=3,
+        vla_prefetch_lead_steps=lead_steps,
+        bc_replan_steps=2,
+        bc_chunk_rows=2,
+    )
+    try:
+        policy.reset(_runtime_obs(0), goal={"prompt": "pick object"})
+        traces = []
+        for step in range(4):
+            future = policy.infer_async(_runtime_obs(step))
+            future.get_action()
+            traces.append(future.get_policy_trace())
+
+        started_steps = [
+            index
+            for index, trace in enumerate(traces)
+            if bool(trace["vla.prefetch_started"].value)
+        ]
+        assert started_steps == expected_start_steps
+        assert traces[3]["vla.prefetch_used"].value == np.bool_(True)
+        assert len(vla.requests) >= 2
+    finally:
+        policy.close()
+
+
+def test_observation_aligned_prefetch_uses_dynamic_chunk_offset() -> None:
+    """B 使用请求观测之后经过的 decision 数作为起始索引并消费满 replan 步."""
+    policy, _, vla, _ = _policy(
+        max_steps=10,
+        vla_replan_steps=5,
+        vla_prefetch_lead_steps=2,
+        vla_prefetch_alignment="observation_aligned",
+        bc_replan_steps=2,
+        bc_chunk_rows=2,
+    )
+    try:
+        policy.reset(_runtime_obs(0), goal={"prompt": "pick object"})
+        traces = []
+        for step in range(10):
+            future = policy.infer_async(_runtime_obs(step))
+            future.get_action()
+            traces.append(future.get_policy_trace())
+
+        assert [int(trace["vla.index"].value) for trace in traces] == [
+            0, 1, 2, 3, 4, 2, 3, 4, 5, 6,
+        ]
+        assert [int(trace["vla.start_index"].value) for trace in traces] == [
+            0, 0, 0, 0, 0, 2, 2, 2, 2, 2,
+        ]
+        assert [
+            int(trace["vla.steps_since_replan"].value)
+            for trace in traces
+        ] == [1, 2, 3, 4, 5, 1, 2, 3, 4, 5]
+        assert [
+            int(trace["action.decision_index"].value)
+            for trace in traces
+        ] == list(range(10))
+        assert int(traces[5]["vla.request_decision_index"].value) == 3
+        assert int(traces[5]["vla.consume_decision_index"].value) == 5
+        assert len(vla.requests) == 3
+    finally:
+        policy.close()
+
+
+def test_observation_aligned_prefetch_rejects_insufficient_lookahead() -> None:
+    with pytest.raises(ValueError, match="exceeds VLA chunk lookahead"):
+        _policy(
+            vla_replan_steps=5,
+            vla_prefetch_lead_steps=4,
+            vla_prefetch_alignment="observation_aligned",
+        )
+
+
+def test_observation_aligned_offset_is_independent_of_completion_time() -> None:
+    """预取晚完成但仍在边界消费时，offset 仍按 decision index 计算."""
+    class BlockingVla(_FakeVla):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prefetch_blocked = threading.Event()
+            self.release_prefetch = threading.Event()
+
+        def infer(self, observation):
+            request_index = len(self.requests)
+            if request_index == 1:
+                self.prefetch_blocked.set()
+                self.release_prefetch.wait(timeout=2.0)
+            return super().infer(observation)
+
+    vla = BlockingVla()
+    policy, _, _, _ = _policy(
+        vla_replan_steps=3,
+        vla_prefetch_lead_steps=1,
+        vla_prefetch_alignment="observation_aligned",
+        vla_client=vla,
+    )
+    result: list[np.ndarray] = []
+    errors: list[BaseException] = []
+    try:
+        policy.reset(_runtime_obs(0), goal={"prompt": "pick object"})
+        for step in range(3):
+            policy.infer_async(_runtime_obs(step)).get_action()
+        assert vla.prefetch_blocked.wait(timeout=1.0)
+
+        def consume_boundary_chunk() -> None:
+            try:
+                future = policy.infer_async(_runtime_obs(3))
+                result.append(future.get_action())
+                trace.append(future.get_policy_trace())
+            except BaseException as exc:
+                errors.append(exc)
+
+        trace = []
+        worker = threading.Thread(target=consume_boundary_chunk)
+        worker.start()
+        assert worker.is_alive()
+        vla.release_prefetch.set()
+        worker.join(timeout=2.0)
+
+        assert errors == []
+        assert len(result) == 1
+        assert int(trace[0]["vla.index"].value) == 1
+        assert int(trace[0]["vla.start_index"].value) == 1
+    finally:
+        vla.release_prefetch.set()
+        policy.close()
+
+
+def test_policy_rejects_unknown_prefetch_alignment() -> None:
+    with pytest.raises(ValueError, match="vla_prefetch_alignment"):
+        _policy(vla_prefetch_alignment="unsupported")
+
+
+def test_policy_trace_is_bound_to_each_action_future() -> None:
+    """Trace 必须对应 future 的 action，不能被下一次推理或预取覆盖."""
+    policy, _, _, _ = _policy(
+        vla_replan_steps=3,
+        bc_replan_steps=2,
+        vla_prefetch_enabled=True,
+        bc_chunk_rows=2,
+    )
+    try:
+        policy.reset(_runtime_obs(0), goal={"prompt": "pick object"})
+        traces = []
+        actions = []
+        for step in range(4):
+            future = policy.infer_async(_runtime_obs(step))
+            actions.append(future.get_action())
+            traces.append(future.get_policy_trace())
+
+        assert traces[0]["vla.chunk"].value.shape == (10, 7)
+        assert traces[0]["bc.chunk"].value.shape == (2, 9)
+        assert traces[0]["vla.index"].value == 0
+        assert traces[0]["vla.replanned"].value == np.bool_(True)
+        assert traces[0]["vla.prefetch_used"].value == np.bool_(False)
+        assert traces[1]["vla.replanned"].value == np.bool_(False)
+        assert np.isnan(float(traces[1]["vla.inference_ms"].value))
+        assert traces[1]["bc.replanned"].value == np.bool_(False)
+        assert np.isnan(float(traces[1]["bc.inference_ms"].value))
+        assert traces[2]["vla.prefetch_started"].value == np.bool_(True)
+        assert traces[3]["vla.replanned"].value == np.bool_(True)
+        assert traces[3]["vla.prefetch_used"].value == np.bool_(True)
+        assert traces[3]["vla.request_index"].value == 2
+        assert traces[3]["vla.index"].value == 0
+        assert traces[3]["bc.index"].value == 0
+        assert traces[3]["action.runtime"].value.shape == (10,)
+        assert traces[3]["action.runtime"].value.tolist() == pytest.approx(
+            actions[3].tolist()
+        )
+    finally:
+        policy.close()
+
+
+def test_policy_finalizes_episode_metrics_once() -> None:
+    policy, _, _, _ = _policy(max_steps=3)
+    try:
+        policy.reset(_runtime_obs(0), goal={"prompt": "pick object"})
+        for step in range(3):
+            policy.infer_async(_runtime_obs(step)).get_action()
+        first = policy.finalize_episode_metrics()
+        second = policy.finalize_episode_metrics()
+        assert first == second
+        assert set(first) == {
+            "vla_total_ms",
+            "bc_total_ms",
+            "eef_loc_error_m",
+            "eef_rot_error_rad",
+        }
+    finally:
+        policy.close()
+
+
+def test_policy_prefetches_next_vla_chunk_before_boundary() -> None:
+    class BlockingVla(_FakeVla):
+        def __init__(self) -> None:
+            super().__init__()
+            self.second_request_started = threading.Event()
+            self.release_second_request = threading.Event()
+
+        def infer(self, observation):
+            with threading.Lock():
+                request_index = len(self.requests)
+            if request_index == 1:
+                self.second_request_started.set()
+                self.release_second_request.wait(timeout=2.0)
+            return super().infer(observation)
+
+    vla = BlockingVla()
+    policy, _, _, _ = _policy(vla_client=vla)
+    try:
+        obs = _runtime_obs(0)
+        policy.reset(obs, goal={"prompt": "pick object"})
+        policy.infer_async(obs).get_action()
+        policy.infer_async(obs).get_action()
+        policy.infer_async(obs).get_action()
+
+        assert vla.second_request_started.wait(timeout=1.0)
+        vla.release_second_request.set()
+        policy.infer_async(obs).get_action()
+        assert len(vla.requests) == 2
+    finally:
+        vla.release_second_request.set()
+        policy.close()
+
+
+def test_policy_can_disable_vla_prefetch() -> None:
+    vla = _FakeVla()
+    policy, _, _, _ = _policy(
+        vla_client=vla,
+        vla_prefetch_enabled=False,
+    )
+    try:
+        obs = _runtime_obs(0)
+        policy.reset(obs, goal={"prompt": "pick object"})
+        policy.infer_async(obs).get_action()
+        policy.infer_async(obs).get_action()
+        policy.infer_async(obs).get_action()
+        assert len(vla.requests) == 1
+        policy.infer_async(obs).get_action()
+        assert len(vla.requests) == 2
+    finally:
+        policy.close()
+
+
+def test_policy_reset_drains_stale_prefetch_before_new_episode() -> None:
+    class BlockingFuture:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def cancel(self) -> bool:
+            return False
+
+        def cancelled(self) -> bool:
+            return False
+
+        def result(self):
+            self.entered.set()
+            self.release.wait(timeout=2.0)
+            return None
+
+    policy, _, vla, _ = _policy(max_steps=4)
+    stale = BlockingFuture()
+    reset_done = threading.Event()
+    reset_errors: list[BaseException] = []
+    try:
+        obs = _runtime_obs(0)
+        policy.reset(obs, goal={"prompt": "first prompt"})
+        policy.infer_async(obs).get_action()
+        policy._prefetch_future = stale
+
+        def reset_second_episode() -> None:
+            try:
+                policy.reset(
+                    obs,
+                    goal={"prompt": "second prompt"},
+                )
+            except BaseException as exc:
+                reset_errors.append(exc)
+            finally:
+                reset_done.set()
+
+        reset_thread = threading.Thread(target=reset_second_episode)
+        reset_thread.start()
+
+        assert stale.entered.wait(timeout=1.0)
+        assert reset_done.is_set() is False
+        stale.release.set()
+        assert reset_done.wait(timeout=1.0)
+        reset_thread.join(timeout=1.0)
+
+        assert reset_errors == []
+        assert policy._prefetch_future is None
+        assert policy._step_count == 0
+        assert policy._vla_chunk is None
+        assert policy._bc_chunk is None
+        assert policy._prompt == "second prompt"
+
+        policy.infer_async(obs).get_action()
+        assert vla.requests[-1]["prompt"] == "second prompt"
+    finally:
+        stale.release.set()
+        policy.close()
+
+
+def test_policy_reset_ignores_failed_stale_prefetch() -> None:
+    class FailedFuture:
+        def cancel(self) -> bool:
+            return False
+
+        def cancelled(self) -> bool:
+            return False
+
+        def result(self):
+            raise RuntimeError("stale request failed")
+
+    policy, _, _, _ = _policy()
+    try:
+        obs = _runtime_obs(0)
+        policy.reset(obs, goal={"prompt": "first prompt"})
+        policy._prefetch_future = FailedFuture()
+
+        policy.reset(obs, goal={"prompt": "second prompt"})
+
+        assert policy._prefetch_future is None
+        assert policy._prompt == "second prompt"
+        assert any(
+            "discarded stale VLA prefetch failed" in message
+            for message in policy._logger.messages
+        )
+    finally:
+        policy.close()
 
 
 def test_policy_done_at_max_steps_and_close_is_idempotent() -> None:
@@ -331,6 +721,18 @@ def test_vla_chunk_accepts_unbatched_and_batched_shapes() -> None:
         response_key="actions",
         expected_length=10,
     ).shape == (10, 7)
+
+
+def test_vla_chunk_clips_gripper_values() -> None:
+    chunk = np.zeros((10, 7), dtype=np.float32)
+    chunk[:, 6] = np.linspace(-2.0, 2.0, 10)
+    normalized = normalize_vla_chunk(
+        {"pi0_actions_ref": chunk},
+        response_key="pi0_actions_ref",
+        expected_length=10,
+    )
+    assert normalized[:, 6].min() >= -1.0
+    assert normalized[:, 6].max() <= 1.0
 
 
 def test_openpi_adapter_enforces_inference_timeout() -> None:

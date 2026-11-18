@@ -39,7 +39,7 @@ EXECUTION_MODES = {
     "legacy": ("single", "record"),
     "tiansuo": ("single", "record"),
     "replay": ("single", "record", "action"),
-    "pi05_bc": ("single",),
+    "pi05_bc": ("single", "action", "action_record"),
 }
 STARTUP_MODES = ("control_only", "runtime_only", "full")
 ARM_STATE_SOURCES = ("raw", "reflect")
@@ -327,7 +327,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "execution_mode",
             default_value="single",
-            description="执行方式: single / record; replay 额外支持 action; pi05_bc 仅 single",
+            description=(
+                "执行方式: single / record; replay 和 pi05_bc "
+                "额外支持 action；pi05_bc 支持 action_record"
+            ),
         ),
         DeclareLaunchArgument(
             "arm_type",

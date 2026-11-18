@@ -27,10 +27,19 @@ def make_env_loop_operation(
     enable_timing: bool = False,
     timing_tag: str = "action loop",
     default_reset_kwargs: Optional[Mapping[str, Any]] = None,
+    default_goal_kwargs: Optional[Mapping[str, Any]] = None,
+    first_action_max_wait_second: float = 10.0,
 ) -> RunOperation:
     """构造一次 BaseEnvLoop operation，供 action main-thread host 调用."""
     logger = NULL_LOGGER if logger is None else logger
     defaults = {} if default_reset_kwargs is None else dict(default_reset_kwargs)
+    default_goal = (
+        None
+        if default_goal_kwargs is None
+        else dict(default_goal_kwargs)
+    )
+    if first_action_max_wait_second <= 0.0:
+        raise ValueError("first_action_max_wait_second must be positive")
 
     def run(context: RunContext) -> RunResult:
         if context.cancel_event.is_set():
@@ -39,6 +48,11 @@ def make_env_loop_operation(
         reset_kwargs = dict(defaults)
         if context.reset_kwargs is not None:
             reset_kwargs.update(context.reset_kwargs)
+        goal_kwargs = (
+            default_goal
+            if context.goal_kwargs is None
+            else dict(context.goal_kwargs)
+        )
 
         loop = BaseEnvLoop(
             env,
@@ -57,7 +71,10 @@ def make_env_loop_operation(
         try:
             outcome = loop.loop(
                 reset_kwargs = reset_kwargs,
-                goal_kwargs = context.goal_kwargs,
+                goal_kwargs = goal_kwargs,
+                first_action_max_wait_second = (
+                    first_action_max_wait_second
+                ),
             )
         except ResetParameterError as exc:
             logger.warn(f"action rejected env_reset: {exc}")

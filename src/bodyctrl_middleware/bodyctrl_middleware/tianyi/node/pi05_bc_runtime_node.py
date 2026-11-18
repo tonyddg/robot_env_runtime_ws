@@ -15,7 +15,10 @@ from bodyctrl_middleware.policy.pi05_bc.policy import (
 from bodyctrl_middleware.policy.pi05_bc.vla import OpenPiVlaClient
 from bodyctrl_middleware.tianyi.hardware.constants import LEFT_ARM_MOTOR_IDS
 from bodyctrl_middleware.tianyi.node.common.config import (
+    ActionRecordConfig,
     ExecutionConfig,
+    RecordConfig,
+    ReplayActionConfig,
     resolve_profile_path,
 )
 from bodyctrl_middleware.tianyi.node.common.execution import (
@@ -65,12 +68,14 @@ class Pi05BCMainConfig(TianyiMainConfig):
 
 
 class Pi05BCExecutionConfig(ExecutionConfig):
-    """The first autonomous policy version supports one foreground episode."""
+    """Run one episode or serve ordinary/recording ROS action goals."""
 
-    mode: Literal["single"] = RosField(
+    mode: Literal["single", "action", "action_record"] = RosField(
         "single",
         read_only=True,
-        description="pi05_bc 仅支持 single 执行模式",
+        description=(
+            "pi05_bc 支持 single、action 常驻服务或 action_record 常驻录制"
+        ),
     )
 
 
@@ -126,6 +131,28 @@ class Pi05BCPolicyParams(BaseModel):
         read_only=True,
         description="消费多少个 VLA 轨迹点后重新请求",
     )
+    vla_prefetch_enabled: bool = RosField(
+        True,
+        read_only=True,
+        description="是否在消费完当前 VLA chunk 前预取下一个 chunk",
+    )
+    vla_prefetch_lead_steps: int = RosField(
+        1,
+        ge=1,
+        read_only=True,
+        description="提前多少个 VLA action 启动下一 chunk 预取",
+    )
+    vla_prefetch_alignment: Literal[
+        "boundary",
+        "observation_aligned",
+    ] = RosField(
+        "boundary",
+        read_only=True,
+        description=(
+            "预取索引模式：boundary 从 B[0] 开始；"
+            "observation_aligned 按请求观测后的 decision offset 对齐"
+        ),
+    )
     bc_replan_steps: int = RosField(
         1,
         ge=1,
@@ -137,6 +164,12 @@ class Pi05BCPolicyParams(BaseModel):
         ge=1,
         read_only=True,
         description="单 episode 最大动作数",
+    )
+    first_action_max_wait_sec: float = RosField(
+        120.0,
+        gt=0.0,
+        read_only=True,
+        description="首次 VLA/BC 动作最大等待时间，需覆盖 torch.compile 预热",
     )
     vla_timeout_sec: float = RosField(
         5.0,
@@ -196,6 +229,13 @@ class Config(BaseModel):
     execution: Pi05BCExecutionConfig = RosField(
         default_factory=Pi05BCExecutionConfig,
     )
+    action: ReplayActionConfig = RosField(
+        default_factory=ReplayActionConfig,
+    )
+    record: RecordConfig = RosField(default_factory=RecordConfig)
+    action_record: ActionRecordConfig = RosField(
+        default_factory=ActionRecordConfig,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -212,8 +252,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     profile_path = resolve_profile_path(config.profile_path)
     validate_profile_contract(profile_path)
     prompt = config.policy.prompt.strip()
-    if not prompt:
+    if config.execution.mode == "single" and not prompt:
         raise ValueError("config.policy.prompt must not be empty")
+    goal_kwargs = {"prompt": prompt} if prompt else None
     policy_config = Pi05BCPolicyConfig(
         checkpoint_path=config.policy.checkpoint_path,
         hparams_path=config.policy.hparams_path,
@@ -225,6 +266,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         vla_response_key=config.policy.vla_response_key,
         vla_chunk_length=config.policy.vla_chunk_length,
         vla_replan_steps=config.policy.vla_replan_steps,
+        vla_prefetch_enabled=config.policy.vla_prefetch_enabled,
+        vla_prefetch_lead_steps=config.policy.vla_prefetch_lead_steps,
+        vla_prefetch_alignment=config.policy.vla_prefetch_alignment,
         bc_replan_steps=config.policy.bc_replan_steps,
         max_steps=config.policy.max_steps,
         vla_timeout_sec=config.policy.vla_timeout_sec,
@@ -301,7 +345,25 @@ def main(argv: Optional[list[str]] = None) -> None:
             session,
             ExecutionOptions(
                 enable_timing=config.execution.enable_timing,
-                goal_kwargs={"prompt": prompt},
+                action=(
+                    config.action
+                    if config.execution.mode in {"action", "action_record"}
+                    else None
+                ),
+                record=(
+                    config.record
+                    if config.execution.mode == "action_record"
+                    else None
+                ),
+                action_record=(
+                    config.action_record
+                    if config.execution.mode == "action_record"
+                    else None
+                ),
+                goal_kwargs=goal_kwargs,
+                first_action_max_wait_second=(
+                    config.policy.first_action_max_wait_sec
+                ),
             ),
         )
         execution.run()

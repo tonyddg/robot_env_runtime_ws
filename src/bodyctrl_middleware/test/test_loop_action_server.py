@@ -91,6 +91,19 @@ class _ActionHarness:
             timeout=timeout,
         ).result
 
+    def wait_until_idle(self, timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self.server._goal_lock:
+                idle = (
+                    self.server._active_goal_id is None
+                    and not self.server._requests_by_goal
+                )
+            if idle:
+                return
+            self.client_node.get_clock().sleep_for(_duration(0.01))
+        raise TimeoutError("action server did not become idle")
+
     def close(self) -> None:
         self.server.shutdown()
         self.server_executor.shutdown()
@@ -120,6 +133,23 @@ def test_loop_action_server_runs_operation_and_returns_result() -> None:
         result = harness.result(goal_handle)
         assert result.success is True
         assert result.reason == "policy_done"
+    finally:
+        harness.close()
+
+
+def test_loop_action_server_accepts_next_goal_after_result() -> None:
+    harness = _ActionHarness(
+        lambda context: RunResult(success = True, reason = "policy_done")
+    )
+    try:
+        first = harness.send_goal()
+        assert first.accepted is True
+        assert harness.result(first).reason == "policy_done"
+        harness.wait_until_idle()
+
+        second = harness.send_goal()
+        assert second.accepted is True
+        assert harness.result(second).reason == "policy_done"
     finally:
         harness.close()
 

@@ -6,6 +6,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,14 +27,15 @@ from bodyctrl_middleware.policy.pi05_bc.observations import (
     world_target_pose,
 )
 from bodyctrl_middleware.policy.pi05_bc.vla import VlaClient
+from bodyctrl_middleware.record.episode_writer import PolicyTraceValue
 from robot_env_runtime.core.types import InferenceFuture
 from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 
 class _FutureAction:
-    """Expose a ``Future[np.ndarray]`` through the runtime future protocol."""
+    """Expose an action result through the runtime future protocol."""
 
-    def __init__(self, future: Future[np.ndarray | None]) -> None:
+    def __init__(self, future: Future[_ActionResult | None]) -> None:
         self._future = future
 
     def done(self) -> bool:
@@ -43,7 +45,23 @@ class _FutureAction:
         result = self._future.result()
         if result is None:
             raise RuntimeError("policy produced no action")
-        return np.array(result, dtype=np.float32, copy=True)
+        return np.array(result.action, dtype=np.float32, copy=True)
+
+    def get_policy_trace(self) -> Mapping[str, Any]:
+        result = self._future.result()
+        if result is None:
+            raise RuntimeError("policy produced no trace")
+        trace = {}
+        for name, value in result.trace.items():
+            if isinstance(value, PolicyTraceValue):
+                trace[name] = PolicyTraceValue(
+                    np.array(value.value, copy=True),
+                    semantic=value.semantic,
+                    unit=value.unit,
+                )
+            else:
+                trace[name] = np.array(value, copy=True)
+        return trace
 
 
 class _ImmediateAction:
@@ -57,6 +75,39 @@ class _ImmediateAction:
 
     def get_action(self) -> np.ndarray:
         return np.array(self._action, copy=True)
+
+    def get_policy_trace(self) -> None:
+        """No trace is produced for an action that will not be dispatched."""
+        return None
+
+
+@dataclass(frozen=True)
+class _PrefetchedVlaChunk:
+    """One VLA chunk produced while the current chunk is still executing."""
+
+    chunk: np.ndarray
+    elapsed_sec: float
+    request_decision_index: int
+
+
+@dataclass(frozen=True)
+class _ActionResult:
+    """One policy action paired with its immutable diagnostic trace."""
+
+    action: np.ndarray
+    trace: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _VlaRequestInfo:
+    """Metadata for one VLA chunk selected by the policy."""
+
+    latency_sec: float
+    prefetch_used: bool
+    request_index: int
+    request_decision_index: int
+    consume_decision_index: int
+    start_index: int
 
 
 class Pi05BCTemporalPolicy(Policy):
@@ -79,6 +130,9 @@ class Pi05BCTemporalPolicy(Policy):
         self._metrics_logger = self._logger.get_child("metrics")
         self._clock = clock
         self._metrics = EpisodeMetrics()
+        self._episode_metrics_summary: dict[
+            str, dict[str, float]
+        ] = {}
         self._adapter = Pi05BCObservationAdapter(
             self._bc.dataset_config,
             self._bc.observation_builder,
@@ -96,11 +150,32 @@ class Pi05BCTemporalPolicy(Policy):
             raise ValueError(
                 "bc_replan_steps must not exceed vla_replan_steps"
             )
+        if (
+            config.vla_prefetch_enabled
+            and config.vla_prefetch_alignment == "observation_aligned"
+            and (
+                int(config.vla_prefetch_lead_steps)
+                + int(config.vla_replan_steps)
+                + future_horizon
+                - 1
+                > int(config.vla_chunk_length)
+            )
+        ):
+            raise ValueError(
+                "observation-aligned prefetch exceeds VLA chunk lookahead: "
+                "vla_prefetch_lead_steps + vla_replan_steps + "
+                "future_trajectory_horizon - 1 must not exceed "
+                "vla_chunk_length"
+            )
 
         validate_profile_contract(config.profile_path)
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="pi05-bc-policy",
+        )
+        self._prefetch_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="pi05-vla-prefetch",
         )
         self._lock = threading.Lock()
         self._closed = False
@@ -113,9 +188,16 @@ class Pi05BCTemporalPolicy(Policy):
 
         self._vla_chunk: np.ndarray | None = None
         self._vla_ptr = 0
+        self._vla_start_index = 0
+        self._vla_steps_since_replan = 0
+        self._vla_request_decision_index = -1
+        self._vla_consume_decision_index = -1
+        self._prefetch_future: Future[_PrefetchedVlaChunk] | None = None
         self._bc_chunk: np.ndarray | None = None
         self._bc_ptr = 0
         self._bc_steps_since_replan = 0
+        self._vla_request_count = 0
+        self._bc_request_count = 0
 
         self._prev_odom: np.ndarray | None = None
         self._prev_eef: np.ndarray | None = None
@@ -127,6 +209,7 @@ class Pi05BCTemporalPolicy(Policy):
 
         self._prompt = ""
         self._step_count = 0
+        self._decision_index = 0
 
     def validate_goal(self, goal: dict | None = None) -> bool:
         """Accept no goal with a configured prompt, or exactly one prompt field."""
@@ -143,8 +226,10 @@ class Pi05BCTemporalPolicy(Policy):
             raise RuntimeError("policy is closed")
         if not self.validate_goal(goal):
             raise ValueError("pi05_bc goal must be {'prompt': non-empty string}")
+        self._drain_prefetch()
         self._metrics.log(self._metrics_logger)
         self._metrics.reset()
+        self._episode_metrics_summary = {}
 
         prompt = self.config.prompt if goal is None else str(goal["prompt"])
         self._prompt = prompt.strip()
@@ -168,12 +253,19 @@ class Pi05BCTemporalPolicy(Policy):
 
         self._vla_chunk = None
         self._vla_ptr = 0
+        self._vla_start_index = 0
+        self._vla_steps_since_replan = 0
+        self._vla_request_decision_index = -1
+        self._vla_consume_decision_index = -1
         self._bc_chunk = None
         self._bc_ptr = 0
         self._bc_steps_since_replan = 0
+        self._vla_request_count = 0
+        self._bc_request_count = 0
         self._pending_targets.clear()
         with self._lock:
             self._step_count = 0
+            self._decision_index = 0
 
     def infer_async(self, obs: dict) -> InferenceFuture:
         """Submit one action preparation without blocking the runtime thread."""
@@ -185,6 +277,17 @@ class Pi05BCTemporalPolicy(Policy):
                     np.zeros(10, dtype=np.float32)
                 )
         return _FutureAction(self._executor.submit(self._prepare_action, obs))
+
+    def finalize_episode_metrics(self) -> dict[str, dict[str, float]]:
+        """Finalize and return the current episode metric summary."""
+        if not self._episode_metrics_summary:
+            self._episode_metrics_summary = self._metrics.finalize(
+                self._metrics_logger
+            )
+        return {
+            name: dict(values)
+            for name, values in self._episode_metrics_summary.items()
+        }
 
     def done(self) -> bool:
         """Return True after the configured number of executed actions."""
@@ -203,13 +306,22 @@ class Pi05BCTemporalPolicy(Policy):
             try:
                 self._bc.close()
             finally:
+                self._prefetch_executor.shutdown(
+                    wait=True,
+                    cancel_futures=True,
+                )
                 self._executor.shutdown(wait=True, cancel_futures=True)
                 self._metrics.log(self._metrics_logger)
 
-    def _prepare_action(self, obs: dict) -> np.ndarray:
+    def _prepare_action(self, obs: dict) -> _ActionResult:
         """Build one runtime action from the current observation snapshot."""
+        decision_index = self._decision_index
         current_eef = _require_eef_pose(obs)
         current_odom = _require_odom(obs)
+        previous_eef = (
+            None if self._prev_eef is None else self._prev_eef.copy()
+        )
+        previous_vla_gripper = self._prev_vla_gripper
         self._record_pending_target_error(current_eef)
 
         if self._prev_odom is None:
@@ -224,11 +336,19 @@ class Pi05BCTemporalPolicy(Policy):
         self._obs_valid_queue.append(True)
         self._obs_valid_queue.pop(0)
 
+        vla_request = None
         if (
             self._vla_chunk is None
-            or self._vla_ptr >= int(self.config.vla_replan_steps)
+            or self._vla_steps_since_replan
+            >= int(self.config.vla_replan_steps)
         ):
-            self._request_vla_chunk(obs, current_eef)
+            vla_request = self._request_vla_chunk(
+                obs,
+                current_eef=current_eef,
+                previous_eef=previous_eef,
+                previous_vla_gripper=previous_vla_gripper,
+                decision_index=decision_index,
+            )
 
         future_horizon = int(self._bc.dataset_config.traject_horizon[1])
         traj_window = self._vla_chunk[
@@ -243,14 +363,19 @@ class Pi05BCTemporalPolicy(Policy):
         masks = self._build_masks(full_traj.shape[1])
         self._append_traj_history(traj_window[0])
 
-        if self._need_bc_inference():
+        bc_replanned = self._need_bc_inference()
+        bc_latency_ms = float("nan")
+        if bc_replanned:
             started_at = self._clock()
             self._bc_chunk = self._bc.predict(
                 self._stack_observation_history(),
                 full_traj,
                 masks,
             )
-            self._metrics.add_bc(self._clock() - started_at)
+            bc_elapsed_sec = self._clock() - started_at
+            self._metrics.add_bc(bc_elapsed_sec)
+            bc_latency_ms = bc_elapsed_sec * 1000.0
+            self._bc_request_count += 1
             self._bc_ptr = 0
             self._bc_steps_since_replan = 0
             self._validate_bc_chunk()
@@ -264,52 +389,103 @@ class Pi05BCTemporalPolicy(Policy):
             ]
         )
         action = self._validate_runtime_action(raw_action)
-
-        self._pending_targets.append(
-            world_target_pose(
-                current_eef,
-                vla_point[:6],
-            )
+        target_pose = world_target_pose(
+            current_eef,
+            vla_point[:6],
         )
+
+        self._pending_targets.append(target_pose)
         self._prev_eef = current_eef
         self._prev_odom = current_odom
         self._prev_vla_gripper = float(vla_point[6])
         self._vla_ptr += 1
+        self._vla_steps_since_replan += 1
         self._bc_ptr += 1
         self._bc_steps_since_replan += 1
+        prefetch_started = self._maybe_start_vla_prefetch(
+            obs,
+            current_eef=current_eef,
+            previous_eef=previous_eef,
+            previous_vla_gripper=previous_vla_gripper,
+            request_decision_index=decision_index,
+        )
+        trace = self._build_policy_trace(
+            vla_chunk=self._vla_chunk,
+            vla_index=self._vla_ptr - 1,
+            vla_point=vla_point,
+            vla_request=vla_request,
+            vla_prefetch_started=prefetch_started,
+            bc_chunk=self._bc_chunk,
+            bc_index=self._bc_ptr - 1,
+            bc_action=bc_action,
+            bc_replanned=bc_replanned,
+            bc_latency_ms=bc_latency_ms,
+            current_eef=current_eef,
+            target_pose=target_pose,
+            odom_rel=odom_rel,
+            raw_action=raw_action,
+            runtime_action=action,
+            decision_index=decision_index,
+            vla_steps_since_replan=self._vla_steps_since_replan,
+        )
         with self._lock:
             self._step_count += 1
-        return action
+            self._decision_index += 1
+        return _ActionResult(action=action, trace=trace)
 
     def _request_vla_chunk(
         self,
         obs: Mapping[str, Any],
         current_eef: np.ndarray,
-    ) -> None:
-        if self._prev_eef is None or self._prev_vla_gripper is None:
+        previous_eef: np.ndarray | None,
+        previous_vla_gripper: float | None,
+        decision_index: int,
+    ) -> _VlaRequestInfo:
+        if previous_eef is None or previous_vla_gripper is None:
             raise RuntimeError("policy must be reset before VLA inference")
-        relative_eef = relative_eef_action(self._prev_eef, current_eef)
-        state = np.concatenate(
-            [
-                relative_eef,
-                np.asarray([self._prev_vla_gripper], dtype=np.float32),
-            ]
-        ).astype(np.float32)
-        request = {
-            "state": state[None, :],
-            "image": self._adapter.vla_images(obs),
-            "prompt": [self._prompt],
-        }
-        started_at = self._clock()
-        chunk = self._vla.infer(request)
-        self._metrics.add_vla(self._clock() - started_at)
+        prefetched = self._consume_prefetched_vla_chunk()
+        if prefetched is None:
+            request = self._build_vla_request(
+                obs,
+                current_eef=current_eef,
+                previous_eef=previous_eef,
+                previous_vla_gripper=previous_vla_gripper,
+            )
+            chunk, elapsed_sec = self._infer_vla_request(request)
+            prefetch_used = False
+            request_decision_index = decision_index
+            start_index = 0
+        else:
+            chunk = prefetched.chunk
+            elapsed_sec = prefetched.elapsed_sec
+            prefetch_used = True
+            request_decision_index = prefetched.request_decision_index
+            start_index = self._prefetch_start_index(
+                request_decision_index=request_decision_index,
+                consume_decision_index=decision_index,
+            )
+        self._metrics.add_vla(elapsed_sec)
+        self._vla_request_count += 1
+        self._validate_chunk_start_index(start_index)
+        request_info = _VlaRequestInfo(
+            latency_sec=elapsed_sec,
+            prefetch_used=prefetch_used,
+            request_index=self._vla_request_count,
+            request_decision_index=request_decision_index,
+            consume_decision_index=decision_index,
+            start_index=start_index,
+        )
         if chunk.shape != (int(self.config.vla_chunk_length), 7):
             raise ValueError(
                 "VLA chunk shape changed after client validation: "
                 f"{chunk.shape}"
             )
         self._vla_chunk = np.array(chunk, dtype=np.float32, copy=True)
-        self._vla_ptr = 0
+        self._vla_ptr = start_index
+        self._vla_start_index = start_index
+        self._vla_steps_since_replan = 0
+        self._vla_request_decision_index = request_decision_index
+        self._vla_consume_decision_index = decision_index
         self._bc_chunk = None
         self._bc_ptr = 0
         self._bc_steps_since_replan = 0
@@ -323,6 +499,275 @@ class Pi05BCTemporalPolicy(Policy):
             self._traj_history = [first.clone() for _ in range(lookback)]
             self._traj_valid_history = [False] * lookback
             self._traj_history_initialized = True
+        return request_info
+
+    def _prefetch_start_index(
+        self,
+        *,
+        request_decision_index: int,
+        consume_decision_index: int,
+    ) -> int:
+        """Align a prefetched chunk with actions consumed after its request."""
+        if self.config.vla_prefetch_alignment == "boundary":
+            return 0
+        return max(
+            0,
+            int(consume_decision_index) - int(request_decision_index),
+        )
+
+    def _validate_chunk_start_index(self, start_index: int) -> None:
+        """Require enough VLA lookahead for all remaining BC windows."""
+        future_horizon = int(self._bc.dataset_config.traject_horizon[1])
+        required = (
+            int(start_index)
+            + int(self.config.vla_replan_steps)
+            + future_horizon
+            - 1
+        )
+        if required > int(self.config.vla_chunk_length):
+            raise ValueError(
+                "VLA prefetch alignment leaves insufficient chunk lookahead: "
+                f"start_index={start_index}, replan_steps="
+                f"{self.config.vla_replan_steps}, future_horizon="
+                f"{future_horizon}, chunk_length="
+                f"{self.config.vla_chunk_length}"
+            )
+
+    def _maybe_start_vla_prefetch(
+        self,
+        obs: Mapping[str, Any],
+        *,
+        current_eef: np.ndarray,
+        previous_eef: np.ndarray | None,
+        previous_vla_gripper: float | None,
+        request_decision_index: int,
+    ) -> bool:
+        if not self.config.vla_prefetch_enabled:
+            return False
+        if self._prefetch_future is not None or self._vla_chunk is None:
+            return False
+        if previous_eef is None or previous_vla_gripper is None:
+            return False
+        prefetch_at = max(
+            1,
+            int(self.config.vla_replan_steps)
+            - int(self.config.vla_prefetch_lead_steps)
+            + 1,
+        )
+        if self._vla_steps_since_replan < prefetch_at:
+            return False
+        request = self._build_vla_request(
+            obs,
+            current_eef=current_eef,
+            previous_eef=previous_eef,
+            previous_vla_gripper=previous_vla_gripper,
+        )
+        self._prefetch_future = self._prefetch_executor.submit(
+            self._prefetch_vla_request,
+            request,
+            request_decision_index,
+        )
+        return True
+
+    def _build_policy_trace(
+        self,
+        *,
+        vla_chunk: np.ndarray,
+        vla_index: int,
+        vla_point: np.ndarray,
+        vla_request: _VlaRequestInfo | None,
+        vla_prefetch_started: bool,
+        bc_chunk: np.ndarray,
+        bc_index: int,
+        bc_action: np.ndarray,
+        bc_replanned: bool,
+        bc_latency_ms: float,
+        current_eef: np.ndarray,
+        target_pose: np.ndarray,
+        odom_rel: np.ndarray,
+        raw_action: np.ndarray,
+        runtime_action: np.ndarray,
+        decision_index: int,
+        vla_steps_since_replan: int,
+    ) -> dict[str, Any]:
+        """Build one flat, row-aligned trace mapping."""
+        vla_replanned = vla_request is not None
+        return {
+            "vla.chunk": PolicyTraceValue(
+                np.array(vla_chunk, dtype=np.float32, copy=True),
+                semantic="VLA trajectory chunk",
+            ),
+            "vla.index": PolicyTraceValue(
+                np.int32(vla_index),
+                semantic="selected VLA trajectory index",
+            ),
+            "vla.point": PolicyTraceValue(
+                np.array(vla_point, dtype=np.float32, copy=True),
+                semantic="selected VLA trajectory point",
+            ),
+            "vla.replanned": PolicyTraceValue(
+                np.bool_(vla_replanned),
+                semantic="VLA chunk was replaced on this action",
+            ),
+            "vla.prefetch_used": PolicyTraceValue(
+                np.bool_(
+                    False
+                    if vla_request is None
+                    else vla_request.prefetch_used
+                ),
+                semantic="VLA chunk came from background prefetch",
+            ),
+            "vla.prefetch_started": PolicyTraceValue(
+                np.bool_(vla_prefetch_started),
+                semantic="background VLA prefetch started on this action",
+            ),
+            "vla.inference_ms": PolicyTraceValue(
+                np.float64(
+                    float("nan")
+                    if vla_request is None
+                    else vla_request.latency_sec * 1000.0
+                ),
+                semantic="VLA inference latency",
+                unit="ms",
+            ),
+            "vla.request_index": PolicyTraceValue(
+                np.int32(self._vla_request_count),
+                semantic="cumulative VLA request index",
+            ),
+            "vla.start_index": PolicyTraceValue(
+                np.int32(self._vla_start_index),
+                semantic="first chunk index selected after activation",
+            ),
+            "vla.request_decision_index": PolicyTraceValue(
+                np.int32(self._vla_request_decision_index),
+                semantic="decision index of the observation used for VLA",
+            ),
+            "vla.consume_decision_index": PolicyTraceValue(
+                np.int32(self._vla_consume_decision_index),
+                semantic="decision index when the VLA chunk was activated",
+            ),
+            "vla.steps_since_replan": PolicyTraceValue(
+                np.int32(vla_steps_since_replan),
+                semantic="actions consumed from the active VLA chunk",
+            ),
+            "bc.chunk": PolicyTraceValue(
+                np.array(bc_chunk, dtype=np.float32, copy=True),
+                semantic="BC action chunk",
+            ),
+            "bc.index": PolicyTraceValue(
+                np.int32(bc_index),
+                semantic="selected BC action index",
+            ),
+            "bc.action": PolicyTraceValue(
+                np.array(bc_action, dtype=np.float32, copy=True),
+                semantic="selected BC arm/base action",
+            ),
+            "bc.replanned": PolicyTraceValue(
+                np.bool_(bc_replanned),
+                semantic="BC inference ran for this action",
+            ),
+            "bc.inference_ms": PolicyTraceValue(
+                np.float64(bc_latency_ms),
+                semantic="BC inference latency",
+                unit="ms",
+            ),
+            "bc.request_index": PolicyTraceValue(
+                np.int32(self._bc_request_count),
+                semantic="cumulative BC inference index",
+            ),
+            "eef.current_pose": PolicyTraceValue(
+                np.array(current_eef, dtype=np.float64, copy=True),
+                semantic="current world EEF pose",
+            ),
+            "eef.target_pose": PolicyTraceValue(
+                np.array(target_pose, dtype=np.float64, copy=True),
+                semantic="VLA-relative world EEF target",
+            ),
+            "odom.relative": PolicyTraceValue(
+                np.array(odom_rel, dtype=np.float32, copy=True),
+                semantic="backward SE(2) odometry delta",
+            ),
+            "action.raw": PolicyTraceValue(
+                np.array(raw_action, dtype=np.float32, copy=True),
+                semantic="runtime action before clipping",
+            ),
+            "action.runtime": PolicyTraceValue(
+                np.array(runtime_action, dtype=np.float32, copy=True),
+                semantic="dispatched runtime action",
+            ),
+            "action.decision_index": PolicyTraceValue(
+                np.int32(decision_index),
+                semantic="monotonic action decision index",
+            ),
+        }
+
+    def _consume_prefetched_vla_chunk(
+        self,
+    ) -> _PrefetchedVlaChunk | None:
+        future = self._prefetch_future
+        if future is None:
+            return None
+        self._prefetch_future = None
+        return future.result()
+
+    def _drain_prefetch(self) -> None:
+        """Discard VLA work left over from the previous episode."""
+        future = self._prefetch_future
+        self._prefetch_future = None
+        if future is None:
+            return
+        if future.cancel() or future.cancelled():
+            return
+        try:
+            future.result()
+        except Exception as exc:
+            self._logger.warn(
+                "discarded stale VLA prefetch failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _build_vla_request(
+        self,
+        obs: Mapping[str, Any],
+        *,
+        current_eef: np.ndarray,
+        previous_eef: np.ndarray,
+        previous_vla_gripper: float,
+    ) -> dict[str, Any]:
+        relative_eef = relative_eef_action(previous_eef, current_eef)
+        state = np.concatenate(
+            [
+                relative_eef,
+                np.asarray([previous_vla_gripper], dtype=np.float32),
+            ]
+        ).astype(np.float32)
+        images = self._adapter.vla_images(obs)
+        return {
+            "observation/image": images["head_rgb"][0],
+            "observation/wrist_image": images["gripper_rgb"][0],
+            "observation/state": state,
+            "prompt": self._prompt,
+        }
+
+    def _infer_vla_request(
+        self,
+        request: Mapping[str, Any],
+    ) -> tuple[np.ndarray, float]:
+        started_at = self._clock()
+        chunk = self._vla.infer(request)
+        return chunk, self._clock() - started_at
+
+    def _prefetch_vla_request(
+        self,
+        request: Mapping[str, Any],
+        request_decision_index: int,
+    ) -> _PrefetchedVlaChunk:
+        chunk, elapsed_sec = self._infer_vla_request(request)
+        return _PrefetchedVlaChunk(
+            chunk=chunk,
+            elapsed_sec=elapsed_sec,
+            request_decision_index=int(request_decision_index),
+        )
 
     def _stack_observation_history(self) -> dict[str, Any]:
         return self._bc.dataset_config.stack_temporal_obs(

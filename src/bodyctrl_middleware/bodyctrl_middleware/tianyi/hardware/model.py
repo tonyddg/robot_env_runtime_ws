@@ -123,7 +123,11 @@ def create_robot_model(
     cache_idx = (urdf_path, package_dir)
     model_cache = MODEL_CACHE.get(cache_idx, None)
     if model_cache is None:
-        MODEL_CACHE[cache_idx] = RobotModel(urdf_path, Path(package_dir), source_idx=list(URDF_JOINT_ORDER))
+        MODEL_CACHE[cache_idx] = RobotModel(
+            str(urdf_path),
+            str(package_dir),
+            source_idx=list(URDF_JOINT_ORDER),
+        )
     return MODEL_CACHE[cache_idx]
 
 def build_state_vectors(

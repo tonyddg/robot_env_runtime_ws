@@ -208,6 +208,5 @@ def normalize_vla_chunk(
         )
     if not np.isfinite(chunk).all():
         raise VlaInferenceError("VLA trajectory contains NaN or Inf")
-    if np.any(chunk[:, 6] < -1.0) or np.any(chunk[:, 6] > 1.0):
-        raise VlaInferenceError("VLA gripper values must be within [-1, 1]")
+    chunk[:, 6] = np.clip(chunk[:, 6], -1.0, 1.0)
     return np.array(chunk, dtype=np.float32, copy=True)

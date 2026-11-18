@@ -66,6 +66,12 @@ class EpisodeMetrics:
                 f"max={max(values):.4f}"
             )
 
+    def finalize(self, logger: LoggerLike) -> dict[str, dict[str, float]]:
+        """Return the summary and emit its log lines exactly once."""
+        summary = self.summary()
+        self.log(logger)
+        return summary
+
     def _streams(self) -> Iterable[tuple[str, list[float]]]:
         return (
             ("vla_total_ms", self.vla_total_ms),

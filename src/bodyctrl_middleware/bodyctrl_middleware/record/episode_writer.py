@@ -13,9 +13,11 @@ Episode HDF5 writer（bodyctrl_middleware.record）.
     │        ├── data                           dataset (T, ...)  原始 dtype
     │        ├── age                            dataset (T,) float64
     │        └── timestamp                      dataset (T,) float64
-    └── timing/                                 group
+    ├── timing/                                 group
         ├── snapshot_captured_at / deadline / lateness   dataset (T,) float64
         └── sent_at/<controller>                         dataset (T,) float64
+    └── policy_trace/                            optional group
+        └── <dotted.column>                     dataset (T, ...)
 
 配对语义与 ``robot_env/policy/record.py`` 一致：第 0 行是 padding 行（首帧 obs + 零动作、
 没有 info，因此 age / timestamp / timing 全部为 NaN），之后第 k 行 =
@@ -44,10 +46,11 @@ Episode HDF5 writer（bodyctrl_middleware.record）.
 
 import json
 import os
+import re
 import time
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import h5py
 import numpy as np
@@ -55,6 +58,9 @@ import numpy as np
 from robot_env_runtime.logging import LoggerLike, NULL_LOGGER
 
 WRITER_VERSION = "bodyctrl_middleware.record/2"
+POLICY_TRACE_SCHEMA_VERSION = 1
+
+_POLICY_TRACE_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 # 允许的压缩模式：默认 none（相机图像接近不可压缩，gzip 只省 ~7% 却要 200ms+）
 COMPRESSION_MODES = ("none", "lzf", "gzip")
@@ -151,6 +157,37 @@ def write_attrs(target: Any, mapping: Mapping[str, Any]) -> None:
             target.attrs[key] = json_dumps(value)
 
 
+@dataclass(frozen=True)
+class PolicyTraceValue:
+    """One policy trace column value with optional semantic metadata."""
+
+    value: Any
+    semantic: str = ""
+    unit: str = ""
+
+
+def _validate_policy_trace_name(name: str) -> None:
+    """Require a non-empty dot-separated HDF5 dataset name."""
+    if not name or name.startswith(".") or name.endswith("."):
+        raise ValueError(f"invalid policy_trace column name: {name!r}")
+    segments = name.split(".")
+    if any(
+        not segment or _POLICY_TRACE_SEGMENT.fullmatch(segment) is None
+        for segment in segments
+    ):
+        raise ValueError(f"invalid policy_trace column name: {name!r}")
+
+
+def _trace_fill_value(dtype: np.dtype) -> Any:
+    """Return a deterministic placeholder for padding trace rows."""
+    value_dtype = np.dtype(dtype)
+    if value_dtype.kind == "b":
+        return False
+    if value_dtype.kind in "iu":
+        return 0 if value_dtype.kind == "u" else -1
+    return np.nan
+
+
 @dataclass
 class _PendingRow:
     """缓冲区里的一行（padding 行没有 info）."""
@@ -159,6 +196,7 @@ class _PendingRow:
     action: np.ndarray
     info: Optional[Mapping[str, Any]]
     padding: bool
+    policy_trace: Optional[Dict[str, np.ndarray]] = None
     nbytes: int = 0
 
 
@@ -257,6 +295,10 @@ class EpisodeH5Writer:
         self._timing_group: Optional[h5py.Group] = None
         self._timing_scalars: Dict[str, h5py.Dataset] = {}
         self._sent_at_datasets: Dict[str, h5py.Dataset] = {}
+        self._policy_trace_group: Optional[h5py.Group] = None
+        self._policy_trace_datasets: Dict[str, h5py.Dataset] = {}
+        self._policy_trace_fill: Dict[str, Any] = {}
+        self._policy_trace_spec: Dict[str, Dict[str, Any]] = {}
 
         self._meta = dict(meta or {})
         self._action_meta = dict(action_meta or {})
@@ -270,6 +312,9 @@ class EpisodeH5Writer:
         # finalize 模式下 append 不建 dataset，形状/dtype 校验用首行记录的 spec
         self._spec_obs: Optional[Dict[str, Any]] = None
         self._spec_action: Optional[Any] = None
+        self._spec_policy_trace: Optional[
+            Dict[str, Tuple[Tuple[int, ...], np.dtype]]
+        ] = None
         self._buffer_bytes = 0
         self._buffer_high_water = 0
         self._buffer_warned = False
@@ -304,6 +349,7 @@ class EpisodeH5Writer:
         info: Optional[Mapping[str, Any]] = None,
         *,
         padding: bool = False,
+        policy_trace: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """
         追加一行 (obs, action, info).
@@ -319,11 +365,14 @@ class EpisodeH5Writer:
                 "append() requires info for a normal step row; "
                 "pass padding=True for the leading padding row"
             )
+        if padding and policy_trace is not None:
+            raise ValueError("padding row must not carry policy_trace")
 
         obs_snapshot = self._snapshot_obs(obs)
         action_snapshot = np.array(action, copy = True)
         if action_snapshot.dtype == object:
             raise TypeError("action has unsupported object dtype")
+        trace_snapshot, trace_spec = self._snapshot_policy_trace(policy_trace)
 
         if self.flush_policy == "batch":
             if not self._initialized:
@@ -333,20 +382,41 @@ class EpisodeH5Writer:
                 self._validate(obs_snapshot, action_snapshot)
             if info is not None:
                 self._ensure_info_dependent_structures(info)
+            if trace_snapshot is not None:
+                self._remember_policy_trace_spec(trace_spec)
+                self._ensure_policy_trace_structures(trace_snapshot)
+            elif self._spec_policy_trace is not None:
+                raise ValueError(
+                    "policy_trace is missing after trace schema initialization"
+                )
         else:
             # finalize 模式：循环期间不建表、不写盘，只用首行记录的 spec 做校验
             if self._spec_obs is None:
                 self._remember_spec(obs_snapshot, action_snapshot)
             else:
                 self._validate_spec(obs_snapshot, action_snapshot)
+            if trace_snapshot is not None:
+                self._remember_policy_trace_spec(trace_spec)
+            elif self._spec_policy_trace is not None:
+                raise ValueError(
+                    "policy_trace is missing after trace schema initialization"
+                )
 
         row = _PendingRow(
             obs = obs_snapshot,
             action = action_snapshot,
             info = dict(info) if info is not None else None,
             padding = bool(padding),
+            policy_trace = trace_snapshot,
             nbytes = int(action_snapshot.nbytes) + sum(
                 int(value.nbytes) for value in obs_snapshot.values()
+            ) + (
+                0
+                if trace_snapshot is None
+                else sum(
+                    int(value.nbytes)
+                    for value in trace_snapshot.values()
+                )
             ),
         )
         self._buffer.append(row)
@@ -411,6 +481,29 @@ class EpisodeH5Writer:
                     [self._sent_at(row, controller) for row in written],
                     dtype = np.float64,
                 )
+        if self._policy_trace_group is not None:
+            for name, dataset in self._policy_trace_datasets.items():
+                if all(row.policy_trace is None for row in written):
+                    shape = dataset.shape[1:]
+                    fill = self._policy_trace_fill[name]
+                    values = [
+                        np.full(shape, fill, dtype = dataset.dtype)
+                        for _ in written
+                    ]
+                else:
+                    values = [
+                        (
+                            np.full(
+                                dataset.shape[1:],
+                                self._policy_trace_fill[name],
+                                dtype = dataset.dtype,
+                            )
+                            if row.policy_trace is None
+                            else row.policy_trace[name]
+                        )
+                        for row in written
+                    ]
+                dataset[start:end] = np.stack(values, axis = 0)
 
         self._padding_rows += sum(1 for row in written if row.padding)
 
@@ -495,6 +588,13 @@ class EpisodeH5Writer:
         else:
             self.partial_path.unlink(missing_ok = True)
 
+    def update_meta(self, values: Mapping[str, Any]) -> None:
+        """Merge JSON-serializable metadata before finalize."""
+        if self._close:
+            raise RuntimeError("episode writer is already closed")
+        self._meta.update(jsonable(dict(values)))
+        self._file.attrs["meta"] = json_dumps(self._meta)
+
     def _write_deferred_rows(self) -> None:
         """
         finalize 模式：建表 + 按 ``write_chunk_rows`` 分块写出整轮缓存.
@@ -506,9 +606,19 @@ class EpisodeH5Writer:
         first_info = next(
             (row.info for row in self._buffer if row.info is not None), None,
         )
+        first_trace = next(
+            (
+                row.policy_trace
+                for row in self._buffer
+                if row.policy_trace is not None
+            ),
+            None,
+        )
         self._initialize(self._buffer[0].obs, self._buffer[0].action)
         if first_info is not None:
             self._ensure_info_dependent_structures(first_info)
+        if first_trace is not None:
+            self._ensure_policy_trace_structures(first_trace)
         while self._buffer:
             self.flush(self.write_chunk_rows)
 
@@ -568,6 +678,7 @@ class EpisodeH5Writer:
             datasets.extend([entry["data"], entry["age"], entry["timestamp"]])
         if self._action_dataset is not None:
             datasets.append(self._action_dataset)
+        datasets.extend(self._policy_trace_datasets.values())
         datasets.extend(self._timing_scalars.values())
         datasets.extend(self._sent_at_datasets.values())
         return datasets
@@ -633,6 +744,103 @@ class EpisodeH5Writer:
             snapshot[key] = array
         return snapshot
 
+    @staticmethod
+    def _snapshot_policy_trace(
+        trace: Optional[Mapping[str, Any]],
+    ) -> tuple[
+        Optional[Dict[str, np.ndarray]],
+        Dict[str, Dict[str, Any]],
+    ]:
+        """Validate and snapshot one flat policy trace row."""
+        if trace is None:
+            return None, {}
+        if not isinstance(trace, Mapping) or not trace:
+            raise ValueError("policy_trace must be a non-empty mapping")
+
+        values: Dict[str, np.ndarray] = {}
+        spec: Dict[str, Dict[str, Any]] = {}
+        for raw_name, raw_value in trace.items():
+            name = str(raw_name)
+            _validate_policy_trace_name(name)
+            if name in values:
+                raise ValueError(f"duplicate policy_trace column: {name!r}")
+
+            semantic = ""
+            unit = ""
+            value = raw_value
+            if isinstance(raw_value, PolicyTraceValue):
+                value = raw_value.value
+                semantic = str(raw_value.semantic)
+                unit = str(raw_value.unit)
+
+            array = np.array(value, copy = True)
+            if array.dtype == object:
+                raise TypeError(
+                    f"policy_trace {name!r} has unsupported object dtype"
+                )
+            if array.dtype.kind not in "biuf":
+                raise TypeError(
+                    f"policy_trace {name!r} must be numeric or boolean, "
+                    f"got dtype {array.dtype}"
+                )
+            values[name] = array
+            spec[name] = {
+                "shape": tuple(array.shape),
+                "dtype": array.dtype,
+                "semantic": semantic,
+                "unit": unit,
+            }
+        return values, spec
+
+    def _remember_policy_trace_spec(
+        self,
+        spec: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Validate one trace row against the episode-wide trace schema."""
+        current = {
+            name: (
+                tuple(self._policy_trace_spec[name]["shape"]),
+                np.dtype(self._policy_trace_spec[name]["dtype"]),
+            )
+            for name in self._policy_trace_spec
+        }
+        incoming = {
+            name: (
+                tuple(entry["shape"]),
+                np.dtype(entry["dtype"]),
+            )
+            for name, entry in spec.items()
+        }
+        if not current:
+            self._policy_trace_spec = {
+                name: {
+                    "shape": tuple(entry["shape"]),
+                    "dtype": entry["dtype"],
+                    "semantic": entry["semantic"],
+                    "unit": entry["unit"],
+                }
+                for name, entry in spec.items()
+            }
+            return
+        if set(current) != set(incoming):
+            raise ValueError(
+                "policy_trace columns changed during episode: "
+                f"{sorted(incoming)} != {sorted(current)}"
+            )
+        for name in sorted(current):
+            expected_shape, expected_dtype = current[name]
+            actual_shape, actual_dtype = incoming[name]
+            if actual_shape != expected_shape:
+                raise ValueError(
+                    f"policy_trace {name!r} shape changed: "
+                    f"{actual_shape} != {expected_shape}"
+                )
+            if actual_dtype != expected_dtype:
+                raise ValueError(
+                    f"policy_trace {name!r} dtype changed: "
+                    f"{actual_dtype} != {expected_dtype}"
+                )
+
     def _initialize(
         self,
         obs: Dict[str, np.ndarray],
@@ -674,6 +882,45 @@ class EpisodeH5Writer:
             self._action_attrs_written = True
         if self._timing_group is None:
             self._create_timing_datasets(info)
+
+    def _ensure_policy_trace_structures(
+        self,
+        trace: Mapping[str, np.ndarray],
+    ) -> None:
+        """Create flat dotted trace datasets, backfilling earlier rows."""
+        if self._policy_trace_group is not None:
+            return
+
+        self._policy_trace_group = self._file.create_group("policy_trace")
+        write_attrs(self._policy_trace_group, {
+            "schema_version": POLICY_TRACE_SCHEMA_VERSION,
+            "fields": sorted(trace),
+        })
+
+        rows = max(self._count + len(self._buffer), self._capacity)
+        for name in sorted(trace):
+            value = trace[name]
+            fill = _trace_fill_value(value.dtype)
+            dataset = self._create_extendable_dataset(
+                self._policy_trace_group,
+                name,
+                value,
+                key = f"policy_trace/{name}",
+                rows = rows,
+                fillvalue = fill,
+            )
+            spec = self._policy_trace_spec[name]
+            write_attrs(dataset, {
+                "name": name,
+                "semantic": spec["semantic"] or name,
+                "unit": spec["unit"],
+                "spec": {
+                    "dtype": str(value.dtype),
+                    "shape": list(value.shape),
+                },
+            })
+            self._policy_trace_datasets[name] = dataset
+            self._policy_trace_fill[name] = fill
 
     def _write_obs_attrs(self, info: Mapping[str, Any]) -> None:
         observations = info.get("observations") or {}
@@ -864,6 +1111,8 @@ class EpisodeH5Writer:
         sample: np.ndarray,
         *,
         key: Optional[str] = None,
+        rows: int = 0,
+        fillvalue: Optional[Any] = None,
     ) -> h5py.Dataset:
         sample = np.asarray(sample)
 
@@ -881,14 +1130,27 @@ class EpisodeH5Writer:
         chunks = (chunk_steps,) + sample_shape
         kwargs = self._compression_kwargs(key if key is not None else name, sample)
 
-        return group.create_dataset(
+        kwargs_create: Dict[str, Any] = {}
+        if fillvalue is not None:
+            kwargs_create["fillvalue"] = fillvalue
+        dataset = group.create_dataset(
             name,
             shape = (0,) + sample_shape,
             maxshape = (None,) + sample_shape,
             chunks = chunks,
             dtype = sample.dtype,
             **kwargs,
+            **kwargs_create,
         )
+        if rows:
+            dataset.resize((int(rows),) + sample_shape)
+            if fillvalue is not None:
+                dataset[:] = np.full(
+                    (int(rows),) + sample_shape,
+                    fillvalue,
+                    dtype = sample.dtype,
+                )
+        return dataset
 
     def _create_scalar_dataset(
         self,

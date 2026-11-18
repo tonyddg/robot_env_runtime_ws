@@ -67,9 +67,13 @@ def test_launch_selects_any_topology_reset_posture() -> None:
         module._select_reset_posture(topology, "missing")
 
 
-def test_pi05_bc_runtime_is_registered_single_only() -> None:
+def test_pi05_bc_runtime_supports_single_action_and_action_record() -> None:
     module = _launch_module()
     assert module.RUNTIME_CONFIG["pi05_bc"]["executable"] == (
         "tianyi_pi05_bc_runtime_node"
     )
-    assert module.EXECUTION_MODES["pi05_bc"] == ("single",)
+    assert module.EXECUTION_MODES["pi05_bc"] == (
+        "single",
+        "action",
+        "action_record",
+    )

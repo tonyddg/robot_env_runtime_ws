@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -17,9 +18,15 @@ class Pi05BCPolicyConfig:
     vla_host: str = "127.0.0.1"
     vla_port: int = 8000
     vla_api_key_env: str = "OPENPI_API_KEY"
-    vla_response_key: str = "actions"
+    vla_response_key: str = "pi0_actions_ref"
     vla_chunk_length: int = 10
     vla_replan_steps: int = 3
+    vla_prefetch_enabled: bool = True
+    vla_prefetch_lead_steps: int = 1
+    vla_prefetch_alignment: Literal[
+        "boundary",
+        "observation_aligned",
+    ] = "boundary"
     bc_replan_steps: int = 1
     max_steps: int = 600
     vla_timeout_sec: float = 5.0
@@ -46,6 +53,20 @@ class Pi05BCPolicyConfig:
             raise ValueError("vla_chunk_length must be positive")
         if int(self.vla_replan_steps) < 1:
             raise ValueError("vla_replan_steps must be positive")
+        if int(self.vla_prefetch_lead_steps) < 1:
+            raise ValueError("vla_prefetch_lead_steps must be positive")
+        if int(self.vla_prefetch_lead_steps) > int(self.vla_replan_steps):
+            raise ValueError(
+                "vla_prefetch_lead_steps must not exceed vla_replan_steps"
+            )
+        if self.vla_prefetch_alignment not in {
+            "boundary",
+            "observation_aligned",
+        }:
+            raise ValueError(
+                "vla_prefetch_alignment must be one of "
+                "'boundary', 'observation_aligned'"
+            )
         if int(self.bc_replan_steps) < 1:
             raise ValueError("bc_replan_steps must be positive")
         if int(self.max_steps) < 1:

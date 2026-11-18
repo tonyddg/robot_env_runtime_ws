@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 from bodyctrl_middleware.action.contracts import RunContext
 from bodyctrl_middleware.action.operation import make_env_loop_operation
 from robot_env_runtime.core.errors import ResetParameterError
@@ -58,6 +60,60 @@ def test_operation_merges_default_and_goal_reset_kwargs() -> None:
     assert env.seen_reset_kwargs == [
         {"mode": "default", "value": 2, "extra": True}
     ]
+
+
+def test_operation_uses_default_goal_and_allows_goal_override() -> None:
+    class GoalPolicy(FakePolicy):
+        def validate_goal(self, goal=None) -> bool:
+            return goal is None or (
+                set(goal) == {"prompt"}
+                and isinstance(goal["prompt"], str)
+                and bool(goal["prompt"].strip())
+            )
+
+    env = _LoopEnv()
+    policy = GoalPolicy(steps = 1)
+    operation = make_env_loop_operation(
+        env,
+        policy,
+        default_goal_kwargs = {"prompt": "default prompt"},
+    )
+
+    assert operation(_context()).success is True
+    assert operation(
+        _context(goal_kwargs = {"prompt": "goal prompt"})
+    ).success is True
+    assert policy.seen_goals == [
+        {"prompt": "default prompt"},
+        {"prompt": "goal prompt"},
+    ]
+
+
+def test_operation_honors_first_action_timeout() -> None:
+    class PendingFuture:
+        def done(self) -> bool:
+            return False
+
+        def get_action(self):
+            raise AssertionError("pending future must not yield an action")
+
+    class PendingPolicy(FakePolicy):
+        def infer_async(self, obs):
+            return PendingFuture()
+
+    env = _LoopEnv()
+    operation = make_env_loop_operation(
+        env,
+        PendingPolicy(steps = 10),
+        first_action_max_wait_second = 0.3,
+    )
+
+    result = operation(_context())
+
+    assert result.success is False
+    assert result.reason == "first_action_timeout"
+    assert env.clock.waits[-1] == pytest.approx(100.3)
+    assert env.stop_calls == 1
 
 
 def test_operation_maps_invalid_env_reset_without_side_effects() -> None:
