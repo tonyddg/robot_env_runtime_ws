@@ -9,8 +9,10 @@ dependencies = [
     "h5py>=3.16.0",
     "lark==1.1.1",
     # 覆盖 ros2 的 opencv
-    "opencv-python>=5.0.0.93",
-    "pin>=4.1.0",
+
+    "numpy==1.26.4",
+    "opencv-python==4.11.0.86",
+
     "pydantic>=2.13.4",
     # "pyyaml>=6.0.3",
     # "requests>=2.34.2",
@@ -29,6 +31,9 @@ robotiq = [
 vla-policy = [
     "vla-bc-policy-temporal",
     "openpi-client",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "triton==3.4.0",
 ]
 
 [tool.uv]
@@ -38,6 +43,16 @@ package = false
 robot-refactor = { git = "https://github.com/tonyddg/robot_refactor.git" }
 vla-bc-policy-temporal = { git = "https://github.com/tonyddg/vla_bc_policy_temporal.git" }
 openpi-client = { git = "https://github.com/tonyddg/openpi", subdirectory = "packages/openpi-client", branch = "vla-rl" }
+
+# 只有 Linux ARM64 使用 Jetson 专用 PyTorch
+torch = { index = "jetson-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" }
+torchvision = { index = "jetson-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" }
+triton = { index = "jetson-cu126", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" }
+
+[[tool.uv.index]]
+name = "jetson-cu126"
+url = "https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/"
+explicit = true
 
 # colcon build 时使用 uv 提供的而不是安装在系统中的
 [dependency-groups]
