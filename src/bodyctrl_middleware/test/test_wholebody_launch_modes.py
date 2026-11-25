@@ -77,3 +77,15 @@ def test_pi05_bc_runtime_supports_single_action_and_action_record() -> None:
         "action",
         "action_record",
     )
+
+
+def test_pi05_direct_runtime_supports_all_action_modes() -> None:
+    module = _launch_module()
+    assert module.RUNTIME_CONFIG["pi05_direct"]["executable"] == (
+        "tianyi_pi05_direct_runtime_node"
+    )
+    assert module.EXECUTION_MODES["pi05_direct"] == (
+        "single",
+        "action",
+        "action_record",
+    )

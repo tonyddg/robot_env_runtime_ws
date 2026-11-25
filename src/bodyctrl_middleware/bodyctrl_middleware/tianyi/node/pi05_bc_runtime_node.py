@@ -13,6 +13,7 @@ from bodyctrl_middleware.policy.pi05_bc.policy import (
     validate_profile_contract,
 )
 from bodyctrl_middleware.policy.pi05_bc.vla import OpenPiVlaClient
+from bodyctrl_middleware.policy.openpi.rtc import RtcTrajectoryClient
 from bodyctrl_middleware.tianyi.hardware.constants import LEFT_ARM_MOTOR_IDS
 from bodyctrl_middleware.tianyi.node.common.config import (
     ActionRecordConfig,
@@ -97,6 +98,11 @@ class Pi05BCPolicyParams(BaseModel):
         read_only=True,
         description="默认 VLA 语言指令",
     )
+    vla_client_mode: Literal["websocket", "rtc"] = RosField(
+        "websocket",
+        read_only=True,
+        description="VLA 客户端协议：websocket chunk 或 RTC",
+    )
     vla_host: str = RosField(
         "127.0.0.1",
         read_only=True,
@@ -115,7 +121,7 @@ class Pi05BCPolicyParams(BaseModel):
         description="保存 VLA API key 的环境变量名",
     )
     vla_response_key: str = RosField(
-        "actions",
+        "pi0_actions_ref",
         read_only=True,
         description="VLA 响应中的轨迹字段",
     )
@@ -260,6 +266,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         hparams_path=config.policy.hparams_path,
         profile_path=profile_path,
         prompt=prompt,
+        vla_client_mode=config.policy.vla_client_mode,
         vla_host=config.policy.vla_host,
         vla_port=config.policy.vla_port,
         vla_api_key_env=config.policy.vla_api_key_env,
@@ -284,7 +291,7 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     policy: Pi05BCTemporalPolicy | None = None
     bc_backend: BCPolicyRunner | None = None
-    vla_client: OpenPiVlaClient | None = None
+    vla_client: OpenPiVlaClient | RtcTrajectoryClient | None = None
     env: RobotEnv | None = None
     execution = None
     try:
@@ -295,15 +302,29 @@ def main(argv: Optional[list[str]] = None) -> None:
             use_fast_predict=config.policy.use_fast_predict,
             use_amp=config.policy.use_amp,
         )
-        vla_client = OpenPiVlaClient(
-            host=config.policy.vla_host,
-            port=config.policy.vla_port,
-            api_key_env=config.policy.vla_api_key_env,
-            response_key=config.policy.vla_response_key,
-            chunk_length=config.policy.vla_chunk_length,
-            request_timeout_sec=config.policy.vla_timeout_sec,
-            connect_timeout_sec=config.policy.vla_connect_timeout_sec,
-        )
+        if config.policy.vla_client_mode == "rtc":
+            future_horizon = int(
+                bc_backend.dataset_config.traject_horizon[1]
+            )
+            vla_client = RtcTrajectoryClient(
+                host=config.policy.vla_host,
+                port=config.policy.vla_port,
+                api_key_env=config.policy.vla_api_key_env,
+                request_timeout_sec=config.policy.vla_timeout_sec,
+                connect_timeout_sec=config.policy.vla_connect_timeout_sec,
+                action_dim=7,
+                required_lookahead_steps=future_horizon,
+            )
+        else:
+            vla_client = OpenPiVlaClient(
+                host=config.policy.vla_host,
+                port=config.policy.vla_port,
+                api_key_env=config.policy.vla_api_key_env,
+                response_key=config.policy.vla_response_key,
+                chunk_length=config.policy.vla_chunk_length,
+                request_timeout_sec=config.policy.vla_timeout_sec,
+                connect_timeout_sec=config.policy.vla_connect_timeout_sec,
+            )
         vla_client.connect()
         policy = Pi05BCTemporalPolicy(
             config=policy_config,

@@ -19,6 +19,7 @@ setup(
         ('share/' + package_name + '/config/tianyi/replay', glob('config/tianyi/replay/*.yaml')),
         ('share/' + package_name + '/config/tianyi/tiansuo_control', glob('config/tianyi/tiansuo_control/*.yaml')),
         ('share/' + package_name + '/config/tianyi/pi05_bc', glob('config/tianyi/pi05_bc/*')),
+        ('share/' + package_name + '/config/tianyi/pi05_direct', glob('config/tianyi/pi05_direct/*')),
         
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ],
@@ -44,6 +45,7 @@ setup(
             "tianyi_tiansuo_runtime_node = bodyctrl_middleware.tianyi.node.tiansuo_runtime_node:main",
             "tianyi_replay_runtime_node = bodyctrl_middleware.tianyi.node.replay_runtime_node:main",
             "tianyi_pi05_bc_runtime_node = bodyctrl_middleware.tianyi.node.pi05_bc_runtime_node:main",
+            "tianyi_pi05_direct_runtime_node = bodyctrl_middleware.tianyi.node.pi05_direct_runtime_node:main",
 
             "tianyi_arm_ready_monitor_node = bodyctrl_middleware.tianyi.test_node.tianyi_arm_ready_monitor_node:main",
             "tianyi_arm_state_reflect_node = bodyctrl_middleware.tianyi.bridge.arm_state_reflect_node:main",

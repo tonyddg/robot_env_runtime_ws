@@ -88,6 +88,11 @@ def build_record_meta(
 
     if policy is not None:
         policy_meta: dict = {"class": type(policy).__name__}
+        runtime_metadata = getattr(policy, "record_metadata", None)
+        if callable(runtime_metadata):
+            value = runtime_metadata()
+            if isinstance(value, Mapping):
+                policy_meta.update(jsonable(dict(value)))
         tele_config_list = getattr(policy, "tele_config_list", None)
         if tele_config_list is not None:
             policy_meta["tele_config_list"] = [

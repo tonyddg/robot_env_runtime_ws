@@ -6,7 +6,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -108,6 +108,8 @@ class _VlaRequestInfo:
     request_decision_index: int
     consume_decision_index: int
     start_index: int
+    replanned: bool = True
+    rtc_trace: Mapping[str, Any] = field(default_factory=dict)
 
 
 class Pi05BCTemporalPolicy(Policy):
@@ -139,34 +141,73 @@ class Pi05BCTemporalPolicy(Policy):
         )
 
         future_horizon = int(self._bc.dataset_config.traject_horizon[1])
-        max_replan = int(config.vla_chunk_length) - future_horizon + 1
-        if int(config.vla_replan_steps) > max_replan:
-            raise ValueError(
-                "vla_replan_steps must satisfy "
-                f"vla_chunk_length - future_trajectory_horizon + 1, "
-                f"got {config.vla_replan_steps} > {max_replan}"
+        self._rtc_mode = config.vla_client_mode == "rtc"
+        self._rtc_profile: Any | None = None
+        self._vla_chunk_length = int(config.vla_chunk_length)
+        if self._rtc_mode:
+            self._rtc_profile = getattr(vla_client, "server_profile", None)
+            if self._rtc_profile is None:
+                raise ValueError(
+                    "RTC mode requires a VLA client with server_profile"
+                )
+            self._vla_chunk_length = int(self._rtc_profile.horizon)
+            request_steps = int(
+                self._rtc_profile.request_interval_steps
             )
-        if int(config.bc_replan_steps) > int(config.vla_replan_steps):
-            raise ValueError(
-                "bc_replan_steps must not exceed vla_replan_steps"
-            )
-        if (
-            config.vla_prefetch_enabled
-            and config.vla_prefetch_alignment == "observation_aligned"
-            and (
-                int(config.vla_prefetch_lead_steps)
-                + int(config.vla_replan_steps)
-                + future_horizon
-                - 1
-                > int(config.vla_chunk_length)
-            )
-        ):
-            raise ValueError(
-                "observation-aligned prefetch exceeds VLA chunk lookahead: "
-                "vla_prefetch_lead_steps + vla_replan_steps + "
-                "future_trajectory_horizon - 1 must not exceed "
-                "vla_chunk_length"
-            )
+            control_period = _profile_control_period(config.profile_path)
+            if abs(
+                control_period - self._rtc_profile.control_period_sec
+            ) > 1e-9:
+                raise ValueError(
+                    "RTC control period does not match profile: "
+                    f"{self._rtc_profile.control_period_sec} != "
+                    f"{control_period}"
+                )
+            if request_steps + future_horizon - 1 > self._vla_chunk_length:
+                raise ValueError(
+                    "RTC H/s does not provide enough BC lookahead: "
+                    f"H={self._vla_chunk_length}, s={request_steps}, "
+                    f"future_horizon={future_horizon}"
+                )
+            if self._rtc_profile.estimated_delay_steps >= request_steps:
+                raise ValueError(
+                    "RTC estimated delay must be smaller than s"
+                )
+            if int(config.vla_chunk_length) != self._vla_chunk_length:
+                self._logger.warn(
+                    "RTC mode ignores config.policy.vla_chunk_length="
+                    f"{config.vla_chunk_length}; server H="
+                    f"{self._vla_chunk_length}"
+                )
+        else:
+            max_replan = self._vla_chunk_length - future_horizon + 1
+            if int(config.vla_replan_steps) > max_replan:
+                raise ValueError(
+                    "vla_replan_steps must satisfy "
+                    "vla_chunk_length - future_trajectory_horizon + 1, "
+                    f"got {config.vla_replan_steps} > {max_replan}"
+                )
+            if int(config.bc_replan_steps) > int(config.vla_replan_steps):
+                raise ValueError(
+                    "bc_replan_steps must not exceed vla_replan_steps"
+                )
+            if (
+                config.vla_prefetch_enabled
+                and config.vla_prefetch_alignment == "observation_aligned"
+                and (
+                    int(config.vla_prefetch_lead_steps)
+                    + int(config.vla_replan_steps)
+                    + future_horizon
+                    - 1
+                    > self._vla_chunk_length
+                )
+            ):
+                raise ValueError(
+                    "observation-aligned prefetch exceeds VLA chunk "
+                    "lookahead: vla_prefetch_lead_steps + "
+                    "vla_replan_steps + future_trajectory_horizon - 1 "
+                    "must not exceed vla_chunk_length"
+                )
 
         validate_profile_contract(config.profile_path)
         self._executor = ThreadPoolExecutor(
@@ -227,6 +268,9 @@ class Pi05BCTemporalPolicy(Policy):
         if not self.validate_goal(goal):
             raise ValueError("pi05_bc goal must be {'prompt': non-empty string}")
         self._drain_prefetch()
+        reset_episode = getattr(self._vla, "reset_episode", None)
+        if callable(reset_episode):
+            reset_episode()
         self._metrics.log(self._metrics_logger)
         self._metrics.reset()
         self._episode_metrics_summary = {}
@@ -289,6 +333,25 @@ class Pi05BCTemporalPolicy(Policy):
             for name, values in self._episode_metrics_summary.items()
         }
 
+    def record_metadata(self) -> Mapping[str, Any]:
+        """Return runtime client metadata for action_record episodes."""
+        metadata: dict[str, Any] = {
+            "vla_client_mode": self.config.vla_client_mode,
+        }
+        if self._rtc_profile is not None:
+            metadata["rtc_server"] = self._rtc_profile.as_dict()
+            metadata["rtc_ignored_websocket_prefetch"] = {
+                "vla_replan_steps": self.config.vla_replan_steps,
+                "vla_prefetch_enabled": self.config.vla_prefetch_enabled,
+                "vla_prefetch_lead_steps": (
+                    self.config.vla_prefetch_lead_steps
+                ),
+                "vla_prefetch_alignment": (
+                    self.config.vla_prefetch_alignment
+                ),
+            }
+        return metadata
+
     def done(self) -> bool:
         """Return True after the configured number of executed actions."""
         with self._lock:
@@ -337,18 +400,35 @@ class Pi05BCTemporalPolicy(Policy):
         self._obs_valid_queue.pop(0)
 
         vla_request = None
-        if (
-            self._vla_chunk is None
-            or self._vla_steps_since_replan
-            >= int(self.config.vla_replan_steps)
-        ):
-            vla_request = self._request_vla_chunk(
+        if self._rtc_mode:
+            if previous_eef is None or previous_vla_gripper is None:
+                raise RuntimeError(
+                    "policy must be reset before RTC inference"
+                )
+            rtc_observation = self._build_vla_request(
                 obs,
                 current_eef=current_eef,
                 previous_eef=previous_eef,
                 previous_vla_gripper=previous_vla_gripper,
+            )
+            frame = self._vla.infer_frame(rtc_observation)
+            vla_request = self._install_rtc_frame(
+                frame,
                 decision_index=decision_index,
             )
+        else:
+            if (
+                self._vla_chunk is None
+                or self._vla_steps_since_replan
+                >= int(self.config.vla_replan_steps)
+            ):
+                vla_request = self._request_vla_chunk(
+                    obs,
+                    current_eef=current_eef,
+                    previous_eef=previous_eef,
+                    previous_vla_gripper=previous_vla_gripper,
+                    decision_index=decision_index,
+                )
 
         future_horizon = int(self._bc.dataset_config.traject_horizon[1])
         traj_window = self._vla_chunk[
@@ -402,13 +482,15 @@ class Pi05BCTemporalPolicy(Policy):
         self._vla_steps_since_replan += 1
         self._bc_ptr += 1
         self._bc_steps_since_replan += 1
-        prefetch_started = self._maybe_start_vla_prefetch(
-            obs,
-            current_eef=current_eef,
-            previous_eef=previous_eef,
-            previous_vla_gripper=previous_vla_gripper,
-            request_decision_index=decision_index,
-        )
+        prefetch_started = False
+        if not self._rtc_mode:
+            prefetch_started = self._maybe_start_vla_prefetch(
+                obs,
+                current_eef=current_eef,
+                previous_eef=previous_eef,
+                previous_vla_gripper=previous_vla_gripper,
+                request_decision_index=decision_index,
+            )
         trace = self._build_policy_trace(
             vla_chunk=self._vla_chunk,
             vla_index=self._vla_ptr - 1,
@@ -432,6 +514,85 @@ class Pi05BCTemporalPolicy(Policy):
             self._step_count += 1
             self._decision_index += 1
         return _ActionResult(action=action, trace=trace)
+
+    def _install_rtc_frame(
+        self,
+        frame: Any,
+        *,
+        decision_index: int,
+    ) -> _VlaRequestInfo:
+        """Install one RTC active chunk and its observation-aligned index."""
+        chunk = np.asarray(frame.chunk, dtype=np.float32)
+        expected = (self._vla_chunk_length, 7)
+        if chunk.shape != expected or not np.isfinite(chunk).all():
+            raise ValueError(
+                f"RTC active chunk must be finite {expected}, "
+                f"got {chunk.shape}"
+            )
+        index = int(frame.action_index)
+        future_horizon = int(self._bc.dataset_config.traject_horizon[1])
+        if not 0 <= index or index + future_horizon > len(chunk):
+            raise ValueError(
+                "RTC action index does not provide BC lookahead: "
+                f"index={index}, future_horizon={future_horizon}, "
+                f"H={len(chunk)}"
+            )
+
+        if bool(frame.chunk_installed):
+            self._bc_chunk = None
+            self._bc_ptr = 0
+            self._bc_steps_since_replan = 0
+            self._vla_request_count += 1
+            latency_ms = float(frame.request_latency_ms)
+            if np.isfinite(latency_ms):
+                self._metrics.add_vla(latency_ms / 1000.0)
+
+        self._vla_chunk = np.array(chunk, dtype=np.float32, copy=True)
+        self._vla_ptr = index
+        self._vla_start_index = index
+        self._vla_steps_since_replan = index
+        self._vla_request_decision_index = int(frame.anchor_step)
+        self._vla_consume_decision_index = int(decision_index)
+
+        if not self._traj_history_initialized:
+            first = torch.as_tensor(
+                self._vla_chunk[0],
+                dtype=torch.float32,
+            ).reshape(1, 7)
+            lookback = int(self._bc.dataset_config.traject_horizon[0])
+            self._traj_history = [first.clone() for _ in range(lookback)]
+            self._traj_valid_history = [False] * lookback
+            self._traj_history_initialized = True
+
+        rtc_trace = {
+            "rtc.epoch": np.int32(frame.epoch),
+            "rtc.chunk_id": np.int32(frame.chunk_id),
+            "rtc.anchor_step": np.int32(frame.anchor_step),
+            "rtc.logical_step": np.int32(frame.logical_step),
+            "rtc.action_index": np.int32(index),
+            "rtc.request_started": np.bool_(frame.request_started),
+            "rtc.request_latency_ms": np.float64(
+                frame.request_latency_ms
+                if bool(frame.chunk_installed)
+                else float("nan")
+            ),
+        }
+        return _VlaRequestInfo(
+            latency_sec=(
+                float(frame.request_latency_ms) / 1000.0
+                if bool(frame.chunk_installed)
+                else float("nan")
+            ),
+            prefetch_used=bool(
+                frame.chunk_installed and frame.anchor_step > 0
+            ),
+            request_index=int(frame.request_id),
+            request_decision_index=int(frame.anchor_step),
+            consume_decision_index=int(decision_index),
+            start_index=index,
+            replanned=bool(frame.chunk_installed),
+            rtc_trace=rtc_trace,
+        )
 
     def _request_vla_chunk(
         self,
@@ -591,8 +752,10 @@ class Pi05BCTemporalPolicy(Policy):
         vla_steps_since_replan: int,
     ) -> dict[str, Any]:
         """Build one flat, row-aligned trace mapping."""
-        vla_replanned = vla_request is not None
-        return {
+        vla_replanned = (
+            False if vla_request is None else bool(vla_request.replanned)
+        )
+        trace = {
             "vla.chunk": PolicyTraceValue(
                 np.array(vla_chunk, dtype=np.float32, copy=True),
                 semantic="VLA trajectory chunk",
@@ -631,7 +794,11 @@ class Pi05BCTemporalPolicy(Policy):
                 unit="ms",
             ),
             "vla.request_index": PolicyTraceValue(
-                np.int32(self._vla_request_count),
+                np.int32(
+                    self._vla_request_count
+                    if vla_request is None
+                    else vla_request.request_index
+                ),
                 semantic="cumulative VLA request index",
             ),
             "vla.start_index": PolicyTraceValue(
@@ -700,6 +867,13 @@ class Pi05BCTemporalPolicy(Policy):
                 semantic="monotonic action decision index",
             ),
         }
+        if vla_request is not None and vla_request.rtc_trace:
+            for name, value in vla_request.rtc_trace.items():
+                trace[name] = PolicyTraceValue(
+                    value,
+                    semantic=f"RTC {name.removeprefix('rtc.')}",
+                )
+        return trace
 
     def _consume_prefetched_vla_chunk(
         self,
@@ -852,6 +1026,22 @@ class Pi05BCTemporalPolicy(Policy):
             current_eef,
         )
         self._metrics.add_eef_error(loc_error, rot_error)
+
+
+def _profile_control_period(profile_path: str) -> float:
+    """Read the runtime control period used for RTC metadata validation."""
+    path = Path(profile_path)
+    with path.open(encoding="utf-8") as stream:
+        profile = yaml.safe_load(stream) or {}
+    runtime = profile.get("runtime")
+    if not isinstance(runtime, Mapping):
+        raise ValueError(f"profile {path} has no runtime mapping")
+    value = float(runtime.get("control_period", 0.0))
+    if value <= 0.0:
+        raise ValueError(
+            f"profile {path} has invalid runtime.control_period"
+        )
+    return value
 
 
 def validate_profile_contract(profile_path: str) -> None:

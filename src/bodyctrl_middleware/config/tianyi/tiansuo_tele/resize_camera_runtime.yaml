@@ -1,0 +1,66 @@
+tianyi_tiansuo_runtime:
+  ros__parameters:
+    config.profile_path: "config/tianyi/tiansuo_tele/bimanual_camera_profile.yaml"
+    config.execution.mode: single
+    config.execution.enable_timing: true
+
+    config.base_reset_sampling.enable: false # true
+    config.base_reset_sampling.x_range: [-0.1, 0.1]
+    config.base_reset_sampling.y_range: [-0.1, 0.4]
+    config.base_reset_sampling.yaw_range: [-0.4, 0.4]
+
+    config.tele_tiansuo.reset_timeout: 120.0
+    config.record.ask_before_save: true
+    config.record.ask_before_next_episode: true
+    config.record.flush_policy: finalize
+    config.record.write_chunk_rows: 512
+    config.record.max_steps: 6000
+    config.record.buffer_warn_bytes: 268435456
+    config.record.compress_method: gzip
+    config.record.confirm_timeout: 120.0
+    config.record.confirm_on_unavailable: keep
+    config.record.stop_before_confirm: true
+
+    # 裁减图片避免 record 过大
+
+    # head 640x480 不裁减, 缩小为原来 1/2 (使用右手时, 后续可以仅保留左侧)
+    config.cameras.head.image_color_obs_process.is_clip_image: false
+    config.cameras.head.image_color_obs_process.is_resize_image: true
+    config.cameras.head.image_color_obs_process.resize_target_x: 320
+    config.cameras.head.image_color_obs_process.resize_target_y: 240
+    config.cameras.head.image_color_obs_process.resize_method: 3 # cv2.INTER_AREA
+
+    config.cameras.head.image_depth_obs_process.is_clip_image: false
+    config.cameras.head.image_depth_obs_process.is_resize_image: true
+    config.cameras.head.image_depth_obs_process.resize_target_x: 320
+    config.cameras.head.image_depth_obs_process.resize_target_y: 240
+    config.cameras.head.image_depth_obs_process.resize_method: 0 # cv2.INTER_NEAREST
+
+    # left / right 424x240 保留中间部分
+    config.cameras.right.image_color_obs_process.is_clip_image: true
+    config.cameras.right.image_color_obs_process.clip_lx: 92
+    config.cameras.right.image_color_obs_process.clip_ly: 0
+    config.cameras.right.image_color_obs_process.clip_rx: 332
+    config.cameras.right.image_color_obs_process.clip_ry: 240
+    config.cameras.right.image_color_obs_process.resize_method: 3 # cv2.INTER_AREA
+
+    config.cameras.right.image_depth_obs_process.is_clip_image: true
+    config.cameras.right.image_depth_obs_process.clip_lx: 92
+    config.cameras.right.image_depth_obs_process.clip_ly: 0
+    config.cameras.right.image_depth_obs_process.clip_rx: 332
+    config.cameras.right.image_depth_obs_process.clip_ry: 240
+    config.cameras.right.image_depth_obs_process.resize_method: 0 # cv2.INTER_NEAREST
+
+    config.cameras.left.image_color_obs_process.is_clip_image: true
+    config.cameras.left.image_color_obs_process.clip_lx: 92
+    config.cameras.left.image_color_obs_process.clip_ly: 0
+    config.cameras.left.image_color_obs_process.clip_rx: 332
+    config.cameras.left.image_color_obs_process.clip_ry: 240
+    config.cameras.left.image_color_obs_process.resize_method: 3 # cv2.INTER_AREA
+
+    config.cameras.left.image_depth_obs_process.is_clip_image: true
+    config.cameras.left.image_depth_obs_process.clip_lx: 92
+    config.cameras.left.image_depth_obs_process.clip_ly: 0
+    config.cameras.left.image_depth_obs_process.clip_rx: 332
+    config.cameras.left.image_depth_obs_process.clip_ry: 240
+    config.cameras.left.image_depth_obs_process.resize_method: 0 # cv2.INTER_NEAREST

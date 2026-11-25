@@ -1422,7 +1422,7 @@ wheels = [
 [[package]]
 name = "openpi-client"
 version = "0.1.0"
-source = { git = "https://github.com/tonyddg/openpi?subdirectory=packages%2Fopenpi-client&branch=vla-rl#f832497e04f1f9c0882763c7104113275cb415d7" }
+source = { git = "https://github.com/tonyddg/openpi?subdirectory=packages%2Fopenpi-client&branch=vla-rl#e347c150c6ac5059923a5bb14828b43158d62a6b" }
 dependencies = [
     { name = "dm-tree" },
     { name = "msgpack" },

@@ -29,6 +29,10 @@ from bodyctrl_middleware.policy.pi05_bc.vla import (
     OpenPiVlaClient,
     VlaInferenceTimeoutError,
 )
+from bodyctrl_middleware.policy.openpi.rtc import (
+    RtcServerProfile,
+    RtcTrajectoryFrame,
+)
 from bodyctrl_middleware.tianyi.node.pi05_bc_runtime_node import (
     Pi05BCExecutionConfig,
 )
@@ -64,9 +68,13 @@ class _FakeVla:
         self.requests: list[dict] = []
         self.connected = 0
         self.closed = 0
+        self.reset_count = 0
 
     def connect(self) -> None:
         self.connected += 1
+
+    def reset_episode(self) -> None:
+        self.reset_count += 1
 
     def infer(self, observation):
         chunk_index = len(self.requests)
@@ -78,6 +86,61 @@ class _FakeVla:
         )
         chunk[:, 6] = 0.5
         return chunk
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class _FakeRtcVla:
+    def __init__(self) -> None:
+        self.server_profile = RtcServerProfile(
+            protocol_version=1,
+            horizon=10,
+            request_interval_steps=5,
+            estimated_delay_steps=2,
+            control_period_sec=0.1,
+            max_inflight_requests=1,
+            reset_supported=True,
+        )
+        self.reset_count = 0
+        self.step = 0
+        self.closed = 0
+        self.requests: list[dict] = []
+
+    def connect(self) -> None:
+        return
+
+    def reset_episode(self) -> None:
+        self.reset_count += 1
+        self.step = 0
+
+    def infer_frame(self, observation) -> RtcTrajectoryFrame:
+        self.requests.append(dict(observation))
+        step = self.step
+        self.step += 1
+        installed = step in {0, 6}
+        if step < 6:
+            chunk_id = 1
+            anchor = 0
+            index = step
+        else:
+            chunk_id = 2
+            anchor = 5
+            index = step - 5
+        chunk = np.zeros((10, 7), dtype=np.float32)
+        chunk[:, 0] = chunk_id * 100.0 + np.arange(10)
+        return RtcTrajectoryFrame(
+            chunk=chunk,
+            action_index=index,
+            epoch=1,
+            chunk_id=chunk_id,
+            anchor_step=anchor,
+            logical_step=step,
+            request_id=chunk_id,
+            chunk_installed=installed,
+            request_started=step == 5,
+            request_latency_ms=10.0 if installed else float("nan"),
+        )
 
     def close(self) -> None:
         self.closed += 1
@@ -176,6 +239,7 @@ def _profile_path() -> str:
 def _policy(
     *,
     max_steps: int = 10,
+    vla_client_mode: str = "websocket",
     vla_replan_steps: int = 3,
     vla_prefetch_enabled: bool = True,
     vla_prefetch_lead_steps: int = 1,
@@ -196,6 +260,7 @@ def _policy(
         hparams_path="fake.yaml",
         profile_path=_profile_path(),
         prompt="pick object",
+        vla_client_mode=vla_client_mode,
         vla_chunk_length=10,
         vla_replan_steps=vla_replan_steps,
         vla_prefetch_enabled=vla_prefetch_enabled,
@@ -219,6 +284,47 @@ def test_pi05_execution_config_accepts_action_modes_but_not_record() -> None:
     assert Pi05BCExecutionConfig(mode="action_record").mode == "action_record"
     with pytest.raises(ValidationError):
         Pi05BCExecutionConfig(mode="record")
+
+
+def test_policy_rtc_mode_uses_active_chunk_index_and_resets_episode() -> None:
+    rtc = _FakeRtcVla()
+    policy, _, _, _ = _policy(
+        vla_client_mode="rtc",
+        vla_client=rtc,
+        bc_replan_steps=2,
+        bc_chunk_rows=2,
+    )
+    try:
+        policy.reset(_runtime_obs(0), goal={"prompt": "pick object"})
+        traces = []
+        for step in range(7):
+            future = policy.infer_async(_runtime_obs(step))
+            future.get_action()
+            traces.append(future.get_policy_trace())
+
+        assert rtc.reset_count == 1
+        assert set(rtc.requests[0]) == {
+            "observation/image",
+            "observation/wrist_image",
+            "observation/state",
+            "prompt",
+        }
+        assert [int(trace["vla.index"].value) for trace in traces] == [
+            0, 1, 2, 3, 4, 5, 1,
+        ]
+        assert [
+            bool(trace["vla.replanned"].value) for trace in traces
+        ] == [True, False, False, False, False, False, True]
+        assert [int(trace["rtc.action_index"].value) for trace in traces] == [
+            0, 1, 2, 3, 4, 5, 1,
+        ]
+        assert bool(traces[5]["rtc.request_started"].value) is True
+        assert int(traces[6]["rtc.anchor_step"].value) == 5
+
+        policy.reset(_runtime_obs(0), goal={"prompt": "pick object"})
+        assert rtc.reset_count == 2
+    finally:
+        policy.close()
 
 
 def test_se2_relative_is_body_frame_backward_difference() -> None:

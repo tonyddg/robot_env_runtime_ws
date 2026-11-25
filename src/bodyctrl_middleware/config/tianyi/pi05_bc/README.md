@@ -33,6 +33,7 @@ OpenPI 默认响应 key 为 `pi0_actions_ref`，轨迹 shape 默认为 `[10,7]`�
 主要 VLA/BC 参数：
 
 ```yaml
+config.policy.vla_client_mode: websocket
 config.policy.vla_response_key: pi0_actions_ref
 config.policy.vla_chunk_length: 10
 config.policy.vla_replan_steps: 3
@@ -50,7 +51,95 @@ config.policy.first_action_max_wait_sec: 120.0
 - `first_action_max_wait_sec`：首次 VLA/BC 推理等待时间，需要覆盖首次
   `torch.compile` 预热。
 
+### VLA 客户端模式
+
+```yaml
+config.policy.vla_client_mode: websocket
+```
+
+可选：
+
+- `websocket`：原有 `[H,7]` chunk 协议，使用下面的本地 replan/prefetch 参数。
+- `rtc`：协议版本 1 的 RTC trajectory 模式。
+
+RTC 模式直接使用服务端 metadata：
+
+```text
+H、s、d_estimated、control_period_s
+max_inflight_requests
+reset_supported
+```
+
+RTC 模式下以下 WebSocket-only 参数不读取：
+
+```text
+vla_response_key
+vla_replan_steps
+vla_prefetch_enabled
+vla_prefetch_lead_steps
+vla_prefetch_alignment
+```
+
+RTC 的 chunk 索引固定为：
+
+```text
+action_index = logical_step - anchor_step
+```
+
+因此天然是 observation-aligned。RTC client 每个 action 返回完整 active
+`[H,7]` chunk 和当前 action index；BC 使用：
+
+```text
+chunk[action_index:action_index+future_horizon]
+```
+
+每个新 episode 都会调用 RTC reset，服务端返回新的 epoch 并丢弃旧 chunk。
+首个 active chunk 必须在 ACK 成功后才能返回动作。
+
+RTC 服务端当前 metadata 为：
+
+```text
+protocol_version=1
+H=10
+s=5
+d_estimated=2
+control_period_s=0.1
+max_inflight_requests=1
+reset_supported=true
+```
+
+RTC trajectory handler 的模型输出必须提供：
+
+```python
+{"actions": trajectory}  # [H,7]
+```
+
+普通 WebSocket Pi0.5 当前返回 `{"pi0_actions_ref": [H,7]}`。如果 RTC
+endpoint 使用未转换的 `pi0_actions_ref`，服务端会返回与 `KeyError:
+'actions'` 等价的错误。此时需要修改服务端 `TianyiOutputs`，使 RTC 模式输出
+`actions`；客户端不会静默回退到普通 WebSocket。
+
+RTC server 还会在输入中注入 `actions` 字段，用于实时 chunk 引导。Tianyi
+repack/input transform 必须保留该字段，例如在 repack mapping 中加入
+`"actions": "actions"`，并在 `TianyiInputs` 中设置：
+
+```python
+if "actions" in data:
+    inputs["actions"] = data["actions"]
+```
+
+否则服务端会报告：
+
+```text
+Input transforms dropped actions; adapt the robot-specific repack mapping
+```
+
+RTC 测试脚本必须按 metadata 的 `control_period_s` 推进 logical tick，而不是
+使用 CPU 全速循环；否则旧 chunk 会在新 chunk 返回前被耗尽。
+
 ## VLA 预取
+
+以下参数仅在 `vla_client_mode=websocket` 时生效。
 
 相关参数：
 
@@ -305,10 +394,20 @@ policy_trace/odom.relative                [T,3]
 policy_trace/action.raw                   [T,10]
 policy_trace/action.runtime               [T,10]
 policy_trace/action.decision_index        [T]
+policy_trace/rtc.epoch                    [T]  # 仅 RTC 模式
+policy_trace/rtc.chunk_id                 [T]
+policy_trace/rtc.anchor_step              [T]
+policy_trace/rtc.logical_step             [T]
+policy_trace/rtc.action_index             [T]
+policy_trace/rtc.request_started          [T]
+policy_trace/rtc.request_latency_ms       [T]
 ```
 
 padding 行使用 NaN、-1 或 false 占位。字段名、shape 和 dtype 在单个 episode
 内必须保持稳定；叶节点只支持固定 shape 的数值或布尔数组/标量。
+
+RTC 模式下 episode `meta.policy` 还包含 `rtc_server` metadata 快照，以及被
+RTC 忽略的 WebSocket prefetch 参数。
 
 ## 推理延迟测试
 

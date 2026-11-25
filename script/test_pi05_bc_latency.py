@@ -44,6 +44,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default="192.168.41.4")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--api-key-env", default="OPENPI_API_KEY")
+    parser.add_argument(
+        "--client-mode",
+        choices=("websocket", "rtc"),
+        default="websocket",
+        help="VLA transport protocol to test.",
+    )
     parser.add_argument("--prompt", default="pick up the object")
     parser.add_argument("--response-key", default="pi0_actions_ref")
     parser.add_argument("--vla-chunk-length", type=int, default=10)
@@ -60,7 +66,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bc-amp", action="store_true")
     parser.add_argument("--bc-image-height", type=int, default=128)
     parser.add_argument("--bc-image-width", type=int, default=128)
-    parser.add_argument("--vla-runs", type=int, default=5)
+    parser.add_argument("--vla-runs", type=int, default=10)
     parser.add_argument("--bc-runs", type=int, default=10)
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--control-period", type=float, default=0.1)
@@ -103,18 +109,55 @@ def main(argv: list[str] | None = None) -> int:
             vla_chunk, vla_latencies, vla_info = _benchmark_vla(args)
             report["checks"]["vla"] = {"ok": True, **vla_info}
             report["latency"]["vla_ms"] = _latency_summary(vla_latencies)
+            rtc_request_latencies = vla_info.get(
+                "rtc_request_latency_ms"
+            )
+            if rtc_request_latencies:
+                report["latency"]["rtc_request_ms"] = _latency_summary(
+                    [
+                        float(value) / 1000.0
+                        for value in rtc_request_latencies
+                    ]
+                )
             _print_ok(
                 "VLA",
-                f"connected to ws://{args.host}:{args.port}, "
+                f"mode={args.client_mode}, "
+                f"connected to {args.host}:{args.port}, "
                 f"chunk={vla_chunk.shape}",
             )
+            if args.client_mode == "rtc":
+                _print_ok(
+                    "RTC",
+                    f"reset={vla_info['reset_performed']}, "
+                    f"H={vla_info['rtc']['H']}, "
+                    f"s={vla_info['rtc']['s']}, "
+                    f"ticks={vla_info['rtc_ticks']}, "
+                    f"period="
+                    f"{vla_info['rtc_paced_control_period_sec']:.3f}s, "
+                    f"installed_chunks="
+                    f"{vla_info['rtc_installed_chunks']}",
+                )
         except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
+            if args.client_mode == "rtc" and "'actions'" in str(exc):
+                error_text += (
+                    "; RTC server/model output mismatch: the RTC handler "
+                    "requires response key 'actions'. The current WebSocket "
+                    "model returns 'pi0_actions_ref'. Load an RTC-compatible "
+                    "TianyiOutputs transform that returns {'actions': ...}."
+                )
+            if "Input transforms dropped actions" in str(exc):
+                error_text += (
+                    "; the RTC input transform dropped the server-provided "
+                    "actions field. Add 'actions' to TianyiRepackTransform and "
+                    "preserve it as inputs['actions'] in TianyiInputs."
+                )
             report["checks"]["vla"] = {
                 "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": error_text,
             }
             failures.append("VLA")
-            _print_error("VLA", f"{type(exc).__name__}: {exc}")
+            _print_error("VLA", error_text)
 
     if not args.skip_bc:
         try:
@@ -158,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
 
     vla_summary = report["latency"].get("vla_ms")
     bc_summary = report["latency"].get("bc_ms")
-    if vla_summary and bc_summary:
+    if vla_summary and bc_summary and args.client_mode == "websocket":
         estimated_ms = vla_summary["median"] + bc_summary["median"]
         report["latency"]["combined_replan_estimate_ms"] = estimated_ms
         report["latency"]["control_period_ms"] = args.control_period * 1000.0
@@ -167,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     _print_environment(report["environment"])
-    for name in ("vla_ms", "bc_ms"):
+    for name in ("vla_ms", "rtc_request_ms", "bc_ms"):
         if name in report["latency"]:
             _print_latency(name, report["latency"][name])
     if "bc_first_compile_ms" in report["latency"]:
@@ -206,14 +249,12 @@ def main(argv: list[str] | None = None) -> int:
 def _benchmark_vla(
     args: argparse.Namespace,
 ) -> tuple[np.ndarray, list[float], dict[str, Any]]:
+    if args.client_mode == "rtc":
+        return _benchmark_rtc_vla(args)
+
     from openpi_client.websocket_client_policy import WebsocketClientPolicy
 
-    observation = {
-        "observation/image": np.zeros((224, 224, 3), dtype=np.uint8),
-        "observation/wrist_image": np.zeros((224, 224, 3), dtype=np.uint8),
-        "observation/state": np.zeros((7,), dtype=np.float32),
-        "prompt": args.prompt,
-    }
+    observation = _vla_observation(args.prompt)
     with socket.create_connection(
         (args.host, args.port),
         timeout=args.connect_timeout,
@@ -262,6 +303,7 @@ def _benchmark_vla(
             chunk = np.array(chunk, copy=True)
             chunk[:, 6] = np.clip(chunk[:, 6], -1.0, 1.0)
         return chunk, latencies, {
+            "client_mode": "websocket",
             "connect_sec": connect_sec,
             "response_key": args.response_key,
             "gripper_out_of_range": gripper_out_of_range,
@@ -277,6 +319,110 @@ def _benchmark_vla(
             policy._ws.close()
         except Exception:
             pass
+
+
+def _vla_observation(prompt: str) -> dict[str, Any]:
+    """Build the single-sample Pi0.5 trajectory request schema."""
+    return {
+        "observation/image": np.zeros(
+            (224, 224, 3),
+            dtype=np.uint8,
+        ),
+        "observation/wrist_image": np.zeros(
+            (224, 224, 3),
+            dtype=np.uint8,
+        ),
+        "observation/state": np.zeros((7,), dtype=np.float32),
+        "prompt": str(prompt),
+    }
+
+
+def _benchmark_rtc_vla(
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, list[float], dict[str, Any]]:
+    """Exercise RTC metadata, reset, logical ticks and chunk refresh."""
+    from bodyctrl_middleware.policy.openpi.rtc import (
+        RtcTrajectoryClient,
+    )
+
+    client = RtcTrajectoryClient(
+        host=args.host,
+        port=args.port,
+        api_key_env=args.api_key_env,
+        request_timeout_sec=max(args.connect_timeout, 1.0),
+        connect_timeout_sec=args.connect_timeout,
+        action_dim=7,
+        required_lookahead_steps=3,
+    )
+    observation = _vla_observation(args.prompt)
+    tick_latencies: list[float] = []
+    request_latencies_ms: list[float] = []
+    installed_chunks: list[int] = []
+    request_starts = 0
+    try:
+        connected_at = time.perf_counter()
+        client.connect()
+        connect_sec = time.perf_counter() - connected_at
+        profile = client.server_profile
+        if profile.horizon != args.vla_chunk_length:
+            raise ValueError(
+                "RTC H does not match --vla-chunk-length: "
+                f"{profile.horizon} != {args.vla_chunk_length}"
+            )
+        if abs(profile.control_period_sec - args.control_period) > 1e-9:
+            raise ValueError(
+                "RTC control period does not match --control-period: "
+                f"{profile.control_period_sec} != {args.control_period}"
+            )
+        reset_started_at = time.perf_counter()
+        client.reset_episode()
+        reset_sec = time.perf_counter() - reset_started_at
+
+        total_ticks = max(
+            int(args.warmup_runs) + int(args.vla_runs),
+            profile.request_interval_steps + 2,
+        )
+        final_frame = None
+        next_tick_at = time.perf_counter()
+        for tick in range(total_ticks):
+            remaining = next_tick_at - time.perf_counter()
+            if remaining > 0.0:
+                time.sleep(remaining)
+            started_at = time.perf_counter()
+            frame = client.infer_frame(observation)
+            elapsed = time.perf_counter() - started_at
+            next_tick_at += profile.control_period_sec
+            if tick >= int(args.warmup_runs):
+                tick_latencies.append(elapsed)
+            if frame.chunk_installed:
+                installed_chunks.append(frame.chunk_id)
+                if np.isfinite(frame.request_latency_ms):
+                    request_latencies_ms.append(
+                        float(frame.request_latency_ms)
+                    )
+            if frame.request_started:
+                request_starts += 1
+            final_frame = frame
+        if final_frame is None:
+            raise RuntimeError("RTC produced no trajectory frame")
+        if not installed_chunks:
+            raise RuntimeError("RTC did not install any chunk")
+        if not tick_latencies:
+            tick_latencies.append(0.0)
+        return final_frame.chunk, tick_latencies, {
+            "client_mode": "rtc",
+            "connect_sec": connect_sec,
+            "reset_sec": reset_sec,
+            "rtc": profile.as_dict(),
+            "rtc_ticks": total_ticks,
+            "rtc_paced_control_period_sec": profile.control_period_sec,
+            "rtc_installed_chunks": installed_chunks,
+            "rtc_request_starts": request_starts,
+            "rtc_request_latency_ms": request_latencies_ms,
+            "reset_performed": True,
+        }
+    finally:
+        client.close()
 
 
 def _infer_vla_once(

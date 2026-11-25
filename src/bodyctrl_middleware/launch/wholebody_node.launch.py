@@ -34,12 +34,18 @@ RUNTIME_CONFIG = {
         "params": "config/tianyi/pi05_bc/default_runtime.yaml",
         "profile_dir": "config/tianyi/pi05_bc",
     },
+    "pi05_direct": {
+        "executable": "tianyi_pi05_direct_runtime_node",
+        "params": "config/tianyi/pi05_direct/default_runtime.yaml",
+        "profile_dir": "config/tianyi/pi05_direct",
+    },
 }
 EXECUTION_MODES = {
     "legacy": ("single", "record"),
     "tiansuo": ("single", "record"),
     "replay": ("single", "record", "action"),
     "pi05_bc": ("single", "action", "action_record"),
+    "pi05_direct": ("single", "action", "action_record"),
 }
 STARTUP_MODES = ("control_only", "runtime_only", "full")
 ARM_STATE_SOURCES = ("raw", "reflect")
@@ -151,8 +157,10 @@ def launch_setup(context, *args, **kwargs):
         raise RuntimeError(
             f"unknown arm_type {arm_type!r}; available: left, bimanual"
         )
-    if runtime == "pi05_bc" and arm_type != "left":
-        raise RuntimeError("runtime:=pi05_bc currently supports arm_type:=left only")
+    if runtime in {"pi05_bc", "pi05_direct"} and arm_type != "left":
+        raise RuntimeError(
+            f"runtime:={runtime} currently supports arm_type:=left only"
+        )
     if arm_state_source not in ARM_STATE_SOURCES:
         raise RuntimeError(
             f"unknown arm_state_source {arm_state_source!r}; "
@@ -248,9 +256,9 @@ def launch_setup(context, *args, **kwargs):
                 f"{execution_mode!r}; available: {EXECUTION_MODES[runtime]}"
             )
         camera_observations = _as_bool(_perform(context, "camera_observations"))
-        if runtime == "pi05_bc" and not camera_observations:
+        if runtime in {"pi05_bc", "pi05_direct"} and not camera_observations:
             raise RuntimeError(
-                "runtime:=pi05_bc requires camera_observations:=true"
+                f"runtime:={runtime} requires camera_observations:=true"
             )
         runtime_info = RUNTIME_CONFIG[runtime]
         camera_mode = "camera" if camera_observations else "no_camera"
@@ -322,14 +330,18 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "runtime",
             default_value="legacy",
-            description="策略 runtime: legacy / tiansuo / replay / pi05_bc",
+            description=(
+                "策略 runtime: legacy / tiansuo / replay / "
+                "pi05_bc / pi05_direct"
+            ),
         ),
         DeclareLaunchArgument(
             "execution_mode",
             default_value="single",
             description=(
-                "执行方式: single / record; replay 和 pi05_bc "
-                "额外支持 action；pi05_bc 支持 action_record"
+                "执行方式: single / record; replay、pi05_bc 和 "
+                "pi05_direct 额外支持 action；pi05_bc 和 pi05_direct "
+                "支持 action_record"
             ),
         ),
         DeclareLaunchArgument(

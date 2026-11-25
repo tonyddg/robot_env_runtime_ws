@@ -15,6 +15,7 @@ class Pi05BCPolicyConfig:
     hparams_path: str
     profile_path: str
     prompt: str = ""
+    vla_client_mode: Literal["websocket", "rtc"] = "websocket"
     vla_host: str = "127.0.0.1"
     vla_port: int = 8000
     vla_api_key_env: str = "OPENPI_API_KEY"
@@ -45,28 +46,39 @@ class Pi05BCPolicyConfig:
                 raise ValueError(f"{name} must not be empty")
         if not self.vla_host.strip():
             raise ValueError("vla_host must not be empty")
+        if self.vla_client_mode not in {"websocket", "rtc"}:
+            raise ValueError(
+                "vla_client_mode must be 'websocket' or 'rtc'"
+            )
         if not 1 <= int(self.vla_port) <= 65535:
             raise ValueError("vla_port must be within 1..65535")
         if not self.vla_response_key.strip():
             raise ValueError("vla_response_key must not be empty")
         if int(self.vla_chunk_length) < 1:
             raise ValueError("vla_chunk_length must be positive")
-        if int(self.vla_replan_steps) < 1:
-            raise ValueError("vla_replan_steps must be positive")
-        if int(self.vla_prefetch_lead_steps) < 1:
-            raise ValueError("vla_prefetch_lead_steps must be positive")
-        if int(self.vla_prefetch_lead_steps) > int(self.vla_replan_steps):
-            raise ValueError(
-                "vla_prefetch_lead_steps must not exceed vla_replan_steps"
-            )
-        if self.vla_prefetch_alignment not in {
-            "boundary",
-            "observation_aligned",
-        }:
-            raise ValueError(
-                "vla_prefetch_alignment must be one of "
-                "'boundary', 'observation_aligned'"
-            )
+        if self.vla_client_mode == "websocket":
+            if int(self.vla_replan_steps) < 1:
+                raise ValueError("vla_replan_steps must be positive")
+            if int(self.vla_prefetch_lead_steps) < 1:
+                raise ValueError(
+                    "vla_prefetch_lead_steps must be positive"
+                )
+            if (
+                int(self.vla_prefetch_lead_steps)
+                > int(self.vla_replan_steps)
+            ):
+                raise ValueError(
+                    "vla_prefetch_lead_steps must not exceed "
+                    "vla_replan_steps"
+                )
+            if self.vla_prefetch_alignment not in {
+                "boundary",
+                "observation_aligned",
+            }:
+                raise ValueError(
+                    "vla_prefetch_alignment must be one of "
+                    "'boundary', 'observation_aligned'"
+                )
         if int(self.bc_replan_steps) < 1:
             raise ValueError("bc_replan_steps must be positive")
         if int(self.max_steps) < 1:
