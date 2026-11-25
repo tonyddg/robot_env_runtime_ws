@@ -1,0 +1,63 @@
+tianyi_pi05_direct_runtime:
+  ros__parameters:
+    config.profile_path: "config/tianyi/pi05_direct/left_camera_profile.yaml"
+    config.execution.mode: single
+    config.execution.enable_timing: true
+    config.action.name: "~/run"
+    config.action.feedback_period: 1.0
+    config.action_record.write_policy_trace: true
+
+    config.record.episode_index: 0
+    config.record.batch_size: 32
+    config.record.flush_policy: finalize
+    config.record.write_chunk_rows: 512
+    config.record.max_steps: 0
+    config.record.buffer_warn_bytes: 536870912
+    config.record.compress_method: none
+
+    config.policy.prompt: "grasp the switch part and put it in the brown plate"
+    config.policy.host: "192.168.41.4"
+    config.policy.port: 8000
+    config.policy.api_key_env: "OPENPI_API_KEY"
+    config.policy.response_key: "actions"
+    config.policy.action_dim: 10
+    config.policy.action_replan_steps: 1
+    config.policy.max_steps: 1500
+    config.policy.first_action_max_wait_sec: 120.0
+    config.policy.request_timeout_sec: 5.0
+    config.policy.connect_timeout_sec: 30.0
+    config.policy.allow_action_clip: true
+    config.policy.qpos_dim: 7
+
+    config.policy.vla_client_mode: rtc
+
+    config.policy.vla_prefetch_enabled: true
+    config.policy.vla_prefetch_lead_steps: 1
+    config.policy.vla_prefetch_alignment: observation_aligned
+
+    config.cameras.head.is_enable: true
+    config.cameras.left.is_enable: true
+    config.cameras.right.is_enable: false
+
+    config.cameras.head.image_color_obs_process.is_clip_image: true
+    config.cameras.head.image_color_obs_process.clip_lx: 0
+    config.cameras.head.image_color_obs_process.clip_ly: 0
+    config.cameras.head.image_color_obs_process.clip_rx: 240
+    config.cameras.head.image_color_obs_process.clip_ry: 240
+    config.cameras.head.image_color_obs_process.is_resize_image: true
+    config.cameras.head.image_color_obs_process.resize_target_x: 224
+    config.cameras.head.image_color_obs_process.resize_target_y: 224
+    config.cameras.head.image_color_obs_process.resize_method: 3
+
+    config.cameras.left.image_color_obs_process.is_clip_image: true
+    config.cameras.left.image_color_obs_process.clip_lx: 92
+    config.cameras.left.image_color_obs_process.clip_ly: 0
+    config.cameras.left.image_color_obs_process.clip_rx: 332
+    config.cameras.left.image_color_obs_process.clip_ry: 240
+    config.cameras.left.image_color_obs_process.is_resize_image: true
+    config.cameras.left.image_color_obs_process.resize_target_x: 224
+    config.cameras.left.image_color_obs_process.resize_target_y: 224
+    config.cameras.left.image_color_obs_process.resize_method: 3
+
+    config.main.left_robotiq_gripper_control_root_name: "robotiq_gripper_control_left"
+    config.main.right_robotiq_gripper_control_root_name: ""
